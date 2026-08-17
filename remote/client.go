@@ -456,13 +456,18 @@ func (o *remoteObservation) Next(ctx context.Context) (execenv.Event, error) {
 	select {
 	case <-ctx.Done():
 		return execenv.Event{}, execenv.Error("watch", ctx.Err())
+	case ev, ok := <-o.events:
+		if ok {
+			return ev, nil
+		}
+	}
+	// events is closed after fail. Prefer the recorded cause (lag, revoke,
+	// connection) over a generic closed so the caller knows to resync.
+	select {
 	case err := <-o.errc:
 		return execenv.Event{}, execenv.Error("watch", err)
-	case ev, ok := <-o.events:
-		if !ok {
-			return execenv.Event{}, execenv.Error("watch", execenv.ErrClosed)
-		}
-		return ev, nil
+	default:
+		return execenv.Event{}, execenv.Error("watch", execenv.ErrClosed)
 	}
 }
 
