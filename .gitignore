@@ -1,0 +1,9 @@
+/bin/
+*.exe
+*.test
+*.out
+.DS_Store
+.scratch/
+AGENTS.md
+CONTEXT.md
+README.md
