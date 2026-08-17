@@ -1,4 +1,8 @@
-// Package execenvtest contains a reusable Host occupancy and PTY conformance suite.
+// Package execenvtest contains a reusable Host conformance suite.
+//
+// Run covers occupancy, one PTY, tree projection, and guest harvest when
+// the host implements GuestWriter. Adapters that wrap another host (the
+// remote client) skip harvest unless they also implement that hook.
 package execenvtest
 
 import (
@@ -225,6 +229,204 @@ func Run(t *testing.T, factory Factory) {
 		_, err = host.Ensure(context.Background(), execenv.Spec{ID: "grant-1", Image: "default"})
 		if err != nil {
 			t.Fatalf("Ensure() after revoke error = %v", err)
+		}
+	})
+
+	t.Run("replace tree then open the file", func(t *testing.T) {
+		host := factory(t)
+		env, err := host.Ensure(context.Background(), execenv.Spec{ID: "grant-1", Image: "default"})
+		if err != nil {
+			t.Fatalf("Ensure() error = %v", err)
+		}
+		err = env.ReplaceTree(context.Background(), execenv.Tree{{
+			Path:    "src/main.go",
+			Kind:    execenv.KindFile,
+			Version: "v1",
+			Data:    []byte("package main\n"),
+		}})
+		if err != nil {
+			t.Fatalf("ReplaceTree() error = %v", err)
+		}
+		body, err := env.Open(context.Background(), "src/main.go")
+		if err != nil {
+			t.Fatalf("Open() error = %v", err)
+		}
+		defer body.Close()
+		got, err := io.ReadAll(body)
+		if err != nil {
+			t.Fatalf("ReadAll() error = %v", err)
+		}
+		if !bytes.Equal(got, []byte("package main\n")) {
+			t.Fatal("Open() returned unexpected bytes")
+		}
+	})
+
+	t.Run("replace tree skips an unchanged version", func(t *testing.T) {
+		host := factory(t)
+		env, err := host.Ensure(context.Background(), execenv.Spec{ID: "grant-1", Image: "default"})
+		if err != nil {
+			t.Fatalf("Ensure() error = %v", err)
+		}
+		first := execenv.Tree{{Path: "a.txt", Kind: execenv.KindFile, Version: "v1", Data: []byte("one")}}
+		if err := env.ReplaceTree(context.Background(), first); err != nil {
+			t.Fatalf("ReplaceTree() error = %v", err)
+		}
+		// Nil Data means "keep the body you already have at v1".
+		skip := execenv.Tree{{Path: "a.txt", Kind: execenv.KindFile, Version: "v1"}}
+		if err := env.ReplaceTree(context.Background(), skip); err != nil {
+			t.Fatalf("version-skip ReplaceTree() error = %v", err)
+		}
+		missing := execenv.Tree{{Path: "a.txt", Kind: execenv.KindFile, Version: "v2"}}
+		if err := env.ReplaceTree(context.Background(), missing); !errors.Is(err, execenv.ErrInvalid) {
+			t.Fatalf("missing-body ReplaceTree() error = %v, want ErrInvalid", err)
+		}
+	})
+
+	t.Run("apply is fenced and rejected paths fail closed", func(t *testing.T) {
+		host := factory(t)
+		env, err := host.Ensure(context.Background(), execenv.Spec{ID: "grant-1", Image: "default"})
+		if err != nil {
+			t.Fatalf("Ensure() error = %v", err)
+		}
+		err = env.Apply(context.Background(), execenv.Batch{Mutations: []execenv.Mutation{{
+			Op:      execenv.OpCreate,
+			Path:    "a.txt",
+			Kind:    execenv.KindFile,
+			Version: "v1",
+			Data:    []byte("one"),
+		}}})
+		if err != nil {
+			t.Fatalf("Apply() error = %v", err)
+		}
+		err = env.Apply(context.Background(), execenv.Batch{Mutations: []execenv.Mutation{{
+			Op:       execenv.OpReplace,
+			Path:     "a.txt",
+			Kind:     execenv.KindFile,
+			Version:  "v2",
+			Expected: "nope",
+			Data:     []byte("two"),
+		}}})
+		if !errors.Is(err, execenv.ErrConflict) {
+			t.Fatalf("fenced Apply() error = %v, want ErrConflict", err)
+		}
+		body, err := env.Open(context.Background(), "a.txt")
+		if err != nil {
+			t.Fatalf("Open() after failed Apply() error = %v", err)
+		}
+		defer body.Close()
+		got, err := io.ReadAll(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, []byte("one")) {
+			t.Fatal("failed Apply() changed the file")
+		}
+		if err := env.Apply(context.Background(), execenv.Batch{Mutations: []execenv.Mutation{{
+			Op:   execenv.OpCreate,
+			Path: "/abs",
+			Kind: execenv.KindFile,
+			Data: []byte("x"),
+		}}}); !errors.Is(err, execenv.ErrInvalid) {
+			t.Fatalf("invalid path Apply() error = %v, want ErrInvalid", err)
+		}
+		if err := env.Apply(context.Background(), execenv.Batch{Mutations: []execenv.Mutation{{
+			Op:   execenv.OpMove,
+			From: "a.txt",
+			Path: "b.txt",
+		}}}); err != nil {
+			t.Fatalf("Apply(move) error = %v", err)
+		}
+		if err := env.Apply(context.Background(), execenv.Batch{Mutations: []execenv.Mutation{{
+			Op:   execenv.OpDelete,
+			Path: "b.txt",
+		}}}); err != nil {
+			t.Fatalf("Apply(delete) error = %v", err)
+		}
+		if _, err := env.Open(context.Background(), "b.txt"); !errors.Is(err, execenv.ErrNotFound) {
+			t.Fatalf("Open() after delete error = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("replace tree rejects a directory that carries a body", func(t *testing.T) {
+		host := factory(t)
+		env, err := host.Ensure(context.Background(), execenv.Spec{ID: "grant-1", Image: "default"})
+		if err != nil {
+			t.Fatalf("Ensure() error = %v", err)
+		}
+		err = env.ReplaceTree(context.Background(), execenv.Tree{{
+			Path: "src",
+			Kind: execenv.KindDirectory,
+			Data: []byte("no"),
+		}})
+		if !errors.Is(err, execenv.ErrInvalid) {
+			t.Fatalf("ReplaceTree() error = %v, want ErrInvalid", err)
+		}
+	})
+
+	t.Run("watch harvests guest writes", func(t *testing.T) {
+		host := factory(t)
+		writer, ok := host.(execenv.GuestWriter)
+		if !ok {
+			t.Skip("host cannot simulate guest writes")
+		}
+		env, err := host.Ensure(context.Background(), execenv.Spec{ID: "grant-1", Image: "default"})
+		if err != nil {
+			t.Fatalf("Ensure() error = %v", err)
+		}
+		obs, err := env.Watch(context.Background())
+		if err != nil {
+			t.Fatalf("Watch() error = %v", err)
+		}
+		t.Cleanup(func() { _ = obs.Close() })
+		if err := writer.WriteGuest(context.Background(), "grant-1", "out.txt", []byte("hi")); err != nil {
+			t.Fatalf("WriteGuest() error = %v", err)
+		}
+		ev, err := obs.Next(context.Background())
+		if err != nil {
+			t.Fatalf("Next() error = %v", err)
+		}
+		if ev.Op != execenv.OpCreate || ev.Path != "out.txt" {
+			t.Fatalf("event = %+v", ev)
+		}
+		body, err := env.Open(context.Background(), "out.txt")
+		if err != nil {
+			t.Fatalf("Open() error = %v", err)
+		}
+		got, err := io.ReadAll(body)
+		_ = body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, []byte("hi")) {
+			t.Fatal("Open() after guest write returned unexpected bytes")
+		}
+		if err := writer.MoveGuest(context.Background(), "grant-1", "out.txt", "renamed.txt"); err != nil {
+			t.Fatalf("MoveGuest() error = %v", err)
+		}
+		ev, err = obs.Next(context.Background())
+		if err != nil || ev.Op != execenv.OpMove || ev.From != "out.txt" {
+			t.Fatalf("move event = %+v err = %v", ev, err)
+		}
+		if err := writer.RemoveGuest(context.Background(), "grant-1", "renamed.txt"); err != nil {
+			t.Fatalf("RemoveGuest() error = %v", err)
+		}
+		ev, err = obs.Next(context.Background())
+		if err != nil || ev.Op != execenv.OpDelete || ev.Path != "renamed.txt" {
+			t.Fatalf("delete event = %+v err = %v", ev, err)
+		}
+	})
+
+	t.Run("cancelled replace returns the context error", func(t *testing.T) {
+		host := factory(t)
+		env, err := host.Ensure(context.Background(), execenv.Spec{ID: "grant-1", Image: "default"})
+		if err != nil {
+			t.Fatalf("Ensure() error = %v", err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		err = env.ReplaceTree(ctx, execenv.Tree{{Path: "a.txt", Kind: execenv.KindFile, Version: "v1", Data: []byte("x")}})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("ReplaceTree() error = %v, want context.Canceled", err)
 		}
 	})
 

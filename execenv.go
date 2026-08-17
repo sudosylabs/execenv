@@ -1,6 +1,9 @@
 package execenv
 
-import "context"
+import (
+	"context"
+	"io"
+)
 
 // Image is a caller-facing name for an operator-preloaded guest runtime.
 type Image string
@@ -56,6 +59,17 @@ type Host interface {
 type Env interface {
 	ID() ID
 	Attach(ctx context.Context, win Window) (Terminal, error)
+	// ReplaceTree makes the projection match tree exactly. Nodes whose
+	// Data is nil are kept only when the host already has that Path at
+	// Version; otherwise the call fails and the projection is unchanged.
+	ReplaceTree(ctx context.Context, tree Tree) error
+	// Apply applies an atomic batch of incremental mutations.
+	Apply(ctx context.Context, batch Batch) error
+	// Watch streams guest-originated filesystem events. One observation
+	// may be current. Overflow fails closed with ErrLagged.
+	Watch(ctx context.Context) (Observation, error)
+	// Open reads the current body of a projected file.
+	Open(ctx context.Context, path string) (io.ReadCloser, error)
 	Freeze(ctx context.Context) error
 	Thaw(ctx context.Context) error
 	Revoke(ctx context.Context) error

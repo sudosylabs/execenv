@@ -4,6 +4,7 @@ package memory
 import (
 	"context"
 	"io"
+	"slices"
 	"sync"
 
 	"github.com/sudosylabs/execenv"
@@ -40,6 +41,18 @@ type environment struct {
 	frozen  bool
 	revoked bool
 	term    *terminal
+	// files is the current projection. Paths are already-validated.
+	files map[string]node
+	obs   *observation
+	// watchErr is set when the current observation must die (lag, freeze, revoke).
+	watchErr error
+}
+
+// node is one projected path. data is nil for directories.
+type node struct {
+	kind    execenv.NodeKind
+	version execenv.Version
+	data    []byte
 }
 
 type terminal struct {
@@ -119,6 +132,7 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		image:   spec.Image,
 		network: spec.Network,
 		host:    h,
+		files:   make(map[string]node),
 	}
 	h.grants[spec.ID] = env
 	return env, nil
@@ -142,12 +156,7 @@ func (h *Host) Revoke(ctx context.Context, id execenv.ID) error {
 }
 
 func (h *Host) hasImage(want execenv.Image) bool {
-	for _, image := range h.images {
-		if image == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(h.images, want)
 }
 
 func (e *environment) ID() execenv.ID { return e.id }
@@ -186,6 +195,7 @@ func (e *environment) Freeze(ctx context.Context) error {
 		e.term.kill(execenv.ErrFrozen)
 		e.term = nil
 	}
+	e.failWatch(execenv.ErrFrozen)
 	return nil
 }
 
@@ -218,6 +228,7 @@ func (e *environment) revoke() error {
 		e.term.kill(execenv.ErrRevoked)
 		e.term = nil
 	}
+	e.failWatch(execenv.ErrRevoked)
 	return nil
 }
 
