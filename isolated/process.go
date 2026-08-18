@@ -181,7 +181,7 @@ func writeMachineConfig(req startRequest, cfg Config) (string, error) {
 	doc := map[string]any{
 		"boot-source": map[string]any{
 			"kernel_image_path": req.Kernel,
-			"boot_args":         "console=ttyS0 reboot=k panic=1 pci=off home=/workspace",
+			"boot_args":         "console=ttyS0 reboot=k panic=1 pci=off home=" + execenv.GuestHome + " init=" + execenv.GuestInit,
 		},
 		"drives": []map[string]any{
 			{

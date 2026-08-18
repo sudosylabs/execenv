@@ -1,0 +1,138 @@
+# Publish baked catalog files. Fixture smoke always runs on a small
+# runner. The universal-class default disk is tens of gigabytes: set
+# runner to a large label and publish_default=true, and provide
+# KERNEL_URL as a versioned kernel download. Source may be a digest
+# (image@sha256:...) to pin the container; catalog.json records the
+# image id and the kernel-then-rootfs hash.
+name: publish-image
+
+on:
+  workflow_dispatch:
+    inputs:
+      id:
+        description: Catalog id for the optional default bake
+        default: default
+        required: true
+      source:
+        description: Container image or image@sha256:... pin
+        default: mcr.microsoft.com/devcontainers/universal:linux
+        required: true
+      dockerfile:
+        description: Operator Dockerfile (do not also set a custom source)
+        default: ""
+        required: false
+      publish_default:
+        description: Bake the requested source (needs KERNEL_URL and enough disk)
+        default: "false"
+        required: true
+      runner:
+        description: Runner label for the default bake
+        default: ubuntu-latest
+        required: true
+      release_tag:
+        description: If set, attach default-out files to this release tag
+        default: ""
+        required: false
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  fixture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build linux host binary
+        run: go build -o execenv ./cmd/execenv
+      - name: Bake fixture from testdata Dockerfile
+        run: |
+          dd if=/dev/zero of=vmlinux-fixture bs=1k count=64
+          ./execenv bake -out fixture-out -kernel vmlinux-fixture \
+            -id fixture -dockerfile bake/testdata/Dockerfile -agent ./execenv
+          test -f fixture-out/vmlinux
+          test -f fixture-out/rootfs.ext4
+          test -f fixture-out/catalog.json
+          python3 - <<'PY'
+          import json
+          doc = json.load(open("fixture-out/catalog.json"))
+          assert doc["id"] == "fixture"
+          assert len(doc["hash"]) == 64
+          print(doc["hash"])
+          PY
+      - name: Upload fixture
+        uses: actions/upload-artifact@v4
+        with:
+          name: execenv-fixture-image
+          path: |
+            fixture-out/vmlinux
+            fixture-out/rootfs.ext4
+            fixture-out/catalog.json
+            execenv
+      - name: Attach fixture catalog to GitHub Release
+        if: ${{ github.event_name == 'release' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            fixture-out/catalog.json
+            execenv
+
+  default:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_default == 'true' }}
+    runs-on: ${{ inputs.runner }}
+    needs: fixture
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Require a pinned kernel
+        env:
+          KERNEL_URL: ${{ secrets.KERNEL_URL }}
+        run: |
+          test -n "$KERNEL_URL" || { echo "set secret KERNEL_URL to a versioned vmlinux URL" >&2; exit 1; }
+          curl -fsSL "$KERNEL_URL" -o vmlinux
+          test -s vmlinux
+      - name: Bake requested catalog id
+        env:
+          SOURCE: ${{ inputs.source }}
+          DOCKERFILE: ${{ inputs.dockerfile }}
+          ID: ${{ inputs.id }}
+        run: |
+          go build -o execenv ./cmd/execenv
+          extra=""
+          if [ -n "$DOCKERFILE" ]; then
+            extra="-dockerfile $DOCKERFILE"
+          else
+            extra="-source $SOURCE"
+          fi
+          ./execenv bake -out default-out -kernel vmlinux \
+            -id "$ID" -agent ./execenv $extra
+          python3 - <<'PY'
+          import json
+          doc = json.load(open("default-out/catalog.json"))
+          assert doc["id"]
+          assert len(doc["hash"]) == 64
+          print(doc)
+          PY
+      - name: Upload default
+        uses: actions/upload-artifact@v4
+        with:
+          name: execenv-default-image
+          path: |
+            default-out/vmlinux
+            default-out/rootfs.ext4
+            default-out/catalog.json
+      - name: Attach default disk to a release
+        if: ${{ inputs.release_tag != '' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          files: |
+            default-out/vmlinux
+            default-out/rootfs.ext4
+            default-out/catalog.json

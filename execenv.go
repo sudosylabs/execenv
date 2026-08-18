@@ -8,6 +8,14 @@ import (
 // Image is a caller-facing name for an operator-preloaded guest runtime.
 type Image string
 
+// Paths the baked guest and the isolated adapter share. The image root
+// is read-only; GuestHome is a tmpfs the agent owns.
+const (
+	GuestHome = "/workspace"
+	GuestInit = "/usr/local/libexec/execenv-guest"
+	GuestBin  = "/usr/local/bin/execenv"
+)
+
 // ID is a caller-chosen occupancy identity on one host.
 type ID string
 

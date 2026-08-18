@@ -1,13 +1,11 @@
-// Command execenv starts a host daemon from a JSON config file, or the
-// guest-side agent that owns one grant's home and login shell.
+// Command execenv is the host daemon, the guest agent, and the operator
+// bake step. One binary is intentional: bake copies this program into the
+// guest disk; the guest starts it as `agent`; the host machine starts
+// it as the daemon. Bake never runs inside Ensure.
 //
 //	execenv -config /etc/execenv/host.json
-//	execenv agent -home /workspace -listen /run/execenv/agent.sock
-//
-// The daemon serves the execenv remote contract. It does not occupy grants
-// until it has bound its listen address. One binary is intentional: the
-// guest image starts this same program as `agent` so the host can dial a
-// real PTY.
+//	execenv agent -home /workspace
+//	execenv bake -out DIR -kernel vmlinux
 package main
 
 import (
@@ -23,14 +21,20 @@ import (
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "agent" {
-		os.Exit(runAgent(os.Args[2:]))
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "agent":
+			os.Exit(runAgent(os.Args[2:]))
+		case "bake":
+			os.Exit(runBake(os.Args[2:]))
+		}
 	}
 	configPath := flag.String("config", "", "path to the host JSON config")
 	flag.Parse()
 	if *configPath == "" {
 		fmt.Fprintln(os.Stderr, "usage: execenv -config <path>")
-		fmt.Fprintln(os.Stderr, "       execenv agent -home <dir> -listen <unix-socket>")
+		fmt.Fprintln(os.Stderr, "       execenv agent -home <dir> [-listen <unix-socket>]")
+		fmt.Fprintln(os.Stderr, "       execenv bake -out <dir> -kernel <vmlinux> [-source <image> | -dockerfile <file>]")
 		os.Exit(2)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
