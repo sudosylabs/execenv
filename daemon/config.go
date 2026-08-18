@@ -129,6 +129,13 @@ func (cfg *Config) validate() error {
 		if err := execenv.ValidateSpec(execenv.Spec{ID: "ok", Image: execenv.Image(image.ID)}); err != nil {
 			return execenv.Error("config", execenv.ErrInvalid)
 		}
+		if cfg.Adapter == adapterIsolated {
+			// Isolated grants boot these files. Hash is required so Ready
+			// never advertises an unverified rootfs.
+			if image.Kernel == "" || image.Path == "" || image.Hash == "" {
+				return execenv.Error("config", execenv.ErrInvalid)
+			}
+		}
 	}
 	if cfg.Slots <= 0 {
 		return execenv.Error("config", execenv.ErrInvalid)

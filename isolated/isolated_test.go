@@ -146,6 +146,7 @@ func TestExportedIdentifiersOmitHypervisorNames(t *testing.T) {
 		filepath.Join("launch.go"),
 		filepath.Join("env.go"),
 		filepath.Join("tree.go"),
+		filepath.Join("catalog.go"),
 	}
 	for _, name := range roots {
 		body, err := os.ReadFile(name)
@@ -163,13 +164,19 @@ func TestExportedIdentifiersOmitHypervisorNames(t *testing.T) {
 
 func testHost(t *testing.T, probe func() error, launch launcher) *Host {
 	t.Helper()
+	dir := t.TempDir()
+	return testHostWithImages(t, probe, launch,
+		writeCatalogImage(t, dir, "default", "root-default"),
+		writeCatalogImage(t, dir, "alt", "root-alt"),
+	)
+}
+
+func testHostWithImages(t *testing.T, probe func() error, launch launcher, images ...Image) *Host {
+	t.Helper()
 	h, err := New(Config{
 		WorkDir: t.TempDir(),
 		Slots:   2,
-		Images: []Image{
-			{ID: "default", Kernel: "vmlinux", Rootfs: "rootfs.ext4"},
-			{ID: "alt", Kernel: "vmlinux", Rootfs: "alt.ext4"},
-		},
+		Images:  images,
 	})
 	if err != nil {
 		t.Fatal(err)

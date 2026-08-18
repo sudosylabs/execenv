@@ -17,8 +17,9 @@ var (
 	_ execenv.GuestWriter = (*Host)(nil)
 )
 
-// Image is one catalog entry. Kernel and Rootfs are host paths to the
-// read-only boot artifacts. Hash is reserved for catalog verification.
+// Image is one catalog entry. Kernel and Rootfs are local paths to the
+// read-only boot artifacts. Hash is the lowercase hex SHA-256 of Rootfs.
+// Images are never pulled; a missing or mismatched file is simply absent.
 type Image struct {
 	ID     execenv.Image
 	Kernel string
@@ -90,9 +91,9 @@ func (h *Host) Capabilities() execenv.Capabilities {
 	return execenv.Capabilities{Isolated: true, Freeze: true}
 }
 
-// Ready fails closed (Usable=false) when the isolation device or supervisor
-// processes are missing. Configured image ids are still listed so an operator
-// can see the catalog while the machine is not yet usable.
+// Ready fails closed (Usable=false) when isolation is missing. Images is
+// only the ids whose kernel and rootfs are on disk and whose Hash matches.
+// One bad file does not hide the rest of the catalog.
 func (h *Host) Ready(ctx context.Context) (execenv.Report, error) {
 	if err := ctx.Err(); err != nil {
 		return execenv.Report{}, execenv.Error("ready", err)
@@ -100,10 +101,7 @@ func (h *Host) Ready(ctx context.Context) (execenv.Report, error) {
 	usable := h.probe() == nil
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	ids := make([]execenv.Image, 0, len(h.images))
-	for id := range h.images {
-		ids = append(ids, id)
-	}
+	ids := h.presentIDs()
 	free := h.slots - len(h.grants)
 	if free < 0 {
 		free = 0
@@ -124,7 +122,8 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	image, ok := h.images[spec.Image]
+	// Re-check the files at Ensure time. Do not fetch or repair them.
+	image, ok := h.verified(spec.Image)
 	if !ok {
 		return nil, execenv.Error("ensure", execenv.ErrUnknownImage)
 	}
