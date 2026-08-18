@@ -5,6 +5,31 @@
       "id": "fixture",
       "rootfs": "rootfs-fixture.ext4",
       "hash": ""
+    },
+    {
+      "id": "python",
+      "rootfs": "rootfs-python.ext4",
+      "hash": ""
+    },
+    {
+      "id": "node",
+      "rootfs": "rootfs-node.ext4",
+      "hash": ""
+    },
+    {
+      "id": "go",
+      "rootfs": "rootfs-go.ext4",
+      "hash": ""
+    },
+    {
+      "id": "java",
+      "rootfs": "rootfs-java.ext4",
+      "hash": ""
+    },
+    {
+      "id": "default",
+      "rootfs": "rootfs-default.ext4",
+      "hash": ""
     }
   ]
 }

@@ -1,0 +1,61 @@
+#!/bin/sh
+# Build the GitHub Release layout from already-baked disks. CI only.
+# Input DIR must contain a shared vmlinux and rootfs-<id>.ext4 files.
+# Writes DIR/index.json and DIR/SHA256SUMS. Does not occupy grants.
+set -eu
+
+usage() {
+	printf '%s\n' "usage: scripts/assemble-release DIR" >&2
+	exit 2
+}
+
+[ $# -eq 1 ] || usage
+DIR=$1
+[ -d "$DIR" ] || { printf '%s\n' "not a directory: $DIR" >&2; exit 1; }
+[ -f "$DIR/vmlinux" ] || { printf '%s\n' "missing $DIR/vmlinux" >&2; exit 1; }
+
+need_hash() {
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum "$1" | awk '{print $1}'
+	elif command -v shasum >/dev/null 2>&1; then
+		shasum -a 256 "$1" | awk '{print $1}'
+	else
+		printf '%s\n' "assemble-release requires sha256sum" >&2
+		exit 1
+	fi
+}
+
+digest() {
+	# Same as isolated.Digest: kernel bytes then rootfs bytes.
+	if command -v sha256sum >/dev/null 2>&1; then
+		cat -- "$1" "$2" | sha256sum | awk '{print $1}'
+	else
+		cat -- "$1" "$2" | shasum -a 256 | awk '{print $1}'
+	fi
+}
+
+INDEX=$DIR/index.json
+{
+	printf '{\n  "kernel": "vmlinux",\n  "images": [\n'
+	first=1
+	for rootfs in "$DIR"/rootfs-*.ext4; do
+		[ -f "$rootfs" ] || continue
+		base=$(basename "$rootfs")
+		id=${base#rootfs-}
+		id=${id%.ext4}
+		hash=$(digest "$DIR/vmlinux" "$rootfs")
+		if [ "$first" -eq 0 ]; then
+			printf ',\n'
+		fi
+		first=0
+		printf '    {"id": "%s", "rootfs": "%s", "hash": "%s"}' "$id" "$base" "$hash"
+	done
+	printf '\n  ]\n}\n'
+} >"$INDEX"
+
+SUMS=$DIR/SHA256SUMS
+: >"$SUMS"
+for f in "$DIR"/vmlinux "$DIR"/rootfs-*.ext4 "$DIR"/execenv "$DIR"/execenvctl "$INDEX"; do
+	[ -f "$f" ] || continue
+	printf '%s  %s\n' "$(need_hash "$f")" "$(basename "$f")" >>"$SUMS"
+done

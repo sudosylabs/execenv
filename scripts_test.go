@@ -12,6 +12,78 @@ import (
 	"github.com/sudosylabs/execenv/isolated"
 )
 
+func TestFirstLanguageRecipesExist(t *testing.T) {
+	t.Parallel()
+	wantFROM := map[string]string{
+		"python": "FROM python:",
+		"node":   "FROM node:",
+		"go":     "FROM golang:",
+		"java":   "FROM eclipse-temurin:",
+	}
+	for id, prefix := range wantFROM {
+		recipe := filepath.Join("catalog", id, "recipe.json")
+		if _, err := os.Stat(recipe); err != nil {
+			t.Fatalf("%s: %v", recipe, err)
+		}
+		df := filepath.Join("catalog", id, "Dockerfile")
+		body, err := os.ReadFile(df)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(body), prefix) {
+			t.Fatalf("%s does not FROM official slim image: %s", df, body)
+		}
+		if strings.Contains(string(body), "execenv") {
+			t.Fatalf("%s installs the agent; bake must inject it", df)
+		}
+	}
+	if _, err := os.Stat(filepath.Join("catalog", "default", "recipe.json")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join("catalog", "default", "Dockerfile")); !os.IsNotExist(err) {
+		t.Fatal("default must not have a Dockerfile; it uses the universal-class source")
+	}
+}
+
+func TestAssembleReleaseWritesIndexAndChecksums(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	kernel := filepath.Join(dir, "vmlinux")
+	rootfs := filepath.Join(dir, "rootfs-python.ext4")
+	if err := os.WriteFile(kernel, []byte("kernel"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rootfs, []byte("disk"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "execenv"), []byte("bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(filepath.Join("scripts", "assemble-release"), dir)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("assemble-release: %v\n%s", err, out)
+	}
+	idx, err := os.ReadFile(filepath.Join(dir, "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum, err := isolated.Digest(kernel, rootfs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(idx), `"id": "python"`) || !strings.Contains(string(idx), sum) {
+		t.Fatalf("index = %s", idx)
+	}
+	sums, err := os.ReadFile(filepath.Join(dir, "SHA256SUMS"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(sums), "execenv") || !strings.Contains(string(sums), "index.json") {
+		t.Fatalf("SHA256SUMS = %s", sums)
+	}
+}
+
 func TestExecenvDoesNotImportManager(t *testing.T) {
 	t.Parallel()
 	cmd := exec.Command("go", "list", "-f", "{{ join .Imports \"\\n\" }}", "./cmd/execenv")
@@ -63,6 +135,9 @@ func TestBakeScriptIsCIOnlyAndFailsClosed(t *testing.T) {
 	}
 	if strings.Contains(text, "execenv bake") {
 		t.Fatal("scripts/bake still invokes an execenv bake command")
+	}
+	if !strings.Contains(text, "--platform linux/amd64") {
+		t.Fatal("scripts/bake does not pin linux/amd64")
 	}
 	dir := t.TempDir()
 	kernel := filepath.Join(dir, "k")

@@ -1,27 +1,22 @@
 # CI-only bake. The grant host never runs this. Docker and mkfs.ext4 are
 # installed on the runner here; they are not assumed to be present.
-# Fixture smoke always runs. The universal-class default disk is tens of
-# gigabytes: set runner to a large label and publish_default=true, and
-# provide KERNEL_URL as a versioned kernel download.
+# Slim language ids bake on ubuntu-latest. The universal-class default
+# disk is tens of gigabytes: set runner to a large label and
+# publish_default=true, and provide KERNEL_URL as a versioned kernel.
 name: publish-image
 
 on:
+  pull_request:
+    paths:
+      - "catalog/**"
+      - "scripts/bake"
+      - "scripts/assemble-release"
+      - "scripts/guest.sh"
+      - ".github/workflows/publish-image.yml"
   workflow_dispatch:
     inputs:
-      id:
-        description: Catalog id for the optional default bake
-        default: default
-        required: true
-      source:
-        description: Container image or image@sha256:... pin
-        default: mcr.microsoft.com/devcontainers/universal:linux
-        required: true
-      dockerfile:
-        description: Operator Dockerfile (do not also set a custom source)
-        default: ""
-        required: false
       publish_default:
-        description: Bake the requested source (needs KERNEL_URL and enough disk)
+        description: Bake the universal-class default disk (needs KERNEL_URL)
         default: "false"
         required: true
       runner:
@@ -39,10 +34,12 @@ permissions:
   contents: write
 
 jobs:
-  fixture:
+  catalog:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -56,45 +53,91 @@ jobs:
           fi
           docker info
           command -v mkfs.ext4
-      - name: Build linux host binary
-        run: go build -o execenv ./cmd/execenv
-      - name: Bake fixture
+      - name: Build linux binaries
         run: |
-          chmod +x scripts/bake
-          dd if=/dev/zero of=vmlinux-fixture bs=1k count=64
-          scripts/bake --out fixture-out --kernel vmlinux-fixture \
-            --id fixture --dockerfile scripts/testdata/Dockerfile --agent ./execenv
-          test -f fixture-out/vmlinux
-          test -f fixture-out/rootfs.ext4
-          test -f fixture-out/catalog.json
+          GOOS=linux GOARCH=amd64 go build -o execenv ./cmd/execenv
+          GOOS=linux GOARCH=amd64 go build -o execenvctl ./cmd/execenvctl
+      - name: Choose recipe ids
+        id: ids
+        run: |
+          ids="fixture"
+          if [ "${{ github.event_name }}" = "release" ]; then
+            ids="fixture python node go java"
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            changed=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD -- catalog || true)
+            extra=""
+            for id in python node go java fixture; do
+              echo "$changed" | grep -q "catalog/$id/" && extra="$extra $id"
+            done
+            if [ -n "$extra" ]; then
+              ids=$(echo "fixture $extra" | awk '{for(i=1;i<=NF;i++) if(!seen[$i]++) printf "%s ", $i}')
+            fi
+          fi
+          echo "ids=$ids" >> "$GITHUB_OUTPUT"
+          echo "baking: $ids"
+      - name: Bake selected ids
+        env:
+          KERNEL_URL: ${{ secrets.KERNEL_URL }}
+        run: |
+          chmod +x scripts/bake scripts/assemble-release
+          mkdir -p release-out
+          if [ "${{ github.event_name }}" = "release" ]; then
+            test -n "$KERNEL_URL" || { echo "set secret KERNEL_URL to a versioned vmlinux URL" >&2; exit 1; }
+            curl -fsSL "$KERNEL_URL" -o release-out/vmlinux
+            test -s release-out/vmlinux
+          else
+            # PR/smoke only. Never attach this blob to a release.
+            dd if=/dev/zero of=release-out/vmlinux bs=1k count=64
+          fi
+          for id in ${{ steps.ids.outputs.ids }}; do
+            df=catalog/$id/Dockerfile
+            if [ "$id" = "fixture" ] && [ ! -f "$df" ]; then
+              df=scripts/testdata/Dockerfile
+            fi
+            if [ ! -f "$df" ]; then
+              echo "skip $id: no Dockerfile (default is a separate job)" >&2
+              continue
+            fi
+            scripts/bake --out "bake-$id" --kernel release-out/vmlinux \
+              --id "$id" --dockerfile "$df" --agent ./execenv
+            cp "bake-$id/rootfs.ext4" "release-out/rootfs-$id.ext4"
+          done
+          cp execenv execenvctl release-out/
+          scripts/assemble-release release-out
           python3 - <<'PY'
           import json
-          doc = json.load(open("fixture-out/catalog.json"))
-          assert doc["id"] == "fixture"
-          assert len(doc["hash"]) == 64
-          print(doc["hash"])
+          doc = json.load(open("release-out/index.json"))
+          assert doc["kernel"] == "vmlinux"
+          assert doc["images"]
+          for img in doc["images"]:
+              assert len(img["hash"]) == 64, img
+          print(doc)
           PY
-      - name: Upload fixture
+      - name: Upload release layout
         uses: actions/upload-artifact@v4
         with:
-          name: execenv-fixture-image
-          path: |
-            fixture-out/vmlinux
-            fixture-out/rootfs.ext4
-            fixture-out/catalog.json
-            execenv
-      - name: Attach fixture catalog to GitHub Release
+          name: execenv-catalog
+          path: release-out/
+      - name: Attach catalog to GitHub Release
         if: ${{ github.event_name == 'release' }}
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            fixture-out/catalog.json
-            execenv
+            release-out/vmlinux
+            release-out/index.json
+            release-out/SHA256SUMS
+            release-out/execenv
+            release-out/execenvctl
+            release-out/rootfs-fixture.ext4
+            release-out/rootfs-python.ext4
+            release-out/rootfs-node.ext4
+            release-out/rootfs-go.ext4
+            release-out/rootfs-java.ext4
 
   default:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_default == 'true' }}
     runs-on: ${{ inputs.runner }}
-    needs: fixture
+    needs: catalog
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -117,36 +160,21 @@ jobs:
           test -n "$KERNEL_URL" || { echo "set secret KERNEL_URL to a versioned vmlinux URL" >&2; exit 1; }
           curl -fsSL "$KERNEL_URL" -o vmlinux
           test -s vmlinux
-      - name: Bake requested catalog id
-        env:
-          SOURCE: ${{ inputs.source }}
-          DOCKERFILE: ${{ inputs.dockerfile }}
-          ID: ${{ inputs.id }}
+      - name: Bake default catalog id
         run: |
-          go build -o execenv ./cmd/execenv
+          GOOS=linux GOARCH=amd64 go build -o execenv ./cmd/execenv
           chmod +x scripts/bake
-          extra=""
-          if [ -n "$DOCKERFILE" ]; then
-            extra="--dockerfile $DOCKERFILE"
-          else
-            extra="--source $SOURCE"
-          fi
           scripts/bake --out default-out --kernel vmlinux \
-            --id "$ID" --agent ./execenv $extra
-          python3 - <<'PY'
-          import json
-          doc = json.load(open("default-out/catalog.json"))
-          assert doc["id"]
-          assert len(doc["hash"]) == 64
-          print(doc)
-          PY
+            --id default --agent ./execenv \
+            --source mcr.microsoft.com/devcontainers/universal:linux
+          cp default-out/rootfs.ext4 default-out/rootfs-default.ext4
       - name: Upload default
         uses: actions/upload-artifact@v4
         with:
           name: execenv-default-image
           path: |
             default-out/vmlinux
-            default-out/rootfs.ext4
+            default-out/rootfs-default.ext4
             default-out/catalog.json
       - name: Attach default disk to a release
         if: ${{ inputs.release_tag != '' }}
@@ -155,5 +183,5 @@ jobs:
           tag_name: ${{ inputs.release_tag }}
           files: |
             default-out/vmlinux
-            default-out/rootfs.ext4
+            default-out/rootfs-default.ext4
             default-out/catalog.json

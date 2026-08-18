@@ -1,0 +1,4 @@
+{
+  "id": "default",
+  "description": "Universal-class disk. Source is the Codespaces-class container; bake, not a Dockerfile."
+}

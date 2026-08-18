@@ -87,12 +87,12 @@ trap 'rm -rf "$STAGING" "$OUT/root.tar"' EXIT
 REF=$SOURCE
 if [ -n "$DOCKERFILE" ]; then
 	REF=execenv-bake:local
-	"$CLI" build -f "$DOCKERFILE" -t "$REF" "$(dirname "$DOCKERFILE")"
+	"$CLI" build --platform linux/amd64 -f "$DOCKERFILE" -t "$REF" "$(dirname "$DOCKERFILE")"
 fi
 
 NAME=execenv-bake-export
 "$CLI" rm -f "$NAME" >/dev/null 2>&1 || true
-"$CLI" create --name "$NAME" "$REF" >/dev/null
+"$CLI" create --platform linux/amd64 --name "$NAME" "$REF" >/dev/null
 "$CLI" export "$NAME" -o "$OUT/root.tar"
 "$CLI" rm -f "$NAME" >/dev/null
 tar -xf "$OUT/root.tar" -C "$STAGING"
