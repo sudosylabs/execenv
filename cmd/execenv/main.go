@@ -1,11 +1,11 @@
-// Command execenv is the host daemon, the guest agent, and the operator
-// bake step. One binary is intentional: bake copies this program into the
-// guest disk; the guest starts it as `agent`; the host machine starts
-// it as the daemon. Bake never runs inside Ensure.
+// Command execenv is the host daemon and the guest agent. One binary is
+// intentional: CI copies this program into the guest disk; the guest
+// starts it as `agent`; the host machine starts it as the daemon.
 //
 //	execenv -config /etc/execenv/host.json
 //	execenv agent -home /workspace
-//	execenv bake -out DIR -kernel vmlinux
+//
+// Catalog disks are produced by scripts/bake in CI, not by this command.
 package main
 
 import (
@@ -21,20 +21,14 @@ import (
 )
 
 func main() {
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "agent":
-			os.Exit(runAgent(os.Args[2:]))
-		case "bake":
-			os.Exit(runBake(os.Args[2:]))
-		}
+	if len(os.Args) > 1 && os.Args[1] == "agent" {
+		os.Exit(runAgent(os.Args[2:]))
 	}
 	configPath := flag.String("config", "", "path to the host JSON config")
 	flag.Parse()
 	if *configPath == "" {
 		fmt.Fprintln(os.Stderr, "usage: execenv -config <path>")
 		fmt.Fprintln(os.Stderr, "       execenv agent -home <dir> [-listen <unix-socket>]")
-		fmt.Fprintln(os.Stderr, "       execenv bake -out <dir> -kernel <vmlinux> [-source <image> | -dockerfile <file>]")
 		os.Exit(2)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)

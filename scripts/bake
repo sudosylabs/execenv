@@ -1,0 +1,141 @@
+#!/bin/sh
+# Bake a catalog disk in CI. This is not an execenv subcommand and is not
+# installed on the grant host. The host only needs vmlinux, rootfs.ext4,
+# and catalog.json.
+#
+#   scripts/bake --out DIR --kernel vmlinux --agent ./execenv
+#   scripts/bake --out DIR --kernel vmlinux --agent ./execenv \
+#     --dockerfile scripts/testdata/Dockerfile --id fixture
+#
+# Requires docker or podman, mkfs.ext4, tar, and a linux execenv binary.
+set -eu
+
+DEFAULT_ID=default
+DEFAULT_SOURCE=mcr.microsoft.com/devcontainers/universal:linux
+KERNEL_NAME=vmlinux
+ROOTFS_NAME=rootfs.ext4
+
+usage() {
+	printf '%s\n' \
+		"usage: scripts/bake --out DIR --kernel VMLINUX --agent LINUX_EXECENV" \
+		"       [--source IMAGE | --dockerfile FILE] [--id default] [--size 20G]" \
+		"  --source defaults to ${DEFAULT_SOURCE}" \
+		"  --size defaults to twice the exported tree plus 64MiB" >&2
+	exit 2
+}
+
+die() {
+	printf '%s\n' "$*" >&2
+	exit 1
+}
+
+need_cmd() {
+	command -v "$1" >/dev/null 2>&1 || die "bake requires $1 (install it on the CI runner; it is not needed on the grant host)"
+}
+
+OUT=
+KERNEL=
+AGENT=
+SOURCE=
+DOCKERFILE=
+ID=$DEFAULT_ID
+SIZE=
+
+while [ $# -gt 0 ]; do
+	case $1 in
+	--out) OUT=${2:-}; shift 2 ;;
+	--kernel) KERNEL=${2:-}; shift 2 ;;
+	--agent) AGENT=${2:-}; shift 2 ;;
+	--source) SOURCE=${2:-}; shift 2 ;;
+	--dockerfile) DOCKERFILE=${2:-}; shift 2 ;;
+	--id) ID=${2:-}; shift 2 ;;
+	--size) SIZE=${2:-}; shift 2 ;;
+	-h | --help) usage ;;
+	*) usage ;;
+	esac
+done
+
+[ -n "$OUT" ] && [ -n "$KERNEL" ] && [ -n "$AGENT" ] || usage
+[ -n "$SOURCE" ] && [ -n "$DOCKERFILE" ] && die "--source and --dockerfile are mutually exclusive"
+[ -f "$KERNEL" ] || die "kernel is not a file: $KERNEL"
+[ -f "$AGENT" ] || die "agent is not a file: $AGENT"
+[ -z "$DOCKERFILE" ] || [ -f "$DOCKERFILE" ] || die "dockerfile is not a file: $DOCKERFILE"
+
+if command -v docker >/dev/null 2>&1; then
+	CLI=docker
+elif command -v podman >/dev/null 2>&1; then
+	CLI=podman
+else
+	die "bake requires docker or podman on the CI runner (not on the grant host)"
+fi
+need_cmd tar
+need_cmd mkfs.ext4
+need_cmd sha256sum
+
+# ELF magic: CI must pass a linux execenv, not a macOS/Windows binary.
+elf=$(dd if="$AGENT" bs=4 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')
+[ "$elf" = "7f454c46" ] || die "agent is not a linux ELF binary (build GOOS=linux)"
+
+if [ -z "$SOURCE" ] && [ -z "$DOCKERFILE" ]; then
+	SOURCE=$DEFAULT_SOURCE
+fi
+
+mkdir -p "$OUT"
+STAGING=$(mktemp -d "${OUT}/staging.XXXXXX")
+trap 'rm -rf "$STAGING" "$OUT/root.tar"' EXIT
+
+REF=$SOURCE
+if [ -n "$DOCKERFILE" ]; then
+	REF=execenv-bake:local
+	"$CLI" build -f "$DOCKERFILE" -t "$REF" "$(dirname "$DOCKERFILE")"
+fi
+
+NAME=execenv-bake-export
+"$CLI" rm -f "$NAME" >/dev/null 2>&1 || true
+"$CLI" create --name "$NAME" "$REF" >/dev/null
+"$CLI" export "$NAME" -o "$OUT/root.tar"
+"$CLI" rm -f "$NAME" >/dev/null
+tar -xf "$OUT/root.tar" -C "$STAGING"
+rm -f "$OUT/root.tar"
+
+mkdir -p "$STAGING/usr/local/bin" "$STAGING/usr/local/libexec" "$STAGING/workspace"
+cp "$AGENT" "$STAGING/usr/local/bin/execenv"
+chmod 755 "$STAGING/usr/local/bin/execenv"
+here=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+cp "$here/guest.sh" "$STAGING/usr/local/libexec/execenv-guest"
+chmod 755 "$STAGING/usr/local/libexec/execenv-guest"
+
+if [ -z "$SIZE" ]; then
+	bytes=$(du -sk "$STAGING" | awk '{print $1 * 1024}')
+	SIZE=$((bytes * 2 + 64 * 1024 * 1024))
+	if [ "$SIZE" -lt $((64 * 1024 * 1024)) ]; then
+		SIZE=$((64 * 1024 * 1024))
+	fi
+else
+	case $SIZE in
+	*[Kk]) SIZE=$((${SIZE%?} * 1024)) ;;
+	*[Mm]) SIZE=$((${SIZE%?} * 1024 * 1024)) ;;
+	*[Gg]) SIZE=$((${SIZE%?} * 1024 * 1024 * 1024)) ;;
+	esac
+fi
+
+ROOTFS=$OUT/$ROOTFS_NAME
+KERNEL_OUT=$OUT/$KERNEL_NAME
+dd if=/dev/zero of="$ROOTFS" bs=1 count=0 seek="$SIZE" 2>/dev/null
+mkfs.ext4 -q -F -d "$STAGING" "$ROOTFS"
+cp "$KERNEL" "$KERNEL_OUT"
+
+HASH=$(cat "$KERNEL_OUT" "$ROOTFS" | sha256sum | awk '{print $1}')
+PIN=$SOURCE
+if [ -n "$DOCKERFILE" ]; then
+	PIN=$DOCKERFILE
+fi
+INSPECT=$("$CLI" image inspect --format '{{.Id}}' "$REF" 2>/dev/null || true)
+[ -n "$INSPECT" ] && PIN=$INSPECT
+
+# catalog.json is what host.json images[] consumes. Hash is kernel then rootfs.
+printf '{\n  "id": "%s",\n  "kernel": "%s",\n  "rootfs": "%s",\n  "hash": "%s",\n  "source": "%s"\n}\n' \
+	"$ID" "$KERNEL_NAME" "$ROOTFS_NAME" "$HASH" "$PIN" >"$OUT/catalog.json"
+
+printf 'id=%s kernel=%s rootfs=%s hash=%s source=%s\n' \
+	"$ID" "$KERNEL_OUT" "$ROOTFS" "$HASH" "$PIN"

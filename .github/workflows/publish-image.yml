@@ -1,9 +1,8 @@
-# Publish baked catalog files. Fixture smoke always runs on a small
-# runner. The universal-class default disk is tens of gigabytes: set
-# runner to a large label and publish_default=true, and provide
-# KERNEL_URL as a versioned kernel download. Source may be a digest
-# (image@sha256:...) to pin the container; catalog.json records the
-# image id and the kernel-then-rootfs hash.
+# CI-only bake. The grant host never runs this. Docker and mkfs.ext4 are
+# installed on the runner here; they are not assumed to be present.
+# Fixture smoke always runs. The universal-class default disk is tens of
+# gigabytes: set runner to a large label and publish_default=true, and
+# provide KERNEL_URL as a versioned kernel download.
 name: publish-image
 
 on:
@@ -47,13 +46,24 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Install bake tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y e2fsprogs
+          if ! command -v docker >/dev/null || ! docker info >/dev/null 2>&1; then
+            sudo apt-get install -y docker.io
+            sudo systemctl start docker || sudo service docker start
+          fi
+          docker info
+          command -v mkfs.ext4
       - name: Build linux host binary
         run: go build -o execenv ./cmd/execenv
-      - name: Bake fixture from testdata Dockerfile
+      - name: Bake fixture
         run: |
+          chmod +x scripts/bake
           dd if=/dev/zero of=vmlinux-fixture bs=1k count=64
-          ./execenv bake -out fixture-out -kernel vmlinux-fixture \
-            -id fixture -dockerfile bake/testdata/Dockerfile -agent ./execenv
+          scripts/bake --out fixture-out --kernel vmlinux-fixture \
+            --id fixture --dockerfile scripts/testdata/Dockerfile --agent ./execenv
           test -f fixture-out/vmlinux
           test -f fixture-out/rootfs.ext4
           test -f fixture-out/catalog.json
@@ -90,6 +100,16 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Install bake tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y e2fsprogs
+          if ! command -v docker >/dev/null || ! docker info >/dev/null 2>&1; then
+            sudo apt-get install -y docker.io
+            sudo systemctl start docker || sudo service docker start
+          fi
+          docker info
+          command -v mkfs.ext4
       - name: Require a pinned kernel
         env:
           KERNEL_URL: ${{ secrets.KERNEL_URL }}
@@ -104,14 +124,15 @@ jobs:
           ID: ${{ inputs.id }}
         run: |
           go build -o execenv ./cmd/execenv
+          chmod +x scripts/bake
           extra=""
           if [ -n "$DOCKERFILE" ]; then
-            extra="-dockerfile $DOCKERFILE"
+            extra="--dockerfile $DOCKERFILE"
           else
-            extra="-source $SOURCE"
+            extra="--source $SOURCE"
           fi
-          ./execenv bake -out default-out -kernel vmlinux \
-            -id "$ID" -agent ./execenv $extra
+          scripts/bake --out default-out --kernel vmlinux \
+            --id "$ID" --agent ./execenv $extra
           python3 - <<'PY'
           import json
           doc = json.load(open("default-out/catalog.json"))
