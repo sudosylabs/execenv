@@ -2,6 +2,9 @@
 //
 //	execenvctl bootstrap
 //	execenvctl install <id>
+//	execenvctl list
+//	execenvctl remove <id>
+//	execenvctl status
 //	execenvctl upgrade
 //
 // This is not the daemon and not the guest agent. It does not occupy
@@ -38,6 +41,9 @@ func newRoot() *cobra.Command {
 	root.PersistentFlags().StringVar(&opts.ReleaseURL, "release-url", "", "release asset base URL (or EXECENV_RELEASE_URL)")
 	root.AddCommand(newBootstrap(&opts))
 	root.AddCommand(newInstall(&opts))
+	root.AddCommand(newList(&opts))
+	root.AddCommand(newRemove(&opts))
+	root.AddCommand(newStatus(&opts))
 	root.AddCommand(newUpgrade(&opts))
 	return root
 }
@@ -70,6 +76,39 @@ func newInstall(opts *ctl.Options) *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return ctl.Install(*opts, args[0], cmd.OutOrStdout())
+		},
+	}
+}
+
+func newList(opts *ctl.Options) *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "Show installed and published catalog ids",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return ctl.List(*opts, cmd.OutOrStdout())
+		},
+	}
+}
+
+func newRemove(opts *ctl.Options) *cobra.Command {
+	return &cobra.Command{
+		Use:   "remove id",
+		Short: "Remove one catalog image from this host",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return ctl.Remove(*opts, args[0], cmd.OutOrStdout())
+		},
+	}
+}
+
+func newStatus(opts *ctl.Options) *cobra.Command {
+	return &cobra.Command{
+		Use:   "status",
+		Short: "Show device, unit, and installed ids",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return ctl.Status(*opts, cmd.OutOrStdout())
 		},
 	}
 }
