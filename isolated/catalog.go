@@ -10,19 +10,41 @@ import (
 	"github.com/sudosylabs/execenv"
 )
 
-func validDigest(hash string) bool {
+// ValidDigest reports whether hash is a 64-digit hex SHA-256.
+func ValidDigest(hash string) bool {
 	raw, err := hex.DecodeString(hash)
 	return err == nil && len(raw) == sha256.Size
+}
+
+// Digest is the catalog hash: lowercase hex SHA-256 of the kernel file
+// followed by the root filesystem file.
+func Digest(kernel, rootfs string) (string, error) {
+	sum := sha256.New()
+	for _, path := range []string{kernel, rootfs} {
+		if !regularFile(path) {
+			return "", os.ErrNotExist
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			return "", err
+		}
+		_, err = io.Copy(sum, file)
+		_ = file.Close()
+		if err != nil {
+			return "", err
+		}
+	}
+	return hex.EncodeToString(sum.Sum(nil)), nil
 }
 
 // matchesCatalog reports whether both boot files are regular files and
 // their combined digest equals Hash. A missing or corrupt artifact is
 // false, never a panic. I/O happens here so callers must not hold Host.mu.
 func (img Image) matchesCatalog() bool {
-	if !validDigest(img.Hash) || img.Kernel == "" || img.Rootfs == "" {
+	if !ValidDigest(img.Hash) || img.Kernel == "" || img.Rootfs == "" {
 		return false
 	}
-	sum, err := digestFiles(img.Kernel, img.Rootfs)
+	sum, err := Digest(img.Kernel, img.Rootfs)
 	if err != nil {
 		return false
 	}
@@ -50,25 +72,6 @@ func verifiedIDs(images []Image) []execenv.Image {
 		}
 	}
 	return ids
-}
-
-func digestFiles(paths ...string) (string, error) {
-	sum := sha256.New()
-	for _, path := range paths {
-		if !regularFile(path) {
-			return "", os.ErrNotExist
-		}
-		file, err := os.Open(path)
-		if err != nil {
-			return "", err
-		}
-		_, err = io.Copy(sum, file)
-		_ = file.Close()
-		if err != nil {
-			return "", err
-		}
-	}
-	return hex.EncodeToString(sum.Sum(nil)), nil
 }
 
 func regularFile(path string) bool {

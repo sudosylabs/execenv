@@ -5,8 +5,6 @@
 package daemon
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/isolated"
 	"github.com/sudosylabs/execenv/remote"
 )
 
@@ -41,8 +40,7 @@ type Config struct {
 	Supervisor string `json:"supervisor"`
 	Images   []Image `json:"images"`
 	Slots    int     `json:"slots"`
-	// Resource defaults are accepted now so operators can write one file.
-	// The isolated adapter (later) honors them; memory ignores hardware.
+	// Isolated grants use these as machine defaults. Memory ignores them.
 	CPUMillis   int           `json:"cpu_millis"`
 	MemoryBytes int64         `json:"memory_bytes"`
 	DiskBytes   int64         `json:"disk_bytes"`
@@ -52,13 +50,36 @@ type Config struct {
 	GraceText   string        `json:"grace"`
 }
 
-// Image is one catalog entry. Memory only needs ID. The isolated adapter
-// uses Kernel and Path as the read-only boot artifacts.
+// Image is one catalog entry. Memory only needs ID. Isolated grants use
+// Kernel and Rootfs. JSON may say "rootfs" or the older "path" key.
 type Image struct {
 	ID     string `json:"id"`
 	Kernel string `json:"kernel"`
+	Rootfs string `json:"rootfs"`
+	Hash   string `json:"hash"`
+}
+
+type imageJSON struct {
+	ID     string `json:"id"`
+	Kernel string `json:"kernel"`
+	Rootfs string `json:"rootfs"`
 	Path   string `json:"path"`
 	Hash   string `json:"hash"`
+}
+
+func (img *Image) UnmarshalJSON(data []byte) error {
+	var raw imageJSON
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	img.ID = raw.ID
+	img.Kernel = raw.Kernel
+	img.Hash = raw.Hash
+	img.Rootfs = raw.Rootfs
+	if img.Rootfs == "" {
+		img.Rootfs = raw.Path
+	}
+	return nil
 }
 
 // Load reads and validates a JSON config file. It does not listen and does
@@ -134,7 +155,7 @@ func (cfg *Config) validate() error {
 		if cfg.Adapter == adapterIsolated {
 			// Isolated grants boot these files. Hash is SHA-256 of kernel
 			// then rootfs, 64 hex digits, so Ready never advertises junk.
-			if image.Kernel == "" || image.Path == "" || !validImageDigest(image.Hash) {
+			if image.Kernel == "" || image.Rootfs == "" || !isolated.ValidDigest(image.Hash) {
 				return execenv.Error("config", execenv.ErrInvalid)
 			}
 		}
@@ -150,11 +171,6 @@ func (cfg *Config) validate() error {
 		cfg.Grace = grace
 	}
 	return nil
-}
-
-func validImageDigest(hash string) bool {
-	raw, err := hex.DecodeString(hash)
-	return err == nil && len(raw) == sha256.Size
 }
 
 func (cfg Config) security() remote.Security {

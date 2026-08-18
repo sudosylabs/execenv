@@ -70,7 +70,10 @@ func New(cfg Config) (*Host, error) {
 	}
 	images := make(map[execenv.Image]Image, len(cfg.Images))
 	for _, image := range cfg.Images {
-		if image.ID == "" {
+		if image.ID == "" || image.Kernel == "" || image.Rootfs == "" || !ValidDigest(image.Hash) {
+			return nil, execenv.Error("isolated", execenv.ErrInvalid)
+		}
+		if _, dup := images[image.ID]; dup {
 			return nil, execenv.Error("isolated", execenv.ErrInvalid)
 		}
 		images[image.ID] = image
@@ -125,7 +128,8 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 	h.mu.Lock()
 	image, ok := h.images[spec.Image]
 	h.mu.Unlock()
-	// Re-check the files off the lock. Do not fetch or repair them.
+	// Unverified or missing files are reported as unknown so callers
+	// cannot tell a typo from a corrupt disk, and no host path leaks.
 	if !ok || !image.matchesCatalog() {
 		return nil, execenv.Error("ensure", execenv.ErrUnknownImage)
 	}

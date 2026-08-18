@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/isolated"
 )
 
 func TestLoadMissingFile(t *testing.T) {
@@ -127,6 +128,68 @@ func TestLoadIsolatedRequiresWorkDir(t *testing.T) {
 	_, err = newAdapter(cfg)
 	if !errors.Is(err, execenv.ErrInvalid) {
 		t.Fatalf("newAdapter() error = %v, want ErrInvalid", err)
+	}
+}
+
+func TestLoadAcceptsRootfsKey(t *testing.T) {
+	t.Parallel()
+	cfg, err := Load(writeConfig(t, `{
+		"listen": "127.0.0.1:0",
+		"token": "secret",
+		"security": "insecure_local",
+		"adapter": "isolated",
+		"work_dir": "/tmp/execenv",
+		"images": [{"id": "default", "kernel": "vmlinux", "rootfs": "disk.ext4", "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
+		"slots": 2
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Images[0].Rootfs != "disk.ext4" {
+		t.Fatalf("Rootfs = %q", cfg.Images[0].Rootfs)
+	}
+}
+
+func TestNewAdapterReadyOmitsUnverifiedImage(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	kernel := filepath.Join(dir, "vmlinux")
+	rootfs := filepath.Join(dir, "disk.ext4")
+	if err := os.WriteFile(kernel, []byte("k"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rootfs, []byte("r"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum, err := isolated.Digest(kernel, rootfs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(writeConfig(t, `{
+		"listen": "127.0.0.1:0",
+		"token": "secret",
+		"security": "insecure_local",
+		"adapter": "isolated",
+		"work_dir": "`+dir+`",
+		"images": [
+			{"id": "default", "kernel": "`+kernel+`", "rootfs": "`+rootfs+`", "hash": "`+sum+`"},
+			{"id": "missing", "kernel": "`+kernel+`", "rootfs": "`+filepath.Join(dir, "gone")+`", "hash": "`+sum+`"}
+		],
+		"slots": 2
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, err := newAdapter(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := host.Ready(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Images) != 1 || report.Images[0] != "default" {
+		t.Fatalf("Ready() Images = %v, want [default]", report.Images)
 	}
 }
 

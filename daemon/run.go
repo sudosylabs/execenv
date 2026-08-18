@@ -88,7 +88,7 @@ func newAdapter(cfg Config) (execenv.Host, error) {
 			images = append(images, isolated.Image{
 				ID:     execenv.Image(image.ID),
 				Kernel: image.Kernel,
-				Rootfs: image.Path,
+				Rootfs: image.Rootfs,
 				Hash:   image.Hash,
 			})
 		}

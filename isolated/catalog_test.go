@@ -9,6 +9,18 @@ import (
 	"github.com/sudosylabs/execenv"
 )
 
+func TestNewRejectsIncompleteCatalog(t *testing.T) {
+	t.Parallel()
+	_, err := New(Config{
+		WorkDir: t.TempDir(),
+		Slots:   1,
+		Images:  []Image{{ID: "default"}},
+	})
+	if !errors.Is(err, execenv.ErrInvalid) {
+		t.Fatalf("New() error = %v, want ErrInvalid", err)
+	}
+}
+
 func TestReadyListsOnlyVerifiedImages(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -29,6 +41,15 @@ func TestReadyListsOnlyVerifiedImages(t *testing.T) {
 	}
 	if len(report.Images) != 1 || report.Images[0] != "default" {
 		t.Fatalf("Ready() Images = %v, want [default]", report.Images)
+	}
+}
+
+func TestEnsureRejectsUnknownCatalogId(t *testing.T) {
+	t.Parallel()
+	host := testHost(t, func() error { return nil }, &recordingLauncher{})
+	_, err := host.Ensure(t.Context(), execenv.Spec{ID: "grant-1", Image: "nope"})
+	if !errors.Is(err, execenv.ErrUnknownImage) {
+		t.Fatalf("Ensure() error = %v, want ErrUnknownImage", err)
 	}
 }
 
@@ -99,7 +120,7 @@ func writeCatalogImage(t *testing.T, dir, id, rootfsBody string) Image {
 	if err := os.WriteFile(rootfs, []byte(rootfsBody), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	sum, err := digestFiles(kernel, rootfs)
+	sum, err := Digest(kernel, rootfs)
 	if err != nil {
 		t.Fatal(err)
 	}
