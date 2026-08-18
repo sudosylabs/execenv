@@ -101,6 +101,7 @@ func newAdapter(cfg Config) (execenv.Host, error) {
 			Supervisor:  cfg.Supervisor,
 			CPUMillis:   cfg.CPUMillis,
 			MemoryBytes: cfg.MemoryBytes,
+			Allow:       append([]string(nil), cfg.Allow...),
 		})
 	default:
 		return nil, execenv.Error("adapter", execenv.ErrInvalid)

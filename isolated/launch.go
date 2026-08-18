@@ -21,6 +21,7 @@ type startRequest struct {
 	Rootfs  string
 	TreeDir string
 	Network execenv.Network
+	Allow   []string
 	Memory  int64
 	CPU     int
 }

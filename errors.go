@@ -33,6 +33,10 @@ var (
 	// ErrConnection indicates the remote session was lost. A dropped PTY is
 	// hangup (ErrClosed), not this error, and does not revoke the grant.
 	ErrConnection = errors.New("execenv: connection failed")
+	// ErrNetwork indicates the grant requested a network the host does not
+	// offer. The caller cannot supply destinations; only the host allowlist
+	// exists, and it may be empty.
+	ErrNetwork = errors.New("execenv: network not offered")
 )
 
 // OpError adds operation context while preserving errors.Is matching.

@@ -31,8 +31,9 @@ func newProcessLauncher(cfg Config) launcher {
 }
 
 type processInstance struct {
-	cmd *exec.Cmd
-	dir string
+	cmd     *exec.Cmd
+	dir     string
+	cleanup func()
 }
 
 func (p *processInstance) Connect(ctx context.Context) (net.Conn, error) {
@@ -103,10 +104,21 @@ func (l *processLauncher) Start(ctx context.Context, req startRequest) (instance
 	if err := os.MkdirAll(req.TreeDir, 0o700); err != nil {
 		return nil, err
 	}
-	// The VM config names the read-only image root and the writable
-	// workspace directory. Network none means no guest NIC is configured.
-	vm, err := writeMachineConfig(req, l.cfg)
+	// Network none: no guest NIC. Allowlist: a tap plus a host filter
+	// of operator dests. Fail closed rather than boot an open NIC.
+	var attach *netAttach
+	if req.Network == execenv.NetworkAllowlist {
+		att, err := setupAllowlist(req.ID, req.Allow)
+		if err != nil {
+			return nil, err
+		}
+		attach = att
+	}
+	vm, err := writeMachineConfig(req, attach)
 	if err != nil {
+		if attach != nil {
+			attach.close()
+		}
 		return nil, err
 	}
 	// jailer --id <grant> --exec-file <runtime> --chroot-base-dir <parent>
@@ -134,9 +146,16 @@ func (l *processLauncher) Start(ctx context.Context, req startRequest) (instance
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	if err := cmd.Start(); err != nil {
+		if attach != nil {
+			attach.close()
+		}
 		return nil, execenv.ErrUnavailable
 	}
-	return &processInstance{cmd: cmd, dir: grantDir}, nil
+	cleanup := func() {}
+	if attach != nil {
+		cleanup = attach.close
+	}
+	return &processInstance{cmd: cmd, dir: grantDir, cleanup: cleanup}, nil
 }
 
 func (p *processInstance) Pause() error {
@@ -148,11 +167,14 @@ func (p *processInstance) Resume() error {
 }
 
 func (p *processInstance) Stop() error {
-	if p.cmd.Process == nil {
-		return nil
+	if p.cmd != nil && p.cmd.Process != nil {
+		_ = p.cmd.Process.Kill()
+		_, _ = p.cmd.Process.Wait()
 	}
-	_ = p.cmd.Process.Kill()
-	_, _ = p.cmd.Process.Wait()
+	if p.cleanup != nil {
+		p.cleanup()
+		p.cleanup = nil
+	}
 	return nil
 }
 
@@ -165,7 +187,7 @@ func guestCID(id execenv.ID) uint32 {
 	return cid
 }
 
-func writeMachineConfig(req startRequest, cfg Config) (string, error) {
+func writeMachineConfig(req startRequest, attach *netAttach) (string, error) {
 	mem := req.Memory / (1024 * 1024)
 	if mem <= 0 {
 		mem = 128
@@ -181,7 +203,7 @@ func writeMachineConfig(req startRequest, cfg Config) (string, error) {
 	doc := map[string]any{
 		"boot-source": map[string]any{
 			"kernel_image_path": req.Kernel,
-			"boot_args":         "console=ttyS0 reboot=k panic=1 pci=off home=" + execenv.GuestHome + " init=" + execenv.GuestInit,
+			"boot_args":         bootArgs(attach),
 		},
 		"drives": []map[string]any{
 			{
@@ -200,11 +222,12 @@ func writeMachineConfig(req startRequest, cfg Config) (string, error) {
 			"uds_path":  filepath.Join(filepath.Dir(req.TreeDir), "guest.sock"),
 		},
 	}
-	if req.Network != execenv.NetworkNone {
-		// Allowlist destinations are enforced on the host, not by
-		// handing the guest a general NIC. The NIC itself is added
-		// later with the allowlist path.
-		_ = cfg
+	if attach != nil {
+		doc["network-interfaces"] = []map[string]any{{
+			"iface_id":      "eth0",
+			"guest_mac":     attach.MAC,
+			"host_dev_name": attach.Dev,
+		}}
 	}
 	raw, err := json.Marshal(doc)
 	if err != nil {
@@ -215,4 +238,12 @@ func writeMachineConfig(req startRequest, cfg Config) (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+func bootArgs(attach *netAttach) string {
+	args := "console=ttyS0 reboot=k panic=1 pci=off home=" + execenv.GuestHome + " init=" + execenv.GuestInit
+	if attach == nil {
+		return args
+	}
+	return args + " ip=" + attach.GuestIP + "::" + attach.HostIP + ":255.255.255.252::eth0:off"
 }

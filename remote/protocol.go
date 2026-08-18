@@ -128,6 +128,8 @@ func statusOf(err error) string {
 		return "too_large"
 	case errors.Is(err, execenv.ErrConnection):
 		return "connection"
+	case errors.Is(err, execenv.ErrNetwork):
+		return "network"
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return "canceled"
 	default:
@@ -165,6 +167,8 @@ func errorFromStatus(status string) error {
 		return execenv.ErrTooLarge
 	case "connection":
 		return execenv.ErrConnection
+	case "network":
+		return execenv.ErrNetwork
 	case "canceled":
 		return context.Canceled
 	default:

@@ -18,7 +18,9 @@ vet:
 	go vet ./...
 
 # Live isolation tests need a Linux host with the isolation device and
-# supervisor binaries. They are not part of check.
+# supervisor binaries. They are not part of check. Network allowlist
+# guest-side proofs are in isolated/network_linux_test.go (root) and
+# TestLiveAllowlistDeniesFromGuest (isolation hardware).
 isolation:
 	EXECENV_ISOLATION=1 go test -tags=isolation -count=1 ./isolated
 

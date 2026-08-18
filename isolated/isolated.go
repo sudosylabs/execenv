@@ -41,6 +41,9 @@ type Config struct {
 	Supervisor  string
 	CPUMillis   int
 	MemoryBytes int64
+	// Allow is the host's IPv4 dests. Grants cannot add dests. Empty
+	// means this host does not offer NetworkAllowlist.
+	Allow []string
 }
 
 // Host occupies grants as isolated microVMs.
@@ -67,6 +70,9 @@ func New(cfg Config) (*Host, error) {
 	slots := cfg.Slots
 	if slots <= 0 {
 		slots = 1
+	}
+	if _, err := parseAllow(cfg.Allow); err != nil {
+		return nil, execenv.Error("isolated", execenv.ErrInvalid)
 	}
 	images := make(map[execenv.Image]Image, len(cfg.Images))
 	for _, image := range cfg.Images {
@@ -142,6 +148,10 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		}
 		return env, nil
 	}
+	if spec.Network == execenv.NetworkAllowlist && len(h.cfg.Allow) == 0 {
+		h.mu.Unlock()
+		return nil, execenv.Error("ensure", execenv.ErrNetwork)
+	}
 	if len(h.grants) >= h.slots {
 		h.mu.Unlock()
 		return nil, execenv.Error("ensure", execenv.ErrCapacity)
@@ -157,6 +167,7 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		Rootfs:  image.Rootfs,
 		TreeDir: treeDir,
 		Network: spec.Network,
+		Allow:   append([]string(nil), h.cfg.Allow...),
 		Memory:  h.cfg.MemoryBytes,
 		CPU:     h.cfg.CPUMillis,
 	})

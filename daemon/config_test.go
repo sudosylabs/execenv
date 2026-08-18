@@ -150,6 +150,23 @@ func TestLoadAcceptsIsolatedWithNoImages(t *testing.T) {
 	}
 }
 
+func TestLoadAllowlistRequiresDests(t *testing.T) {
+	t.Parallel()
+	_, err := Load(writeConfig(t, `{
+		"listen": "127.0.0.1:0",
+		"token": "secret",
+		"security": "insecure_local",
+		"adapter": "isolated",
+		"work_dir": "/tmp/execenv",
+		"images": [{"id": "default", "kernel": "vmlinux", "rootfs": "disk.ext4", "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
+		"slots": 2,
+		"network": "allowlist"
+	}`))
+	if err == nil {
+		t.Fatal("Load() allowlist without dests = nil")
+	}
+}
+
 func TestLoadAcceptsRootfsKey(t *testing.T) {
 	t.Parallel()
 	cfg, err := Load(writeConfig(t, `{
