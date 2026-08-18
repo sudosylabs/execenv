@@ -5,7 +5,8 @@
 //	execenv -config /etc/execenv/host.json
 //	execenv agent -home /workspace
 //
-// Catalog disks are produced by scripts/bake in CI, not by this command.
+// Catalog disks are produced by scripts/bake in CI. A Linux host is
+// installed by scripts/bootstrap. Neither is this command.
 package main
 
 import (

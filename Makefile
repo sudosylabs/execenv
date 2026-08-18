@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: check test test-race vet build bake
+.PHONY: check test test-race vet build bake bootstrap
 
 check: test test-race vet
 
@@ -38,3 +38,18 @@ bake:
 		$(if $(SOURCE),--source $(SOURCE),) \
 		$(if $(DOCKERFILE),--dockerfile $(DOCKERFILE),) \
 		$(if $(SIZE),--size $(SIZE),)
+
+# Operator install on a Linux isolation host. Not an execenv command.
+# ARTIFACTS is a directory with vmlinux, rootfs.ext4, catalog.json.
+# EXECENV is a linux execenv binary. Missing isolation device fails closed.
+ARTIFACTS ?=
+EXECENV ?=
+RELEASE ?=
+bootstrap:
+	@if [ -n "$(RELEASE)" ]; then \
+		scripts/bootstrap --release $(RELEASE) $(if $(EXECENV),--execenv $(EXECENV),); \
+	else \
+		test -n "$(ARTIFACTS)" || (echo "ARTIFACTS=dir or RELEASE=url is required" >&2; exit 2); \
+		test -n "$(EXECENV)" || (echo "EXECENV=path/to/linux-execenv is required" >&2; exit 2); \
+		scripts/bootstrap --artifact-dir $(ARTIFACTS) --execenv $(EXECENV); \
+	fi
