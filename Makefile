@@ -5,7 +5,8 @@ SHELL := /bin/sh
 check: test test-race vet
 
 build:
-	go build -o bin/execenv ./cmd/execenv
+	go build -o execenv ./cmd/execenv
+	go build -o execenvctl ./cmd/execenvctl
 
 test:
 	go test ./...

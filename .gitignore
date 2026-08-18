@@ -1,4 +1,6 @@
 /bin/
+/execenv
+/execenvctl
 *.exe
 *.test
 *.out

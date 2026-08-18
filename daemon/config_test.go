@@ -131,6 +131,25 @@ func TestLoadIsolatedRequiresWorkDir(t *testing.T) {
 	}
 }
 
+func TestLoadAcceptsIsolatedWithNoImages(t *testing.T) {
+	t.Parallel()
+	cfg, err := Load(writeConfig(t, `{
+		"listen": "127.0.0.1:0",
+		"token": "secret",
+		"security": "insecure_local",
+		"adapter": "isolated",
+		"work_dir": "/tmp/execenv",
+		"images": [],
+		"slots": 2
+	}`))
+	if err != nil {
+		t.Fatalf("Load() empty catalog error = %v", err)
+	}
+	if len(cfg.Images) != 0 {
+		t.Fatalf("Images = %v", cfg.Images)
+	}
+}
+
 func TestLoadAcceptsRootfsKey(t *testing.T) {
 	t.Parallel()
 	cfg, err := Load(writeConfig(t, `{

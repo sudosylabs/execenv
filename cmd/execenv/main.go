@@ -6,7 +6,7 @@
 //	execenv agent -home /workspace
 //
 // Catalog disks are produced by scripts/bake in CI. A Linux host is
-// installed by scripts/bootstrap. Neither is this command.
+// installed by execenvctl. Neither is this command.
 package main
 
 import (

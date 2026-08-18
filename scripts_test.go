@@ -12,6 +12,22 @@ import (
 	"github.com/sudosylabs/execenv/isolated"
 )
 
+func TestExecenvDoesNotImportManager(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command("go", "list", "-f", "{{ join .Imports \"\\n\" }}", "./cmd/execenv")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(out)
+	if strings.Contains(text, "github.com/spf13/cobra") {
+		t.Fatal("execenv imports cobra")
+	}
+	if strings.Contains(text, "github.com/sudosylabs/execenv/internal/ctl") {
+		t.Fatal("execenv imports the manager package")
+	}
+}
+
 func TestCLIHasOnlyDaemonAndAgent(t *testing.T) {
 	t.Parallel()
 	body, err := os.ReadFile(filepath.Join("cmd", "execenv", "main.go"))

@@ -145,9 +145,8 @@ func (cfg *Config) validate() error {
 	default:
 		return execenv.Error("config", execenv.ErrInvalid)
 	}
-	if len(cfg.Images) == 0 {
-		return execenv.Error("config", execenv.ErrInvalid)
-	}
+	// An empty catalog is a host that cannot occupy grants yet. install
+	// adds disks later; Ensure of a missing id stays unknown image.
 	for _, image := range cfg.Images {
 		if err := execenv.ValidateSpec(execenv.Spec{ID: "ok", Image: execenv.Image(image.ID)}); err != nil {
 			return execenv.Error("config", execenv.ErrInvalid)
