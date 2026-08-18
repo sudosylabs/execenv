@@ -1,0 +1,10 @@
+{
+  "kernel": "vmlinux",
+  "images": [
+    {
+      "id": "fixture",
+      "rootfs": "rootfs-fixture.ext4",
+      "hash": ""
+    }
+  ]
+}

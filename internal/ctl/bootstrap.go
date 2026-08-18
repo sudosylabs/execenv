@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -48,10 +47,13 @@ type Options struct {
 	Device   string
 	Listen   string
 	Slots    int
-	Execenv  string
-	NoStart  bool
-	NoFetch  bool
-	Insecure bool
+	Execenv    string
+	NoStart    bool
+	NoFetch    bool
+	Insecure   bool
+	ReleaseURL string
+	// Reload, if set, replaces the systemd reload after catalog changes.
+	Reload func() error
 }
 
 // Defaults returns the system-wide install layout.
@@ -324,15 +326,7 @@ func writeHostConfig(opts Options) error {
 		Network:    networkNone,
 		Grace:      defaultGrace,
 	}
-	raw, err := json.MarshalIndent(doc, "", "  ")
-	if err != nil {
-		return wrap("bootstrap", err)
-	}
-	raw = append(raw, '\n')
-	if err := os.WriteFile(opts.configPath(), raw, 0o600); err != nil {
-		return wrap("bootstrap", err)
-	}
-	return os.Chmod(opts.configPath(), 0o600)
+	return saveConfig(opts.configPath(), doc)
 }
 
 func imageSummary(opts Options) string {
@@ -435,43 +429,3 @@ func errTrim(out []byte, err error) error {
 	}
 	return fmt.Errorf("%s", msg)
 }
-
-// writtenConfig is the operator document. Token stays in this file only.
-type writtenConfig struct {
-	Listen     string         `json:"listen"`
-	Token      string         `json:"token"`
-	Security   string         `json:"security"`
-	Adapter    string         `json:"adapter"`
-	TLSCert    string         `json:"tls_cert,omitempty"`
-	TLSKey     string         `json:"tls_key,omitempty"`
-	WorkDir    string         `json:"work_dir"`
-	Device     string         `json:"device"`
-	Runtime    string         `json:"runtime"`
-	Supervisor string         `json:"supervisor"`
-	Images     []writtenImage `json:"images"`
-	Slots      int            `json:"slots"`
-	Network    string         `json:"network"`
-	Grace      string         `json:"grace"`
-}
-
-type writtenImage struct {
-	ID     string `json:"id"`
-	Kernel string `json:"kernel,omitempty"`
-	Rootfs string `json:"rootfs,omitempty"`
-	Hash   string `json:"hash,omitempty"`
-}
-
-func loadExisting(path string) (writtenConfig, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return writtenConfig{}, err
-	}
-	var doc writtenConfig
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		// Do not wrap the decoder error: it can quote the token.
-		return writtenConfig{}, wrap("bootstrap", errInvalidConfig)
-	}
-	return doc, nil
-}
-
-var errInvalidConfig = fmt.Errorf("invalid host config")
