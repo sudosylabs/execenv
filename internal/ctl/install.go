@@ -132,9 +132,9 @@ func restartActiveUnit() error {
 	if err := exec.Command("systemctl", "is-active", "--quiet", unitName).Run(); err != nil {
 		return nil
 	}
-	out, err := exec.Command("systemctl", "try-reload-or-restart", unitName).CombinedOutput()
+	out, err := exec.Command("systemctl", "restart", unitName).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("systemctl reload: %w", errTrim(out, err))
+		return fmt.Errorf("systemctl restart: %w", errTrim(out, err))
 	}
 	return nil
 }

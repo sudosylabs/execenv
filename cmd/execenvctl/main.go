@@ -2,6 +2,7 @@
 //
 //	execenvctl bootstrap
 //	execenvctl install <id>
+//	execenvctl upgrade
 //
 // This is not the daemon and not the guest agent. It does not occupy
 // grants. Flags and exit codes only; there is no TUI.
@@ -37,6 +38,7 @@ func newRoot() *cobra.Command {
 	root.PersistentFlags().StringVar(&opts.ReleaseURL, "release-url", "", "release asset base URL (or EXECENV_RELEASE_URL)")
 	root.AddCommand(newBootstrap(&opts))
 	root.AddCommand(newInstall(&opts))
+	root.AddCommand(newUpgrade(&opts))
 	return root
 }
 
@@ -68,6 +70,18 @@ func newInstall(opts *ctl.Options) *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return ctl.Install(*opts, args[0], cmd.OutOrStdout())
+		},
+	}
+}
+
+func newUpgrade(opts *ctl.Options) *cobra.Command {
+	return &cobra.Command{
+		Use:   "upgrade",
+		Short: "Replace execenvctl and execenv from the release channel",
+		Long:  "Fetch linux/amd64 binaries and checksums. Catalog disks, the host token, and TLS files are left alone.",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return ctl.Upgrade(*opts, cmd.OutOrStdout())
 		},
 	}
 }
