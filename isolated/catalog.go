@@ -10,34 +10,23 @@ import (
 	"github.com/sudosylabs/execenv"
 )
 
-// SumRootfs returns the lowercase hex SHA-256 of the file at path.
-// Operators put this value in Image.Hash so Ready can advertise the image.
-func SumRootfs(path string) (string, error) {
-	sum, err := hashFile(path)
-	if err != nil {
-		return "", execenv.Error("catalog", err)
-	}
-	return sum, nil
+func validDigest(hash string) bool {
+	raw, err := hex.DecodeString(hash)
+	return err == nil && len(raw) == sha256.Size
 }
 
-// present reports whether kernel and rootfs exist on disk and the rootfs
-// matches Hash. A missing or corrupt artifact is false, never a panic.
-// Empty Hash is treated as unverified and therefore absent.
-func (img Image) present() bool {
-	if img.Hash == "" || img.Kernel == "" || img.Rootfs == "" {
+// matchesCatalog reports whether both boot files are regular files and
+// their combined digest equals Hash. A missing or corrupt artifact is
+// false, never a panic. I/O happens here so callers must not hold Host.mu.
+func (img Image) matchesCatalog() bool {
+	if !validDigest(img.Hash) || img.Kernel == "" || img.Rootfs == "" {
 		return false
 	}
-	if !regularFile(img.Kernel) {
-		return false
-	}
-	sum, err := hashFile(img.Rootfs)
+	sum, err := digestFiles(img.Kernel, img.Rootfs)
 	if err != nil {
 		return false
 	}
-	want, err := hex.DecodeString(img.Hash)
-	if err != nil || len(want) != sha256.Size {
-		return false
-	}
+	want, _ := hex.DecodeString(img.Hash)
 	got, err := hex.DecodeString(sum)
 	if err != nil || len(got) != sha256.Size {
 		return false
@@ -45,38 +34,44 @@ func (img Image) present() bool {
 	return subtle.ConstantTimeCompare(want, got) == 1
 }
 
-func (h *Host) presentIDs() []execenv.Image {
-	ids := make([]execenv.Image, 0, len(h.images))
-	for id, image := range h.images {
-		if image.present() {
-			ids = append(ids, id)
+func (h *Host) snapshotImages() []Image {
+	out := make([]Image, 0, len(h.images))
+	for _, image := range h.images {
+		out = append(out, image)
+	}
+	return out
+}
+
+func verifiedIDs(images []Image) []execenv.Image {
+	ids := make([]execenv.Image, 0, len(images))
+	for _, image := range images {
+		if image.matchesCatalog() {
+			ids = append(ids, image.ID)
 		}
 	}
 	return ids
 }
 
-func (h *Host) verified(id execenv.Image) (Image, bool) {
-	image, ok := h.images[id]
-	if !ok || !image.present() {
-		return Image{}, false
+func digestFiles(paths ...string) (string, error) {
+	sum := sha256.New()
+	for _, path := range paths {
+		if !regularFile(path) {
+			return "", os.ErrNotExist
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			return "", err
+		}
+		_, err = io.Copy(sum, file)
+		_ = file.Close()
+		if err != nil {
+			return "", err
+		}
 	}
-	return image, true
+	return hex.EncodeToString(sum.Sum(nil)), nil
 }
 
 func regularFile(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.Mode().IsRegular()
-}
-
-func hashFile(path string) (string, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-	sum := sha256.New()
-	if _, err := io.Copy(sum, file); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(sum.Sum(nil)), nil
 }

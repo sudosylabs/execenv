@@ -79,6 +79,22 @@ func TestLoadDoesNotPutTokenInError(t *testing.T) {
 	}
 }
 
+func TestLoadIsolatedRejectsMalformedHash(t *testing.T) {
+	t.Parallel()
+	_, err := Load(writeConfig(t, `{
+		"listen": "127.0.0.1:0",
+		"token": "secret",
+		"security": "insecure_local",
+		"adapter": "isolated",
+		"work_dir": "/tmp/execenv",
+		"images": [{"id": "default", "kernel": "vmlinux", "path": "rootfs.ext4", "hash": "nope"}],
+		"slots": 2
+	}`))
+	if err == nil {
+		t.Fatal("Load() isolated with short hash = nil")
+	}
+}
+
 func TestLoadIsolatedRequiresImageHash(t *testing.T) {
 	t.Parallel()
 	_, err := Load(writeConfig(t, `{

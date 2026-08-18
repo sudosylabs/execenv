@@ -5,6 +5,8 @@
 package daemon
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -130,9 +132,9 @@ func (cfg *Config) validate() error {
 			return execenv.Error("config", execenv.ErrInvalid)
 		}
 		if cfg.Adapter == adapterIsolated {
-			// Isolated grants boot these files. Hash is required so Ready
-			// never advertises an unverified rootfs.
-			if image.Kernel == "" || image.Path == "" || image.Hash == "" {
+			// Isolated grants boot these files. Hash is SHA-256 of kernel
+			// then rootfs, 64 hex digits, so Ready never advertises junk.
+			if image.Kernel == "" || image.Path == "" || !validImageDigest(image.Hash) {
 				return execenv.Error("config", execenv.ErrInvalid)
 			}
 		}
@@ -148,6 +150,11 @@ func (cfg *Config) validate() error {
 		cfg.Grace = grace
 	}
 	return nil
+}
+
+func validImageDigest(hash string) bool {
+	raw, err := hex.DecodeString(hash)
+	return err == nil && len(raw) == sha256.Size
 }
 
 func (cfg Config) security() remote.Security {

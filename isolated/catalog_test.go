@@ -1,8 +1,6 @@
 package isolated
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -74,15 +72,20 @@ func TestEnsureDoesNotFetchMissingRootfs(t *testing.T) {
 	}
 }
 
-func TestSumRootfsMatchesCatalogHash(t *testing.T) {
+func TestReplacedKernelDropsTheId(t *testing.T) {
 	t.Parallel()
-	img := writeCatalogImage(t, t.TempDir(), "default", "body")
-	sum, err := SumRootfs(img.Rootfs)
+	dir := t.TempDir()
+	img := writeCatalogImage(t, dir, "default", "root")
+	host := testHostWithImages(t, func() error { return nil }, &recordingLauncher{}, img)
+	if err := os.WriteFile(img.Kernel, []byte("replaced-kernel"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := host.Ready(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sum != img.Hash {
-		t.Fatalf("SumRootfs() = %q, want %q", sum, img.Hash)
+	if len(report.Images) != 0 {
+		t.Fatalf("Ready() Images = %v, want none after kernel change", report.Images)
 	}
 }
 
@@ -93,15 +96,17 @@ func writeCatalogImage(t *testing.T, dir, id, rootfsBody string) Image {
 	if err := os.WriteFile(kernel, []byte("kernel-"+id), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	body := []byte(rootfsBody)
-	if err := os.WriteFile(rootfs, body, 0o600); err != nil {
+	if err := os.WriteFile(rootfs, []byte(rootfsBody), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	sum := sha256.Sum256(body)
+	sum, err := digestFiles(kernel, rootfs)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return Image{
 		ID:     execenv.Image(id),
 		Kernel: kernel,
 		Rootfs: rootfs,
-		Hash:   hex.EncodeToString(sum[:]),
+		Hash:   sum,
 	}
 }

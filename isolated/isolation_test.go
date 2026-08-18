@@ -24,7 +24,7 @@ func TestLiveReadyRequiresDevice(t *testing.T) {
 	host, err := New(Config{
 		WorkDir: t.TempDir(),
 		Slots:   1,
-		Images:  []Image{{ID: "default", Kernel: "vmlinux", Rootfs: "rootfs.ext4"}},
+		Images:  []Image{writeCatalogImage(t, t.TempDir(), "default", "rootfs")},
 	})
 	if err != nil {
 		t.Fatal(err)

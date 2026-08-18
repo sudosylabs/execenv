@@ -18,8 +18,8 @@ var (
 )
 
 // Image is one catalog entry. Kernel and Rootfs are local paths to the
-// read-only boot artifacts. Hash is the lowercase hex SHA-256 of Rootfs.
-// Images are never pulled; a missing or mismatched file is simply absent.
+// read-only boot artifacts. Hash is the lowercase hex SHA-256 of the
+// kernel file followed by the rootfs file. Images are never pulled.
 type Image struct {
 	ID     execenv.Image
 	Kernel string
@@ -100,13 +100,15 @@ func (h *Host) Ready(ctx context.Context) (execenv.Report, error) {
 	}
 	usable := h.probe() == nil
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	ids := h.presentIDs()
+	images := h.snapshotImages()
 	free := h.slots - len(h.grants)
+	h.mu.Unlock()
 	if free < 0 {
 		free = 0
 	}
-	return execenv.Report{Usable: usable, Images: ids, Slots: free}, nil
+	// Hash files outside the lock so a large or odd rootfs cannot stall
+	// every other grant on this host.
+	return execenv.Report{Usable: usable, Images: verifiedIDs(images), Slots: free}, nil
 }
 
 // Ensure starts a microVM for a new grant or returns the existing occupancy.
@@ -121,12 +123,14 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		return nil, execenv.Error("ensure", execenv.ErrUnavailable)
 	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	// Re-check the files at Ensure time. Do not fetch or repair them.
-	image, ok := h.verified(spec.Image)
-	if !ok {
+	image, ok := h.images[spec.Image]
+	h.mu.Unlock()
+	// Re-check the files off the lock. Do not fetch or repair them.
+	if !ok || !image.matchesCatalog() {
 		return nil, execenv.Error("ensure", execenv.ErrUnknownImage)
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if env, exists := h.grants[spec.ID]; exists {
 		if env.image.ID != spec.Image || env.network != spec.Network {
 			return nil, execenv.Error("ensure", execenv.ErrConflict)
