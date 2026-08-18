@@ -33,6 +33,10 @@ type Config struct {
 	Adapter  string  `json:"adapter"`
 	TLSCert  string  `json:"tls_cert"`
 	TLSKey   string  `json:"tls_key"`
+	WorkDir  string  `json:"work_dir"`
+	Device   string  `json:"device"`
+	Runtime  string  `json:"runtime"`
+	Supervisor string `json:"supervisor"`
 	Images   []Image `json:"images"`
 	Slots    int     `json:"slots"`
 	// Resource defaults are accepted now so operators can write one file.
@@ -46,12 +50,13 @@ type Config struct {
 	GraceText   string        `json:"grace"`
 }
 
-// Image is one catalog entry. Path and hash are stored for the isolated
-// adapter; memory only needs ID.
+// Image is one catalog entry. Memory only needs ID. The isolated adapter
+// uses Kernel and Path as the read-only boot artifacts.
 type Image struct {
-	ID   string `json:"id"`
-	Path string `json:"path"`
-	Hash string `json:"hash"`
+	ID     string `json:"id"`
+	Kernel string `json:"kernel"`
+	Path   string `json:"path"`
+	Hash   string `json:"hash"`
 }
 
 // Load reads and validates a JSON config file. It does not listen and does

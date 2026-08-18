@@ -79,24 +79,22 @@ func TestLoadDoesNotPutTokenInError(t *testing.T) {
 	}
 }
 
-func TestRunRejectsIsolatedUntilAvailable(t *testing.T) {
+func TestLoadIsolatedRequiresWorkDir(t *testing.T) {
 	t.Parallel()
 	cfg, err := Load(writeConfig(t, `{
-		"listen": "127.0.0.1:8443",
+		"listen": "127.0.0.1:0",
 		"token": "secret",
-		"security": "tls",
+		"security": "insecure_local",
 		"adapter": "isolated",
-		"tls_cert": "cert.pem",
-		"tls_key": "key.pem",
-		"images": [{"id": "default"}],
+		"images": [{"id": "default", "kernel": "vmlinux", "path": "rootfs.ext4"}],
 		"slots": 2
 	}`))
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	err = Run(t.Context(), cfg, discardLogger())
-	if !errors.Is(err, execenv.ErrUnavailable) {
-		t.Fatalf("Run() isolated error = %v, want ErrUnavailable", err)
+	_, err = newAdapter(cfg)
+	if !errors.Is(err, execenv.ErrInvalid) {
+		t.Fatalf("newAdapter() error = %v, want ErrInvalid", err)
 	}
 }
 

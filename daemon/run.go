@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/isolated"
 	"github.com/sudosylabs/execenv/memory"
 	"github.com/sudosylabs/execenv/remote"
 )
@@ -79,9 +80,28 @@ func newAdapter(cfg Config) (execenv.Host, error) {
 			Slots:  cfg.Slots,
 		})
 	case adapterIsolated:
-		// Ticket 05 supplies the isolated adapter. Fail closed until then
-		// so production cannot silently start without isolation.
-		return nil, execenv.Error("adapter", execenv.ErrUnavailable)
+		if cfg.WorkDir == "" {
+			return nil, execenv.Error("adapter", execenv.ErrInvalid)
+		}
+		images := make([]isolated.Image, 0, len(cfg.Images))
+		for _, image := range cfg.Images {
+			images = append(images, isolated.Image{
+				ID:     execenv.Image(image.ID),
+				Kernel: image.Kernel,
+				Rootfs: image.Path,
+				Hash:   image.Hash,
+			})
+		}
+		return isolated.New(isolated.Config{
+			Images:      images,
+			Slots:       cfg.Slots,
+			WorkDir:     cfg.WorkDir,
+			Device:      cfg.Device,
+			Runtime:     cfg.Runtime,
+			Supervisor:  cfg.Supervisor,
+			CPUMillis:   cfg.CPUMillis,
+			MemoryBytes: cfg.MemoryBytes,
+		})
 	default:
 		return nil, execenv.Error("adapter", execenv.ErrInvalid)
 	}
