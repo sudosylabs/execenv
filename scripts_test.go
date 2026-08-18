@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/sudosylabs/execenv"
-	"github.com/sudosylabs/execenv/daemon"
 	"github.com/sudosylabs/execenv/isolated"
 )
 
@@ -223,203 +222,19 @@ func TestDaemonDoesNotImportBake(t *testing.T) {
 	}
 }
 
-func writeArtifactDir(t *testing.T, root string) string {
-	t.Helper()
-	arts := filepath.Join(root, "arts")
-	if err := os.MkdirAll(arts, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	kernel := filepath.Join(arts, "vmlinux")
-	rootfs := filepath.Join(arts, "rootfs.ext4")
-	if err := os.WriteFile(kernel, []byte("kernel-bytes"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(rootfs, []byte("rootfs-bytes"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	sum, err := isolated.Digest(kernel, rootfs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	catalog := "{\n  \"id\": \"default\",\n  \"kernel\": \"vmlinux\",\n  \"rootfs\": \"rootfs.ext4\",\n  \"hash\": \"" + sum + "\"\n}\n"
-	if err := os.WriteFile(filepath.Join(arts, "catalog.json"), []byte(catalog), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return arts
-}
-
-func TestBootstrapRequiresBothRuntimeAndSupervisor(t *testing.T) {
+func TestShellBootstrapIsRetired(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	device := filepath.Join(root, "kvm")
-	if err := os.WriteFile(device, []byte{}, 0o666); err != nil {
-		t.Fatal(err)
+	if _, err := os.Stat(filepath.Join("scripts", "bootstrap")); !os.IsNotExist(err) {
+		t.Fatal("scripts/bootstrap still exists; host install is execenvctl")
 	}
-	arts := writeArtifactDir(t, root)
-	bindir := filepath.Join(root, "usr", "local", "bin")
-	if err := os.MkdirAll(bindir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"execenv", "firecracker"} {
-		if err := os.WriteFile(filepath.Join(bindir, name), []byte("#!/bin/sh\n"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	cmd := exec.Command(filepath.Join("scripts", "bootstrap"),
-		"--device", device,
-		"--prefix", filepath.Join(root, "usr", "local"),
-		"--sysconf", filepath.Join(root, "etc", "execenv"),
-		"--state", filepath.Join(root, "var", "lib", "execenv"),
-		"--artifact-dir", arts,
-		"--execenv", filepath.Join(bindir, "execenv"),
-		"--no-start",
-		"--no-fetch",
-		"--insecure",
-	)
-	out, err := cmd.CombinedOutput()
-	if err == nil {
-		t.Fatal("bootstrap succeeded with only the runtime binary")
-	}
-	if !strings.Contains(string(out), "supervisor") {
-		t.Fatalf("error = %s", out)
-	}
-}
-
-func TestBootstrapFailsClosedWithoutDevice(t *testing.T) {
-	t.Parallel()
-	script := filepath.Join("scripts", "bootstrap")
-	info, err := os.Stat(script)
+	body, err := os.ReadFile("Makefile")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode()&0o111 == 0 {
-		t.Fatal("scripts/bootstrap is not executable")
+	if strings.Contains(string(body), "scripts/bootstrap") {
+		t.Fatal("Makefile still invokes the shell installer")
 	}
-	body, err := os.ReadFile(script)
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(body)
-	if strings.Contains(text, "docker pull") || strings.Contains(text, "podman pull") {
-		t.Fatal("bootstrap pulls containers")
-	}
-	dir := t.TempDir()
-	cmd := exec.Command(script,
-		"--device", filepath.Join(dir, "no-kvm"),
-		"--artifact-dir", dir,
-		"--execenv", filepath.Join(dir, "execenv"),
-		"--no-start",
-		"--no-fetch",
-	)
-	out, err := cmd.CombinedOutput()
-	if err == nil {
-		t.Fatal("bootstrap succeeded without an isolation device")
-	}
-	msg := string(out)
-	if !strings.Contains(msg, "isolation device") || !strings.Contains(msg, "no container fallback") {
-		t.Fatalf("error = %s", msg)
-	}
-}
-
-func TestBootstrapWritesConfigWithoutLeakingSecrets(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	device := filepath.Join(root, "kvm")
-	if err := os.WriteFile(device, []byte{}, 0o666); err != nil {
-		t.Fatal(err)
-	}
-	arts := filepath.Join(root, "arts")
-	if err := os.MkdirAll(arts, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	kernel := filepath.Join(arts, "vmlinux")
-	rootfs := filepath.Join(arts, "rootfs.ext4")
-	if err := os.WriteFile(kernel, []byte("kernel-bytes"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(rootfs, []byte("rootfs-bytes"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	sum, err := isolated.Digest(kernel, rootfs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	catalog := "{\n  \"id\": \"default\",\n  \"kernel\": \"vmlinux\",\n  \"rootfs\": \"rootfs.ext4\",\n  \"hash\": \"" + sum + "\"\n}\n"
-	if err := os.WriteFile(filepath.Join(arts, "catalog.json"), []byte(catalog), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	bindir := filepath.Join(root, "usr", "local", "bin")
-	if err := os.MkdirAll(bindir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"execenv", "firecracker", "jailer"} {
-		path := filepath.Join(bindir, name)
-		if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	prefix := filepath.Join(root, "usr", "local")
-	sysconf := filepath.Join(root, "etc", "execenv")
-	state := filepath.Join(root, "var", "lib", "execenv")
-	run := func() (string, error) {
-		cmd := exec.Command(filepath.Join("scripts", "bootstrap"),
-			"--device", device,
-			"--prefix", prefix,
-			"--sysconf", sysconf,
-			"--state", state,
-			"--artifact-dir", arts,
-			"--execenv", filepath.Join(bindir, "execenv"),
-			"--no-start",
-			"--no-fetch",
-			"--insecure",
-			"--listen", "127.0.0.1:8443",
-			"--slots", "8",
-		)
-		out, err := cmd.CombinedOutput()
-		return string(out), err
-	}
-	stdout, err := run()
-	if err != nil {
-		t.Fatalf("bootstrap: %v\n%s", err, stdout)
-	}
-	if strings.Contains(stdout, sum) {
-		t.Fatal("stdout printed the catalog hash")
-	}
-	cfgPath := filepath.Join(sysconf, "host.json")
-	cfg, err := daemon.Load(cfgPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Token == "" || strings.Contains(stdout, cfg.Token) {
-		t.Fatal("token missing or leaked on stdout")
-	}
-	if cfg.Adapter != "isolated" || cfg.Images[0].ID != "default" || cfg.Images[0].Hash != sum {
-		t.Fatalf("config = %+v", cfg)
-	}
-	if cfg.Images[0].Kernel == "" || cfg.Images[0].Rootfs == "" {
-		t.Fatal("config missing kernel/rootfs paths")
-	}
-	firstToken := cfg.Token
-	stdout, err = run()
-	if err != nil {
-		t.Fatalf("second bootstrap: %v\n%s", err, stdout)
-	}
-	again, err := daemon.Load(cfgPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if again.Token != firstToken {
-		t.Fatal("re-run rotated the token")
-	}
-	unit := filepath.Join(root, "etc", "systemd", "system", "execenv.service")
-	body, err := os.ReadFile(unit)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(body), "-config "+cfgPath) {
-		t.Fatalf("unit = %s", body)
-	}
-	if strings.Contains(string(body), firstToken) {
-		t.Fatal("systemd unit contains the token")
+	if !strings.Contains(string(body), "execenvctl bootstrap") {
+		t.Fatal("Makefile does not point operators at execenvctl")
 	}
 }
