@@ -44,6 +44,30 @@ func TestInsecureRefusesNonLoopback(t *testing.T) {
 	}
 }
 
+func TestAttachEchoesBytes(t *testing.T) {
+	t.Parallel()
+	host := startLoopback(t)
+	env, err := host.Ensure(t.Context(), execenv.Spec{ID: "grant-1", Image: "default"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	term, err := env.Attach(t.Context(), execenv.Window{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = term.Close() })
+	if _, err := term.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, 4)
+	if _, err := io.ReadFull(term, got); err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "ping" {
+		t.Fatal("remote PTY did not echo the inner host")
+	}
+}
+
 func TestDroppedPtyIsHangupNotRevoke(t *testing.T) {
 	t.Parallel()
 	host := startLoopback(t)

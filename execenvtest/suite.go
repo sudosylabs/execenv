@@ -118,7 +118,7 @@ func Run(t *testing.T, factory Factory) {
 		}
 	})
 
-	t.Run("attach echoes pty bytes", func(t *testing.T) {
+	t.Run("attach accepts pty writes", func(t *testing.T) {
 		host := factory(t)
 		env, err := host.Ensure(context.Background(), execenv.Spec{ID: "grant-1", Image: "default"})
 		if err != nil {
@@ -129,15 +129,10 @@ func Run(t *testing.T, factory Factory) {
 			t.Fatalf("Attach() error = %v", err)
 		}
 		t.Cleanup(func() { _ = term.Close() })
+		// Isolated attach is a guest shell, not an echo. Portable
+		// coverage is that a write is accepted; echo is adapter-local.
 		if _, err := term.Write([]byte("ping")); err != nil {
 			t.Fatalf("Write() error = %v", err)
-		}
-		got := make([]byte, 4)
-		if _, err := io.ReadFull(term, got); err != nil {
-			t.Fatalf("Read() error = %v", err)
-		}
-		if !bytes.Equal(got, []byte("ping")) {
-			t.Fatal("Read() returned unexpected bytes")
 		}
 	})
 

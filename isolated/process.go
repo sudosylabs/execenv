@@ -2,14 +2,21 @@ package isolated
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"time"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/agent"
 )
 
 // processLauncher starts a supervised microVM. The public isolated types
@@ -26,6 +33,47 @@ func newProcessLauncher(cfg Config) launcher {
 type processInstance struct {
 	cmd *exec.Cmd
 	dir string
+}
+
+func (p *processInstance) Connect(ctx context.Context) (net.Conn, error) {
+	// The supervisor exposes the guest link as a Unix socket next to the
+	// machine config. CONNECT is the host-side handshake. Retry until
+	// ctx ends: the guest helper is not listening the instant Start returns.
+	sock := filepath.Join(p.dir, "guest.sock")
+	var last error
+	for {
+		conn, err := dialGuest(ctx, sock)
+		if err == nil {
+			return conn, nil
+		}
+		last = err
+		select {
+		case <-ctx.Done():
+			if last == nil {
+				last = ctx.Err()
+			}
+			return nil, execenv.ErrUnavailable
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
+func dialGuest(ctx context.Context, sock string) (net.Conn, error) {
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "unix", sock)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := fmt.Fprintf(conn, "CONNECT %d\n", agent.LinkPort); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	buf := make([]byte, 3)
+	if _, err := io.ReadFull(conn, buf); err != nil || string(buf) != "OK\n" {
+		_ = conn.Close()
+		return nil, execenv.ErrUnavailable
+	}
+	return conn, nil
 }
 
 func (l *processLauncher) Start(ctx context.Context, req startRequest) (instance, error) {
@@ -108,6 +156,15 @@ func (p *processInstance) Stop() error {
 	return nil
 }
 
+func guestCID(id execenv.ID) uint32 {
+	sum := sha256.Sum256([]byte(id))
+	cid := binary.BigEndian.Uint32(sum[:4])
+	if cid < 3 {
+		return cid + 3
+	}
+	return cid
+}
+
 func writeMachineConfig(req startRequest, cfg Config) (string, error) {
 	mem := req.Memory / (1024 * 1024)
 	if mem <= 0 {
@@ -118,13 +175,13 @@ func writeMachineConfig(req startRequest, cfg Config) (string, error) {
 		vcpus = 1
 	}
 	// Machine JSON follows the supervisor's config-file schema. Rootfs
-	// is read-only; the workspace directory is the only writable drive.
+	// is read-only. The agent writes Home inside the guest; the image
+	// must make that directory writable. TreeDir is the stub Home, not
+	// a second host drive.
 	doc := map[string]any{
 		"boot-source": map[string]any{
 			"kernel_image_path": req.Kernel,
-			// HOME/cwd are the workspace directory. The image root stays
-			// read-only; the guest agent or init must chdir here.
-			"boot_args": "console=ttyS0 reboot=k panic=1 pci=off home=/workspace",
+			"boot_args":         "console=ttyS0 reboot=k panic=1 pci=off home=/workspace",
 		},
 		"drives": []map[string]any{
 			{
@@ -135,8 +192,12 @@ func writeMachineConfig(req startRequest, cfg Config) (string, error) {
 			},
 		},
 		"machine-config": map[string]any{
-			"vcpu_count":  vcpus,
+			"vcpu_count":   vcpus,
 			"mem_size_mib": mem,
+		},
+		"vsock": map[string]any{
+			"guest_cid": guestCID(req.ID),
+			"uds_path":  filepath.Join(filepath.Dir(req.TreeDir), "guest.sock"),
 		},
 	}
 	if req.Network != execenv.NetworkNone {

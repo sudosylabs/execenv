@@ -1,12 +1,14 @@
 package isolated
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/execenvtest"
@@ -136,6 +138,44 @@ func TestConformance(t *testing.T) {
 		t.Helper()
 		return testHost(t, func() error { return nil }, &recordingLauncher{})
 	})
+}
+
+func TestTouchInPtyBecomesWatch(t *testing.T) {
+	t.Parallel()
+	host := testHost(t, func() error { return nil }, &recordingLauncher{})
+	env, err := host.Ensure(t.Context(), execenv.Spec{ID: "grant-1", Image: "default"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	obs, err := env.Watch(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = obs.Close() })
+	term, err := env.Attach(t.Context(), execenv.Window{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = term.Close() })
+	if _, err := term.Write([]byte("touch seen.txt\n")); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	for {
+		ev, err := obs.Next(ctx)
+		if err != nil {
+			t.Fatalf("Watch did not see touch: %v", err)
+		}
+		if ev.Op == execenv.OpCreate && ev.Path == "seen.txt" {
+			break
+		}
+	}
+	body, err := env.Open(t.Context(), "seen.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = body.Close()
 }
 
 func TestExportedIdentifiersOmitHypervisorNames(t *testing.T) {

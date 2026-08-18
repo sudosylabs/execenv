@@ -2,6 +2,7 @@ package execenv
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"unicode/utf8"
 )
@@ -144,4 +145,18 @@ func ValidatePath(path string) error {
 		}
 	}
 	return nil
+}
+
+// ResolvePath joins root and a validated relative path. The result is
+// always inside root; a cleaned escape is ErrInvalid.
+func ResolvePath(root, path string) (string, error) {
+	if err := ValidatePath(path); err != nil {
+		return "", err
+	}
+	full := filepath.Join(root, filepath.FromSlash(path))
+	rel, err := filepath.Rel(root, full)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", ErrInvalid
+	}
+	return full, nil
 }

@@ -134,18 +134,21 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		return nil, execenv.Error("ensure", execenv.ErrUnknownImage)
 	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	if env, exists := h.grants[spec.ID]; exists {
-		if env.image.ID != spec.Image || env.network != spec.Network {
+		conflict := env.image.ID != spec.Image || env.network != spec.Network
+		h.mu.Unlock()
+		if conflict {
 			return nil, execenv.Error("ensure", execenv.ErrConflict)
 		}
 		return env, nil
 	}
 	if len(h.grants) >= h.slots {
+		h.mu.Unlock()
 		return nil, execenv.Error("ensure", execenv.ErrCapacity)
 	}
 	treeDir := filepath.Join(h.cfg.WorkDir, "grants", string(spec.ID), workspaceName)
 	if err := os.MkdirAll(treeDir, 0o700); err != nil {
+		h.mu.Unlock()
 		return nil, execenv.Error("ensure", err)
 	}
 	inst, err := h.launch.Start(ctx, startRequest{
@@ -158,6 +161,7 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		CPU:     h.cfg.CPUMillis,
 	})
 	if err != nil {
+		h.mu.Unlock()
 		return nil, execenv.Error("ensure", err)
 	}
 	env := &environment{
@@ -167,9 +171,15 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		host:    h,
 		inst:    inst,
 		treeDir: treeDir,
-		files:   make(map[string]node),
 	}
 	h.grants[spec.ID] = env
+	h.mu.Unlock()
+	// Dial after the slot is claimed so a slow guest agent cannot stall
+	// occupancy of other grants. A failed dial frees the slot.
+	if err := env.dial(ctx); err != nil {
+		_ = h.Revoke(ctx, spec.ID)
+		return nil, execenv.Error("ensure", err)
+	}
 	return env, nil
 }
 
