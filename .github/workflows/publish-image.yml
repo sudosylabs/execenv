@@ -1,11 +1,14 @@
 # CI-only bake. The grant host never runs this. Docker and mkfs.ext4 are
 # installed on the runner here; they are not assumed to be present.
-# Slim language ids bake on ubuntu-latest. The universal-class default
-# disk is tens of gigabytes: set runner to a large label and
-# publish_default=true, and provide KERNEL_URL as a versioned kernel.
+# Slim language ids bake in parallel. The universal-class default disk is
+# tens of gigabytes: set runner to a large label and publish_default=true,
+# and provide KERNEL_URL as a versioned kernel.
 name: publish-image
 
 on:
+  push:
+    tags:
+      - "v*"
   pull_request:
     paths:
       - "catalog/**"
@@ -24,25 +27,69 @@ on:
         default: ubuntu-latest
         required: true
       release_tag:
-        description: If set, attach default-out files to this release tag
+        description: Existing tag to attach the default disk without rewriting other assets
         default: ""
         required: false
-  release:
-    types: [published]
+
+concurrency:
+  group: release-${{ github.event.inputs.release_tag || github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
 
 jobs:
-  catalog:
+  binaries:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Stamp linux binaries
+        env:
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          BUILD: ${{ github.run_number }}
+        run: |
+          VERSION=${TAG#v}
+          if [ -z "$TAG" ]; then VERSION=dev; fi
+          LDFLAGS="-X github.com/sudosylabs/execenv.Release=$VERSION -X github.com/sudosylabs/execenv.Build=$BUILD -X github.com/sudosylabs/execenv.Tag=$TAG"
+          GOOS=linux GOARCH=amd64 go build -ldflags "$LDFLAGS" -o execenv ./cmd/execenv
+          GOOS=linux GOARCH=amd64 go build -ldflags "$LDFLAGS" -o execenvctl ./cmd/execenvctl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-binaries
+          path: |
+            execenv
+            execenvctl
+
+  ids:
+    if: ${{ github.event_name != 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    outputs:
+      list: ${{ steps.set.outputs.list }}
+    steps:
+      - id: set
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo 'list=["fixture"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'list=["fixture","python","node","go","java"]' >> "$GITHUB_OUTPUT"
+          fi
+
+  bake:
+    if: ${{ github.event_name != 'workflow_dispatch' }}
+    needs: [binaries, ids]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        id: ${{ fromJSON(needs.ids.outputs.list) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-binaries
       - name: Install bake tools
         run: |
           sudo apt-get update
@@ -53,56 +100,67 @@ jobs:
           fi
           docker info
           command -v mkfs.ext4
-      - name: Build linux binaries
-        run: |
-          GOOS=linux GOARCH=amd64 go build -o execenv ./cmd/execenv
-          GOOS=linux GOARCH=amd64 go build -o execenvctl ./cmd/execenvctl
-      - name: Choose recipe ids
-        id: ids
-        run: |
-          ids="fixture"
-          if [ "${{ github.event_name }}" = "release" ]; then
-            ids="fixture python node go java"
-          elif [ "${{ github.event_name }}" = "pull_request" ]; then
-            changed=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD -- catalog || true)
-            extra=""
-            for id in python node go java fixture; do
-              echo "$changed" | grep -q "catalog/$id/" && extra="$extra $id"
-            done
-            if [ -n "$extra" ]; then
-              ids=$(echo "fixture $extra" | awk '{for(i=1;i<=NF;i++) if(!seen[$i]++) printf "%s ", $i}')
-            fi
-          fi
-          echo "ids=$ids" >> "$GITHUB_OUTPUT"
-          echo "baking: $ids"
-      - name: Bake selected ids
+          chmod +x execenv scripts/bake
+      - name: Kernel
         env:
           KERNEL_URL: ${{ secrets.KERNEL_URL }}
         run: |
-          chmod +x scripts/bake scripts/assemble-release
-          mkdir -p release-out
-          if [ "${{ github.event_name }}" = "release" ]; then
+          mkdir -p bake-out
+          if [ "${{ github.ref_type }}" = "tag" ]; then
             test -n "$KERNEL_URL" || { echo "set secret KERNEL_URL to a versioned vmlinux URL" >&2; exit 1; }
-            curl -fsSL "$KERNEL_URL" -o release-out/vmlinux
-            test -s release-out/vmlinux
+            curl -fsSL "$KERNEL_URL" -o bake-out/vmlinux
+            test -s bake-out/vmlinux
           else
-            # PR/smoke only. Never attach this blob to a release.
-            dd if=/dev/zero of=release-out/vmlinux bs=1k count=64
+            dd if=/dev/zero of=bake-out/vmlinux bs=1k count=64
           fi
-          for id in ${{ steps.ids.outputs.ids }}; do
-            df=catalog/$id/Dockerfile
-            if [ "$id" = "fixture" ] && [ ! -f "$df" ]; then
-              df=scripts/testdata/Dockerfile
-            fi
-            if [ ! -f "$df" ]; then
-              echo "skip $id: no Dockerfile (default is a separate job)" >&2
-              continue
-            fi
-            scripts/bake --out "bake-$id" --kernel release-out/vmlinux \
-              --id "$id" --dockerfile "$df" --agent ./execenv
-            cp "bake-$id/rootfs.ext4" "release-out/rootfs-$id.ext4"
+      - name: Bake ${{ matrix.id }}
+        run: |
+          df=catalog/${{ matrix.id }}/Dockerfile
+          if [ "${{ matrix.id }}" = "fixture" ] && [ ! -f "$df" ]; then
+            df=scripts/testdata/Dockerfile
+          fi
+          test -f "$df" || { echo "no Dockerfile for ${{ matrix.id }}" >&2; exit 1; }
+          scripts/bake --out "bake-${{ matrix.id }}" --kernel bake-out/vmlinux \
+            --id "${{ matrix.id }}" --dockerfile "$df" --agent ./execenv
+          cp "bake-${{ matrix.id }}/rootfs.ext4" "bake-out/rootfs-${{ matrix.id }}.ext4"
+          cp bake-out/vmlinux "bake-out/vmlinux-${{ matrix.id }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: disk-${{ matrix.id }}
+          path: |
+            bake-out/rootfs-${{ matrix.id }}.ext4
+            bake-out/vmlinux-${{ matrix.id }}
+
+  assemble:
+    if: ${{ github.event_name != 'workflow_dispatch' }}
+    needs: bake
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-binaries
+          path: release-out
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Assemble layout
+        run: |
+          chmod +x scripts/assemble-release
+          mkdir -p release-out
+          chmod +x release-out/execenv release-out/execenvctl || true
+          vmlinux=""
+          for f in artifacts/disk-*/vmlinux-*; do
+            [ -f "$f" ] || continue
+            vmlinux=$f
+            break
           done
-          cp execenv execenvctl release-out/
+          test -n "$vmlinux" || { echo "missing kernel artifact" >&2; exit 1; }
+          cp "$vmlinux" release-out/vmlinux
+          for f in artifacts/disk-*/rootfs-*.ext4; do
+            [ -f "$f" ] || continue
+            cp "$f" release-out/
+          done
           scripts/assemble-release release-out
           python3 - <<'PY'
           import json
@@ -113,15 +171,17 @@ jobs:
               assert len(img["hash"]) == 64, img
           print(doc)
           PY
-      - name: Upload release layout
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: execenv-catalog
           path: release-out/
-      - name: Attach catalog to GitHub Release
-        if: ${{ github.event_name == 'release' }}
+      - name: Attach catalog to this tag
+        if: ${{ github.ref_type == 'tag' }}
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
+          make_latest: false
+          overwrite_files: false
           files: |
             release-out/vmlinux
             release-out/index.json
@@ -137,12 +197,21 @@ jobs:
   default:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_default == 'true' }}
     runs-on: ${{ inputs.runner }}
-    needs: catalog
+    needs: binaries
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - uses: actions/download-artifact@v4
+        if: ${{ inputs.release_tag == '' }}
+        with:
+          name: linux-binaries
+      - name: Guest agent from the tagged release
+        if: ${{ inputs.release_tag != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "${{ inputs.release_tag }}" --pattern execenv
       - name: Install bake tools
         run: |
           sudo apt-get update
@@ -151,8 +220,7 @@ jobs:
             sudo apt-get install -y docker.io
             sudo systemctl start docker || sudo service docker start
           fi
-          docker info
-          command -v mkfs.ext4
+          chmod +x execenv scripts/bake
       - name: Require a pinned kernel
         env:
           KERNEL_URL: ${{ secrets.KERNEL_URL }}
@@ -162,26 +230,65 @@ jobs:
           test -s vmlinux
       - name: Bake default catalog id
         run: |
-          GOOS=linux GOARCH=amd64 go build -o execenv ./cmd/execenv
-          chmod +x scripts/bake
           scripts/bake --out default-out --kernel vmlinux \
             --id default --agent ./execenv \
             --source mcr.microsoft.com/devcontainers/universal:linux
           cp default-out/rootfs.ext4 default-out/rootfs-default.ext4
-      - name: Upload default
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: execenv-default-image
           path: |
             default-out/vmlinux
             default-out/rootfs-default.ext4
-            default-out/catalog.json
-      - name: Attach default disk to a release
+      - name: Attach default disk without replacing other assets
         if: ${{ inputs.release_tag != '' }}
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ inputs.release_tag }}
-          files: |
-            default-out/vmlinux
-            default-out/rootfs-default.ext4
-            default-out/catalog.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ inputs.release_tag }}"
+          gh release download "$tag" --pattern index.json --pattern SHA256SUMS --pattern vmlinux --dir pin
+          python3 - <<'PY'
+          import hashlib, json, os, sys
+          tag_dir = "pin"
+          rootfs = "default-out/rootfs-default.ext4"
+          kernel = os.path.join(tag_dir, "vmlinux")
+          h = hashlib.sha256()
+          for path in (kernel, rootfs):
+              with open(path, "rb") as f:
+                  for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                      h.update(chunk)
+          digest = h.hexdigest()
+          index_path = os.path.join(tag_dir, "index.json")
+          doc = json.load(open(index_path))
+          images = doc.setdefault("images", [])
+          for img in images:
+              if img.get("id") == "default":
+                  if img.get("hash") != digest:
+                      sys.exit("default hash would change; refusing")
+                  print("default already pinned")
+                  break
+          else:
+              images.append({"id": "default", "rootfs": "rootfs-default.ext4", "hash": digest})
+              with open(index_path, "w") as out:
+                  json.dump(doc, out, indent=2)
+                  out.write("\n")
+          sums_path = os.path.join(tag_dir, "SHA256SUMS")
+          lines = open(sums_path).read().splitlines() if os.path.exists(sums_path) else []
+          name = "rootfs-default.ext4"
+          file_hash = hashlib.sha256(open(rootfs, "rb").read()).hexdigest()
+          rewritten = []
+          found = False
+          for line in lines:
+              parts = line.split()
+              if len(parts) >= 2 and parts[1].endswith(name):
+                  if parts[0] != file_hash:
+                      sys.exit("checksum would change; refusing")
+                  found = True
+              rewritten.append(line)
+          if not found:
+              rewritten.append(f"{file_hash}  {name}")
+          open(sums_path, "w").write("\n".join(rewritten) + "\n")
+          print(digest)
+          PY
+          gh release upload "$tag" default-out/rootfs-default.ext4
+          gh release upload "$tag" pin/index.json pin/SHA256SUMS --clobber
