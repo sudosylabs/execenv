@@ -229,6 +229,105 @@ func TestNewAdapterReadyOmitsUnverifiedImage(t *testing.T) {
 	}
 }
 
+func TestSaveRoundTripAllowAndResources(t *testing.T) {
+	t.Parallel()
+	path := writeConfig(t, `{
+		"listen": "127.0.0.1:0",
+		"token": "secret",
+		"security": "insecure_local",
+		"adapter": "memory",
+		"images": [{"id": "default"}],
+		"slots": 2
+	}`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Network = "allowlist"
+	cfg.Allow = []string{"203.0.113.8"}
+	cfg.CPUMillis = 1000
+	cfg.MemoryBytes = 1 << 30
+	cfg.DiskBytes = 20 << 30
+	if err := Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	again, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Token != "secret" || again.CPUMillis != 1000 || again.DiskBytes != 20<<30 {
+		t.Fatalf("round-trip = %+v", again)
+	}
+	if len(again.Allow) != 1 || again.Allow[0] != "203.0.113.8" || again.Network != "allowlist" {
+		t.Fatalf("allow = %+v", again)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"path"`) {
+		t.Fatalf("Save emitted path alias: %s", raw)
+	}
+}
+
+func TestSaveRejectsInvalidLeavesFile(t *testing.T) {
+	t.Parallel()
+	path := writeConfig(t, `{
+		"listen": "127.0.0.1:0",
+		"token": "keep-me",
+		"security": "insecure_local",
+		"adapter": "memory",
+		"images": [{"id": "default"}],
+		"slots": 2
+	}`)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = Save(path, Config{Listen: "127.0.0.1:0", Token: "keep-me"})
+	if err == nil {
+		t.Fatal("Save() invalid = nil")
+	}
+	if strings.Contains(err.Error(), "keep-me") {
+		t.Fatal("Save error leaked token")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("Save changed the file on invalid config")
+	}
+}
+
+func TestSaveEmitsRootfsNotPath(t *testing.T) {
+	t.Parallel()
+	path := writeConfig(t, `{
+		"listen": "127.0.0.1:0",
+		"token": "secret",
+		"security": "insecure_local",
+		"adapter": "isolated",
+		"work_dir": "/tmp/execenv",
+		"images": [{"id": "default", "kernel": "vmlinux", "path": "disk.ext4", "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
+		"slots": 2
+	}`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if !strings.Contains(text, `"rootfs": "disk.ext4"`) || strings.Contains(text, `"path"`) {
+		t.Fatalf("Save = %s", text)
+	}
+}
+
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "host.json")

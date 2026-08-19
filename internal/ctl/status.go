@@ -11,7 +11,7 @@ import (
 func Status(opts Options, stdout io.Writer) error {
 	opts = opts.resolved()
 	devicePath := opts.Device
-	if doc, err := loadExisting(opts.configPath()); err == nil && doc.Device != "" {
+	if doc, err := loadHost(opts.configPath()); err == nil && doc.Device != "" {
 		devicePath = doc.Device
 	}
 	device := "missing"

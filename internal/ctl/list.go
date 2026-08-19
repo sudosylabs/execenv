@@ -1,10 +1,13 @@
 package ctl
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+
+	"github.com/sudosylabs/execenv/daemon"
 )
 
 // List prints ids installed on this host and ids the index currently
@@ -29,7 +32,7 @@ func List(opts Options, stdout io.Writer) error {
 }
 
 func installedIDs(opts Options) []string {
-	doc, err := loadExisting(opts.configPath())
+	doc, err := loadHost(opts.configPath())
 	if err != nil {
 		return nil
 	}
@@ -75,9 +78,9 @@ func Remove(opts Options, id string, stdout io.Writer) error {
 	if id == "" {
 		return wrap("remove", fmt.Errorf("missing id"))
 	}
-	doc, err := loadExisting(opts.configPath())
+	doc, err := loadHost(opts.configPath())
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			if stdout != nil {
 				fmt.Fprintf(stdout, "removed=%s\n", id)
 			}
@@ -86,8 +89,8 @@ func Remove(opts Options, id string, stdout io.Writer) error {
 		return err
 	}
 	token := doc.Token
-	var kept []writtenImage
-	var dropped *writtenImage
+	var kept []daemon.Image
+	var dropped *daemon.Image
 	for i := range doc.Images {
 		img := doc.Images[i]
 		if img.ID == id {
@@ -99,13 +102,10 @@ func Remove(opts Options, id string, stdout io.Writer) error {
 	}
 	if dropped != nil {
 		doc.Images = kept
-		if doc.Images == nil {
-			doc.Images = []writtenImage{}
-		}
-		if err := saveConfig(opts.configPath(), doc); err != nil {
+		if err := daemon.Save(opts.configPath(), doc); err != nil {
 			return err
 		}
-		again, err := loadExisting(opts.configPath())
+		again, err := loadHost(opts.configPath())
 		if err != nil {
 			return err
 		}
@@ -140,7 +140,7 @@ func removeFile(path string) error {
 	return nil
 }
 
-func kernelStillUsed(images []writtenImage, kernel string) bool {
+func kernelStillUsed(images []daemon.Image, kernel string) bool {
 	for _, img := range images {
 		if img.Kernel == kernel {
 			return true

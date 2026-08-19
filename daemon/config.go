@@ -32,22 +32,22 @@ type Config struct {
 	Token    string  `json:"token"`
 	Security string  `json:"security"`
 	Adapter  string  `json:"adapter"`
-	TLSCert  string  `json:"tls_cert"`
-	TLSKey   string  `json:"tls_key"`
-	WorkDir  string  `json:"work_dir"`
-	Device   string  `json:"device"`
-	Runtime  string  `json:"runtime"`
-	Supervisor string `json:"supervisor"`
-	Images   []Image `json:"images"`
-	Slots    int     `json:"slots"`
+	TLSCert    string `json:"tls_cert,omitempty"`
+	TLSKey     string `json:"tls_key,omitempty"`
+	WorkDir    string `json:"work_dir,omitempty"`
+	Device     string `json:"device,omitempty"`
+	Runtime    string `json:"runtime,omitempty"`
+	Supervisor string `json:"supervisor,omitempty"`
+	Images     []Image `json:"images"`
+	Slots      int    `json:"slots"`
 	// Isolated grants use these as machine defaults. Memory ignores them.
-	CPUMillis   int           `json:"cpu_millis"`
-	MemoryBytes int64         `json:"memory_bytes"`
-	DiskBytes   int64         `json:"disk_bytes"`
-	Network     string        `json:"network"`
-	Allow       []string      `json:"allow"`
+	CPUMillis   int           `json:"cpu_millis,omitempty"`
+	MemoryBytes int64         `json:"memory_bytes,omitempty"`
+	DiskBytes   int64         `json:"disk_bytes,omitempty"`
+	Network     string        `json:"network,omitempty"`
+	Allow       []string      `json:"allow,omitempty"`
 	Grace       time.Duration `json:"-"`
-	GraceText   string        `json:"grace"`
+	GraceText   string        `json:"grace,omitempty"`
 }
 
 // Image is one catalog entry. Memory only needs ID. Isolated grants use
@@ -82,6 +82,16 @@ func (img *Image) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+func (img Image) MarshalJSON() ([]byte, error) {
+	type canonical struct {
+		ID     string `json:"id"`
+		Kernel string `json:"kernel,omitempty"`
+		Rootfs string `json:"rootfs,omitempty"`
+		Hash   string `json:"hash,omitempty"`
+	}
+	return json.Marshal(canonical{ID: img.ID, Kernel: img.Kernel, Rootfs: img.Rootfs, Hash: img.Hash})
+}
+
 // Load reads and validates a JSON config file. It does not listen and does
 // not occupy grants. Errors never include the token value.
 func Load(path string) (Config, error) {
@@ -102,6 +112,37 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// Save validates cfg and writes it as Host configuration. Canonical keys
+// only (rootfs, not path). Invalid cfg leaves path unchanged. Mode 0600.
+func Save(path string, cfg Config) error {
+	if path == "" {
+		return execenv.Error("config", execenv.ErrInvalid)
+	}
+	if err := cfg.validate(); err != nil {
+		return err
+	}
+	if cfg.Images == nil {
+		cfg.Images = []Image{}
+	}
+	raw, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return execenv.Error("config", execenv.ErrInvalid)
+	}
+	raw = append(raw, '\n')
+	tmp := path + ".new"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return execenv.Error("config", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return execenv.Error("config", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return execenv.Error("config", err)
+	}
+	return nil
 }
 
 func (cfg *Config) validate() error {

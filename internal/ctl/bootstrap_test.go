@@ -152,6 +152,44 @@ func TestBootstrapKeepsExistingImages(t *testing.T) {
 	}
 }
 
+func TestBootstrapKeepsAllowAndResources(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	opts := testOpts(t, root)
+	if err := Bootstrap(opts, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(opts.Sysconf, "host.json")
+	cfg, err := daemon.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Network = "allowlist"
+	cfg.Allow = []string{"203.0.113.8"}
+	cfg.CPUMillis = 2000
+	cfg.MemoryBytes = 1 << 31
+	cfg.DiskBytes = 40 << 30
+	if err := daemon.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := Bootstrap(opts, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	again, err := daemon.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Token != cfg.Token {
+		t.Fatal("re-run rotated the token")
+	}
+	if again.Network != "allowlist" || len(again.Allow) != 1 || again.Allow[0] != "203.0.113.8" {
+		t.Fatalf("allow stripped: %+v", again)
+	}
+	if again.CPUMillis != 2000 || again.MemoryBytes != 1<<31 || again.DiskBytes != 40<<30 {
+		t.Fatalf("resources stripped: %+v", again)
+	}
+}
+
 func TestBootstrapKeepsTLSOnRerun(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

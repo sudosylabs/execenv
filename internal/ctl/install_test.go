@@ -185,6 +185,49 @@ func TestInstallUsesReleaseURLEnv(t *testing.T) {
 	}
 }
 
+func TestInstallLeavesAllowAndResources(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	opts := testOpts(t, root)
+	if err := Bootstrap(opts, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(opts.Sysconf, "host.json")
+	cfg, err := daemon.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Network = "allowlist"
+	cfg.Allow = []string{"198.51.100.2"}
+	cfg.CPUMillis = 1500
+	if err := daemon.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	kernel := []byte("k")
+	rootfs := []byte("r")
+	sum := writeDigest(t, root, kernel, rootfs)
+	srv := newReleaseServer(t, map[string][]byte{
+		"index.json":          []byte(`{"kernel":"vmlinux","images":[{"id":"fixture","rootfs":"rootfs-fixture.ext4","hash":"` + sum + `"}]}`),
+		"vmlinux":             kernel,
+		"rootfs-fixture.ext4": rootfs,
+	})
+	opts.ReleaseURL = srv.URL
+	opts.Reload = func() error { return nil }
+	if err := Install(opts, "fixture", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	again, err := daemon.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Token != cfg.Token || again.Network != "allowlist" || again.CPUMillis != 1500 {
+		t.Fatalf("install mutated host configuration: %+v", again)
+	}
+	if len(again.Allow) != 1 || again.Allow[0] != "198.51.100.2" {
+		t.Fatalf("allow = %v", again.Allow)
+	}
+}
+
 func TestInstallBadHashLeavesExistingDisk(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

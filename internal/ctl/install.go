@@ -1,6 +1,7 @@
 package ctl
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/daemon"
 	"github.com/sudosylabs/execenv/isolated"
 )
 
@@ -19,9 +21,9 @@ func Install(opts Options, id string, stdout io.Writer) error {
 	if id == "" {
 		return wrap("install", execenv.ErrInvalid)
 	}
-	doc, err := loadExisting(opts.configPath())
+	doc, err := loadHost(opts.configPath())
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return wrap("install", fmt.Errorf("host config missing; run execenvctl bootstrap first"))
 		}
 		return err
@@ -49,16 +51,16 @@ func Install(opts Options, id string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	doc.upsertImage(writtenImage{
+	upsertImage(&doc, daemon.Image{
 		ID:     entry.ID,
 		Kernel: kernel,
 		Rootfs: rootfs,
 		Hash:   entry.Hash,
 	})
-	if err := saveConfig(opts.configPath(), doc); err != nil {
+	if err := daemon.Save(opts.configPath(), doc); err != nil {
 		return err
 	}
-	again, err := loadExisting(opts.configPath())
+	again, err := loadHost(opts.configPath())
 	if err != nil {
 		return err
 	}

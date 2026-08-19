@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+
+	"github.com/sudosylabs/execenv/daemon"
 )
 
 // Isolation device and supervisor process names as the probe looks them up.
@@ -275,8 +278,9 @@ func extractNamed(tgz, dir, name, dest string) error {
 }
 
 func writeHostConfig(opts Options) error {
-	existing, err := loadExisting(opts.configPath())
-	if err != nil && !os.IsNotExist(err) {
+	existing, err := loadHost(opts.configPath())
+	first := errors.Is(err, os.ErrNotExist)
+	if err != nil && !first {
 		return err
 	}
 	token := existing.Token
@@ -306,31 +310,30 @@ func writeHostConfig(opts Options) error {
 			return err
 		}
 	}
-	images := existing.Images
-	if images == nil {
-		images = []writtenImage{}
+	doc := existing
+	doc.Listen = opts.Listen
+	doc.Token = token
+	doc.Security = security
+	doc.TLSCert = certPath
+	doc.TLSKey = keyPath
+	doc.WorkDir = opts.workDir()
+	doc.Device = opts.Device
+	doc.Runtime = opts.runtimePath()
+	doc.Supervisor = opts.supervisorPath()
+	doc.Slots = opts.Slots
+	if doc.Adapter == "" {
+		doc.Adapter = adapterIsolated
 	}
-	doc := writtenConfig{
-		Listen:     opts.Listen,
-		Token:      token,
-		Security:   security,
-		Adapter:    adapterIsolated,
-		TLSCert:    certPath,
-		TLSKey:     keyPath,
-		WorkDir:    opts.workDir(),
-		Device:     opts.Device,
-		Runtime:    opts.runtimePath(),
-		Supervisor: opts.supervisorPath(),
-		Images:     images,
-		Slots:      opts.Slots,
-		Network:    networkNone,
-		Grace:      defaultGrace,
+	if first {
+		doc.Network = networkNone
+		doc.Allow = nil
+		doc.GraceText = defaultGrace
 	}
-	return saveConfig(opts.configPath(), doc)
+	return daemon.Save(opts.configPath(), doc)
 }
 
 func imageSummary(opts Options) string {
-	existing, err := loadExisting(opts.configPath())
+	existing, err := loadHost(opts.configPath())
 	if err != nil || len(existing.Images) == 0 {
 		return "none"
 	}
@@ -338,7 +341,7 @@ func imageSummary(opts Options) string {
 }
 
 func hashSummary(opts Options) string {
-	existing, err := loadExisting(opts.configPath())
+	existing, err := loadHost(opts.configPath())
 	if err != nil || len(existing.Images) == 0 || existing.Images[0].Hash == "" {
 		return "none"
 	}
