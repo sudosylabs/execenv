@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 
+	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/agent"
 	"github.com/sudosylabs/execenv/daemon"
 )
@@ -25,8 +26,13 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "agent" {
 		os.Exit(runAgent(os.Args[2:]))
 	}
+	showVersion := flag.Bool("version", false, "print version and exit")
 	configPath := flag.String("config", "", "path to the host JSON config")
 	flag.Parse()
+	if *showVersion {
+		fmt.Print(execenv.Stamp())
+		return
+	}
 	if *configPath == "" {
 		fmt.Fprintln(os.Stderr, "usage: execenv -config <path>")
 		fmt.Fprintln(os.Stderr, "       execenv agent -home <dir> [-listen <unix-socket>]")

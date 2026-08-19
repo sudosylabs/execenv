@@ -8,6 +8,24 @@ import (
 	"testing"
 )
 
+func TestVersionFlag(t *testing.T) {
+	t.Parallel()
+	cmd := newRoot()
+	cmd.SetArgs([]string{"--version"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "version=") || !strings.Contains(got, "build=") || !strings.Contains(got, "tag=") {
+		t.Fatalf("--version = %q", got)
+	}
+	if strings.Contains(got, "token") || strings.Contains(got, "hash") {
+		t.Fatalf("--version leaked a secret: %q", got)
+	}
+}
+
 func TestBootstrapCommandFailsClosedWithoutDevice(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

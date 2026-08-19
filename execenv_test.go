@@ -11,6 +11,27 @@ import (
 	"github.com/sudosylabs/execenv/memory"
 )
 
+func TestLdflagsOverwriteStamp(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	bin := dir + "/execenvctl"
+	ld := "-X github.com/sudosylabs/execenv.Release=1.2.3 -X github.com/sudosylabs/execenv.Build=9 -X github.com/sudosylabs/execenv.Tag=v1.2.3"
+	cmd := exec.Command("go", "build", "-ldflags", ld, "-o", bin, "./cmd/execenvctl")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	out, err := exec.Command(bin, "--version").CombinedOutput()
+	if err != nil {
+		t.Fatalf("--version: %v\n%s", err, out)
+	}
+	got := string(out)
+	for _, want := range []string{"version=1.2.3", "build=9", "tag=v1.2.3"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("--version = %q, missing %q", got, want)
+		}
+	}
+}
+
 func TestRootPackageStdlibOnly(t *testing.T) {
 	t.Parallel()
 	cmd := exec.Command("go", "list", "-f", "{{ join .Imports \"\\n\" }}", ".")
@@ -31,7 +52,7 @@ func TestRootPackageStdlibOnly(t *testing.T) {
 func TestPublicSurfaceOmitsHypervisorNames(t *testing.T) {
 	t.Parallel()
 	banned := []string{"Firecracker", "firecracker", "jailer", "Jailer", "KVM", "kvm", "vsock"}
-	roots := []string{"doc.go", "execenv.go", "errors.go", "id.go", "isolated.go", "tree.go"}
+	roots := []string{"doc.go", "execenv.go", "errors.go", "id.go", "isolated.go", "tree.go", "build.go"}
 	for _, name := range roots {
 		body, err := os.ReadFile(name)
 		if err != nil {

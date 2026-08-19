@@ -16,6 +16,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/internal/ctl"
 )
 
@@ -34,7 +35,9 @@ func newRoot() *cobra.Command {
 		Short:         "Install and manage an execenv isolation host",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Version:       execenv.Release,
 	}
+	root.SetVersionTemplate(execenv.Stamp())
 	root.PersistentFlags().StringVar(&opts.Prefix, "prefix", opts.Prefix, "install prefix for binaries")
 	root.PersistentFlags().StringVar(&opts.Sysconf, "sysconf", opts.Sysconf, "directory for host.json and TLS files")
 	root.PersistentFlags().StringVar(&opts.State, "state", opts.State, "state directory for work and images")

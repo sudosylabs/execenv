@@ -2,11 +2,23 @@ SHELL := /bin/sh
 
 .PHONY: check test test-race vet build bake isolation network certify
 
+PKG := github.com/sudosylabs/execenv
+TAG ?= $(shell git describe --tags --exact-match 2>/dev/null || true)
+VERSION ?= $(patsubst v%,%,$(TAG))
+ifeq ($(VERSION),)
+VERSION := dev
+endif
+BUILD ?= $(BUILD_NUMBER)
+ifeq ($(BUILD),)
+BUILD := $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo dev)
+endif
+LDFLAGS := -X $(PKG).Release=$(VERSION) -X $(PKG).Build=$(BUILD) -X $(PKG).Tag=$(TAG)
+
 check: test test-race vet
 
 build:
-	go build -o execenv ./cmd/execenv
-	go build -o execenvctl ./cmd/execenvctl
+	go build -ldflags '$(LDFLAGS)' -o execenv ./cmd/execenv
+	go build -ldflags '$(LDFLAGS)' -o execenvctl ./cmd/execenvctl
 
 test:
 	go test ./...
