@@ -46,7 +46,11 @@ func installedIDs(opts Options) []string {
 }
 
 func availableIDs(opts Options) ([]string, error) {
-	raw, err := fetchBytes(opts.releaseBase() + "/index.json")
+	base, err := opts.releaseBase()
+	if err != nil {
+		return nil, err
+	}
+	raw, err := fetchBytes(base + "/index.json")
 	if err != nil {
 		return nil, err
 	}

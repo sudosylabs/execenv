@@ -22,7 +22,10 @@ func Upgrade(opts Options, stdout io.Writer) error {
 	if err := os.MkdirAll(opts.binDir(), 0o755); err != nil {
 		return wrap("upgrade", err)
 	}
-	base := opts.releaseBase()
+	base, err := opts.releaseBase()
+	if err != nil {
+		return err
+	}
 	sumsRaw, err := fetchBytes(base + "/" + checksumName)
 	if err != nil {
 		return err

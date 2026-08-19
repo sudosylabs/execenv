@@ -29,7 +29,11 @@ func Install(opts Options, id string, stdout io.Writer) error {
 		return err
 	}
 	token := doc.Token
-	raw, err := fetchBytes(opts.releaseBase() + "/index.json")
+	base, err := opts.releaseBase()
+	if err != nil {
+		return err
+	}
+	raw, err := fetchBytes(base + "/index.json")
 	if err != nil {
 		return err
 	}
@@ -47,7 +51,7 @@ func Install(opts Options, id string, stdout io.Writer) error {
 	}
 	kernelDest := filepath.Join(imageDir, filepath.Base(idx.Kernel))
 	rootfsDest := filepath.Join(imageDir, filepath.Base(entry.Rootfs))
-	kernel, rootfs, err := fetchVerified(opts.releaseBase(), idx.Kernel, entry.Rootfs, kernelDest, rootfsDest, entry.Hash)
+	kernel, rootfs, err := fetchVerified(base, idx.Kernel, entry.Rootfs, kernelDest, rootfsDest, entry.Hash)
 	if err != nil {
 		return err
 	}

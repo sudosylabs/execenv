@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+
+	"github.com/sudosylabs/execenv"
 )
 
 // Status reports isolation device usability, unit state, and installed
@@ -23,8 +25,16 @@ func Status(opts Options, stdout io.Writer) error {
 		fmt.Fprintf(stdout, "device=%s\n", device)
 		fmt.Fprintf(stdout, "unit=%s\n", unit)
 		fmt.Fprintf(stdout, "installed=%s\n", joinIDs(installedIDs(opts)))
+		fmt.Fprintf(stdout, "release=%s\n", stampRelease())
 	}
 	return nil
+}
+
+func stampRelease() string {
+	if execenv.Tag != "" {
+		return execenv.Tag
+	}
+	return execenv.Release
 }
 
 func unitState(opts Options) string {

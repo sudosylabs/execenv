@@ -103,8 +103,6 @@ func TestRemoveDropsDiskAndConfig(t *testing.T) {
 	}
 }
 
-
-
 func TestRemoveKeepsOtherIDs(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -163,7 +161,8 @@ func TestStatusOmitsSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := out.String()
-	if !strings.Contains(text, "device=ok") || !strings.Contains(text, "installed=fixture") {
+	wantRelease := stampRelease()
+	if !strings.Contains(text, "device=ok") || !strings.Contains(text, "installed=fixture") || !strings.Contains(text, "release="+wantRelease) {
 		t.Fatalf("stdout = %q", text)
 	}
 	cfg, err := daemon.Load(filepath.Join(opts.Sysconf, "host.json"))

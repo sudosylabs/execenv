@@ -8,28 +8,32 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/sudosylabs/execenv"
 )
 
 var httpClient = &http.Client{Timeout: 30 * time.Minute}
 
-// defaultReleaseURL is the GitHub Releases asset base. Override with
-// --release-url or EXECENV_RELEASE_URL for a mirror of the same layout.
-const defaultReleaseURL = "https://github.com/sudosylabs/execenv/releases/latest/download"
+const (
+	githubReleaseDownload = "https://github.com/sudosylabs/execenv/releases/download"
+	releaseURLEnv         = "EXECENV_RELEASE_URL"
+)
 
-const releaseURLEnv = "EXECENV_RELEASE_URL"
-
-func resolveReleaseURL(flag, env string) string {
+func resolveReleaseURL(flag, env, tag string) (string, error) {
 	if flag != "" {
-		return strings.TrimRight(flag, "/")
+		return strings.TrimRight(flag, "/"), nil
 	}
 	if env != "" {
-		return strings.TrimRight(env, "/")
+		return strings.TrimRight(env, "/"), nil
 	}
-	return defaultReleaseURL
+	if tag == "" || tag == "dev" {
+		return "", wrap("release", fmt.Errorf("unstamped binary; pass --release-url or EXECENV_RELEASE_URL"))
+	}
+	return githubReleaseDownload + "/" + tag, nil
 }
 
-func (o Options) releaseBase() string {
-	return resolveReleaseURL(o.ReleaseURL, os.Getenv(releaseURLEnv))
+func (o Options) releaseBase() (string, error) {
+	return resolveReleaseURL(o.ReleaseURL, os.Getenv(releaseURLEnv), execenv.Tag)
 }
 
 func fetchURL(url, dest string) error {
