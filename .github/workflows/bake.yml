@@ -79,11 +79,10 @@ jobs:
           test -f "$df" || { echo "no Dockerfile for $CATALOG_ID" >&2; exit 1; }
           scripts/bake --out "bake-${CATALOG_ID}" --kernel bake-out/vmlinux \
             --id "$CATALOG_ID" --dockerfile "$df" --agent ./execenv
-          cp "bake-${CATALOG_ID}/rootfs.ext4" "bake-out/rootfs-${CATALOG_ID}.ext4"
-          cp bake-out/vmlinux "bake-out/vmlinux-${CATALOG_ID}"
+          mkdir -p art
+          cp "bake-${CATALOG_ID}/rootfs.ext4" "art/rootfs-${CATALOG_ID}.ext4"
+          cp bake-out/vmlinux "art/vmlinux-${CATALOG_ID}"
       - uses: actions/upload-artifact@v4
         with:
           name: disk-${{ inputs.id }}
-          path: |
-            bake-out/rootfs-${{ inputs.id }}.ext4
-            bake-out/vmlinux-${{ inputs.id }}
+          path: art/

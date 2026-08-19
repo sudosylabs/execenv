@@ -1,0 +1,111 @@
+# Push a version tag to publish stamped binaries and language Images.
+# Hashes are not overwritten. latest is not the pin. Default is not here.
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  stamp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Stamp linux binaries
+        env:
+          TAG: ${{ github.ref_name }}
+          BUILD: ${{ github.run_number }}
+        run: GOOS=linux GOARCH=amd64 make build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-binaries
+          path: |
+            execenv
+            execenvctl
+
+  bake:
+    needs: stamp
+    strategy:
+      fail-fast: false
+      matrix:
+        id: [fixture, python, node, go, java]
+    uses: ./.github/workflows/bake.yml
+    with:
+      id: ${{ matrix.id }}
+      kernel: pin
+      agent_artifact: linux-binaries
+    secrets:
+      KERNEL_URL: ${{ secrets.KERNEL_URL }}
+
+  assemble:
+    needs: bake
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-binaries
+          path: release-out
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Assemble layout
+        run: |
+          chmod +x scripts/assemble-release release-out/execenv release-out/execenvctl
+          ./release-out/execenvctl --version | grep -F "tag=${{ github.ref_name }}" \
+            || { echo "unstamped binary; refusing publish" >&2; exit 1; }
+          vmlinux=""
+          for f in artifacts/disk-*/vmlinux-*; do
+            [ -f "$f" ] || continue
+            vmlinux=$f
+            break
+          done
+          test -n "$vmlinux" || { echo "missing kernel artifact" >&2; exit 1; }
+          cp "$vmlinux" release-out/vmlinux
+          for f in artifacts/disk-*/rootfs-*.ext4; do
+            [ -f "$f" ] || continue
+            cp "$f" release-out/
+          done
+          scripts/assemble-release release-out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: execenv-catalog
+          path: release-out/
+      - name: Refuse rewrite of an existing Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists; hashes are immutable" >&2
+            exit 1
+          fi
+      - name: Attach catalog to this tag
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          make_latest: false
+          overwrite_files: false
+          fail_on_unmatched_files: true
+          files: |
+            release-out/vmlinux
+            release-out/index.json
+            release-out/SHA256SUMS
+            release-out/execenv
+            release-out/execenvctl
+            release-out/rootfs-fixture.ext4
+            release-out/rootfs-python.ext4
+            release-out/rootfs-node.ext4
+            release-out/rootfs-go.ext4
+            release-out/rootfs-java.ext4
