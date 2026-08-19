@@ -83,6 +83,61 @@ func TestAssembleReleaseWritesIndexAndChecksums(t *testing.T) {
 	}
 }
 
+func TestPinImageAppendsWithoutRewritingOtherHashes(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	kernel := filepath.Join(dir, "vmlinux")
+	python := filepath.Join(dir, "rootfs-python.ext4")
+	if err := os.WriteFile(kernel, []byte("kernel"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(python, []byte("disk"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "execenv"), []byte("bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(filepath.Join("scripts", "assemble-release"), dir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("assemble-release: %v\n%s", err, out)
+	}
+	pythonHash, err := isolated.Digest(kernel, python)
+	if err != nil {
+		t.Fatal(err)
+	}
+	def := filepath.Join(dir, "rootfs-default.ext4")
+	if err := os.WriteFile(def, []byte("default-disk"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pin := exec.Command(filepath.Join("scripts", "pin-image"),
+		"--dir", dir, "--id", "default", "--rootfs", def, "--kernel", kernel)
+	if out, err := pin.CombinedOutput(); err != nil {
+		t.Fatalf("pin-image: %v\n%s", err, out)
+	}
+	idx, err := os.ReadFile(filepath.Join(dir, "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(idx)
+	if !strings.Contains(text, pythonHash) || !strings.Contains(text, `"id": "default"`) {
+		t.Fatalf("index = %s", text)
+	}
+	again := exec.Command(filepath.Join("scripts", "pin-image"),
+		"--dir", dir, "--id", "default", "--rootfs", def, "--kernel", kernel)
+	if out, err := again.CombinedOutput(); err != nil {
+		t.Fatalf("pin-image again: %v\n%s", err, out)
+	}
+	other := filepath.Join(dir, "other.ext4")
+	if err := os.WriteFile(other, []byte("other"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bad := exec.Command(filepath.Join("scripts", "pin-image"),
+		"--dir", dir, "--id", "default", "--rootfs", other, "--kernel", kernel)
+	if err := bad.Run(); err == nil {
+		t.Fatal("pin-image accepted a hash change")
+	}
+}
+
 func TestExecenvDoesNotImportManager(t *testing.T) {
 	t.Parallel()
 	cmd := exec.Command("go", "list", "-f", "{{ join .Imports \"\\n\" }}", "./cmd/execenv")

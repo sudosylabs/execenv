@@ -1,0 +1,103 @@
+#!/bin/sh
+# Append one catalog id to an existing index.json and SHA256SUMS.
+# Refuses if that id already has a different hash. Other ids are not rewritten.
+# CI only; the grant Host never runs this.
+set -eu
+
+usage() {
+	printf '%s\n' "usage: scripts/pin-image --dir DIR --id ID --rootfs FILE --kernel FILE" >&2
+	exit 2
+}
+
+DIR=
+ID=
+ROOTFS=
+KERNEL=
+
+while [ $# -gt 0 ]; do
+	case $1 in
+	--dir) DIR=$2; shift 2 ;;
+	--id) ID=$2; shift 2 ;;
+	--rootfs) ROOTFS=$2; shift 2 ;;
+	--kernel) KERNEL=$2; shift 2 ;;
+	-h|--help) usage ;;
+	*) usage ;;
+	esac
+done
+
+[ -n "$DIR" ] && [ -n "$ID" ] && [ -n "$ROOTFS" ] && [ -n "$KERNEL" ] || usage
+[ -f "$DIR/index.json" ] || { printf '%s\n' "missing $DIR/index.json" >&2; exit 1; }
+[ -f "$ROOTFS" ] || { printf '%s\n' "missing $ROOTFS" >&2; exit 1; }
+[ -f "$KERNEL" ] || { printf '%s\n' "missing $KERNEL" >&2; exit 1; }
+
+need_hash() {
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum "$1" | awk '{print $1}'
+	elif command -v shasum >/dev/null 2>&1; then
+		shasum -a 256 "$1" | awk '{print $1}'
+	else
+		printf '%s\n' "pin-image requires sha256sum" >&2
+		exit 1
+	fi
+}
+
+digest() {
+	if command -v sha256sum >/dev/null 2>&1; then
+		cat -- "$1" "$2" | sha256sum | awk '{print $1}'
+	else
+		cat -- "$1" "$2" | shasum -a 256 | awk '{print $1}'
+	fi
+}
+
+HASH=$(digest "$KERNEL" "$ROOTFS")
+BASE=$(basename "$ROOTFS")
+export PIN_DIR="$DIR" PIN_ID="$ID" PIN_HASH="$HASH" PIN_BASE="$BASE"
+
+python3 - <<'PY'
+import json, os, sys
+path = os.path.join(os.environ["PIN_DIR"], "index.json")
+doc = json.load(open(path))
+images = doc.setdefault("images", [])
+want_id = os.environ["PIN_ID"]
+want_hash = os.environ["PIN_HASH"]
+want_base = os.environ["PIN_BASE"]
+for img in images:
+    if img.get("id") == want_id:
+        if img.get("hash") != want_hash:
+            sys.exit("id %s hash would change; refusing" % want_id)
+        print("already pinned")
+        sys.exit(0)
+images.append({"id": want_id, "rootfs": want_base, "hash": want_hash})
+with open(path, "w") as out:
+    json.dump(doc, out, indent=2)
+    out.write("\n")
+print("appended")
+PY
+
+SUMS=$DIR/SHA256SUMS
+upsert_sum() {
+	name=$1
+	hash=$2
+	if [ ! -f "$SUMS" ]; then
+		printf '%s  %s\n' "$hash" "$name" >"$SUMS"
+		return
+	fi
+	existing=$(awk -v n="$name" '$NF==n {print $1; exit}' "$SUMS" || true)
+	if [ -n "$existing" ] && [ "$existing" != "$hash" ]; then
+		if [ "$name" = "index.json" ]; then
+			# Index rewrite is the append; replace that one line only.
+			tmp=$SUMS.new
+			awk -v n="$name" -v h="$hash" '$NF==n {$1=h} {print}' "$SUMS" >"$tmp"
+			mv "$tmp" "$SUMS"
+			return
+		fi
+		printf '%s\n' "checksum for $name would change; refusing" >&2
+		exit 1
+	fi
+	if [ -z "$existing" ]; then
+		printf '%s  %s\n' "$hash" "$name" >>"$SUMS"
+	fi
+}
+
+upsert_sum "$BASE" "$(need_hash "$ROOTFS")"
+upsert_sum index.json "$(need_hash "$DIR/index.json")"

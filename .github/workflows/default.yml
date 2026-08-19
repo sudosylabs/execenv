@@ -1,0 +1,86 @@
+# Attach the large default Image onto an existing tagged Release.
+# Uses the Agent already on that tag. Does not rewrite other Image hashes.
+name: default
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing version tag (for example v1.2.3)
+        required: true
+        type: string
+      runner:
+        description: Runner label for the large disk
+        required: false
+        default: ubuntu-latest
+        type: string
+
+concurrency:
+  group: release-refs/tags/${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  agent:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Guest Agent from the tagged Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "${{ inputs.release_tag }}" --pattern execenv
+          chmod +x execenv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-binaries
+          path: execenv
+
+  bake:
+    needs: agent
+    uses: ./.github/workflows/bake.yml
+    with:
+      id: default
+      kernel: pin
+      agent_artifact: linux-binaries
+      runner: ${{ inputs.runner }}
+      source: mcr.microsoft.com/devcontainers/universal:linux
+    secrets:
+      KERNEL_URL: ${{ secrets.KERNEL_URL }}
+
+  pin:
+    needs: bake
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: disk-default
+          path: disk
+      - name: Pin default onto the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          chmod +x scripts/pin-image
+          mkdir -p pin
+          gh release download "$TAG" --pattern index.json --pattern SHA256SUMS --pattern vmlinux --dir pin
+          bake_k=disk/vmlinux-default
+          tag_k=pin/vmlinux
+          test -f "$bake_k" && test -f "$tag_k"
+          if command -v sha256sum >/dev/null; then
+            test "$(sha256sum "$bake_k" | awk '{print $1}')" = "$(sha256sum "$tag_k" | awk '{print $1}')" \
+              || { echo "bake kernel does not match the tagged kernel" >&2; exit 1; }
+          else
+            test "$(shasum -a 256 "$bake_k" | awk '{print $1}')" = "$(shasum -a 256 "$tag_k" | awk '{print $1}')" \
+              || { echo "bake kernel does not match the tagged kernel" >&2; exit 1; }
+          fi
+          out=$(scripts/pin-image --dir pin --id default --rootfs disk/rootfs-default.ext4 --kernel pin/vmlinux)
+          echo "$out"
+          if ! echo "$out" | grep -q "already pinned"; then
+            gh release upload "$TAG" disk/rootfs-default.ext4
+          fi
+          gh release upload "$TAG" pin/index.json pin/SHA256SUMS --clobber
