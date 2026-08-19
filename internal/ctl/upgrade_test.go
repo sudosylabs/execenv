@@ -27,6 +27,7 @@ func TestUpgradeReplacesBinariesAndLeavesHost(t *testing.T) {
 	execenvNew := linuxAMD64ELF("execenv-v2")
 	ctlNew := linuxAMD64ELF("ctl-v2")
 	srv := newReleaseServer(t, map[string][]byte{
+		"index.json": emptyIndexJSON(),
 		"execenv":    execenvNew,
 		"execenvctl": ctlNew,
 		"SHA256SUMS": checksumFile(map[string][]byte{
@@ -89,6 +90,7 @@ func TestUpgradeRefusesChecksumMismatch(t *testing.T) {
 	good := linuxAMD64ELF("good")
 	bad := linuxAMD64ELF("bad")
 	srv := newReleaseServer(t, map[string][]byte{
+		"index.json": emptyIndexJSON(),
 		"execenv":    bad,
 		"execenvctl": good,
 		"SHA256SUMS": checksumFile(map[string][]byte{
@@ -114,6 +116,7 @@ func TestUpgradeRefusesWrongArch(t *testing.T) {
 	arm[18] = elfMachineARM
 	arm[19] = 0
 	srv := newReleaseServer(t, map[string][]byte{
+		"index.json": emptyIndexJSON(),
 		"execenv":    arm,
 		"execenvctl": linuxAMD64ELF("ctl"),
 		"SHA256SUMS": checksumFile(map[string][]byte{
@@ -137,6 +140,7 @@ func TestUpgradeRefusesNonLinux(t *testing.T) {
 	}
 	macho := []byte{0xcf, 0xfa, 0xed, 0xfe, 0, 0, 0, 0}
 	srv := newReleaseServer(t, map[string][]byte{
+		"index.json": emptyIndexJSON(),
 		"execenv":    macho,
 		"execenvctl": linuxAMD64ELF("ctl"),
 		"SHA256SUMS": checksumFile(map[string][]byte{
@@ -152,6 +156,40 @@ func TestUpgradeRefusesNonLinux(t *testing.T) {
 	if !strings.Contains(err.Error(), "non-linux") {
 		t.Fatalf("error = %v", err)
 	}
+}
+
+func TestUpgradeFailsClosedIfInstalledImageMissing(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	opts := bootstrappedWithFixture(t, root)
+	before, err := os.ReadFile(filepath.Join(opts.Prefix, "bin", "execenv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	execenvNew := linuxAMD64ELF("execenv-v2")
+	ctlNew := linuxAMD64ELF("ctl-v2")
+	srv := newReleaseServer(t, map[string][]byte{
+		"index.json": emptyIndexJSON(),
+		"execenv":    execenvNew,
+		"execenvctl": ctlNew,
+		"SHA256SUMS": checksumFile(map[string][]byte{
+			"execenv":    execenvNew,
+			"execenvctl": ctlNew,
+		}),
+	})
+	opts.ReleaseURL = srv.URL
+	err = Upgrade(opts, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("error = %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(opts.Prefix, "bin", "execenv"))
+	if err != nil || !bytes.Equal(got, before) {
+		t.Fatal("upgrade replaced binaries after a missing image")
+	}
+}
+
+func emptyIndexJSON() []byte {
+	return []byte(`{"kernel":"vmlinux","images":[]}` + "\n")
 }
 
 func linuxAMD64ELF(tag string) []byte {

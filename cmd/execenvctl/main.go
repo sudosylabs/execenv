@@ -120,7 +120,7 @@ func newUpgrade(opts *ctl.Options) *cobra.Command {
 	return &cobra.Command{
 		Use:   "upgrade",
 		Short: "Replace execenvctl and execenv from the release channel",
-		Long:  "Fetch linux/amd64 binaries and checksums. Catalog disks, the host token, and TLS files are left alone.",
+		Long:  "Fetch linux/amd64 binaries and reinstall every catalog id already on the host from this binary's tag. The host token and TLS files are left alone.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return ctl.Upgrade(*opts, cmd.OutOrStdout())

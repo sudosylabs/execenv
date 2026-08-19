@@ -15,8 +15,9 @@ const checksumName = "SHA256SUMS"
 
 var upgradeNames = []string{execenvName, "execenvctl"}
 
-// Upgrade replaces execenvctl and execenv from the release channel.
-// Catalog disks, the host token, and TLS files are not touched.
+// Upgrade replaces execenvctl and execenv from this process's tagged
+// release, then reinstalls every catalog id already on the host so the
+// baked agent matches. The host token and TLS files are not touched.
 func Upgrade(opts Options, stdout io.Writer) error {
 	opts = opts.resolved()
 	if err := os.MkdirAll(opts.binDir(), 0o755); err != nil {
@@ -25,6 +26,20 @@ func Upgrade(opts Options, stdout io.Writer) error {
 	base, err := opts.releaseBase()
 	if err != nil {
 		return err
+	}
+	idxRaw, err := fetchBytes(base + "/index.json")
+	if err != nil {
+		return err
+	}
+	idx, err := parseIndex(idxRaw)
+	if err != nil {
+		return err
+	}
+	ids := installedIDs(opts)
+	for _, id := range ids {
+		if _, err := idx.lookup(id); err != nil {
+			return wrap("upgrade", fmt.Errorf("installed image %s missing from this release", id))
+		}
 	}
 	sumsRaw, err := fetchBytes(base + "/" + checksumName)
 	if err != nil {
@@ -72,19 +87,40 @@ func Upgrade(opts Options, stdout io.Writer) error {
 		}
 		replaced = append(replaced, item.name)
 	}
+	if len(replaced) == 0 && !installedDisksDiffer(opts, idx) {
+		if stdout != nil {
+			fmt.Fprintln(stdout, "upgraded=already current")
+		}
+		return nil
+	}
 	if len(replaced) > 0 {
 		if err := opts.reloadUnit(); err != nil {
 			return err
 		}
 	}
-	if stdout != nil {
-		if len(replaced) == 0 {
-			fmt.Fprintln(stdout, "upgraded=already current")
-		} else {
-			fmt.Fprintf(stdout, "upgraded=%s\n", strings.Join(replaced, ","))
+	for _, id := range ids {
+		if err := Install(opts, id, io.Discard); err != nil {
+			return err
 		}
 	}
+	if stdout != nil {
+		fmt.Fprintf(stdout, "upgraded=%s\n", strings.Join(append(append([]string(nil), replaced...), ids...), ","))
+	}
 	return nil
+}
+
+func installedDisksDiffer(opts Options, idx Index) bool {
+	doc, err := loadHost(opts.configPath())
+	if err != nil {
+		return false
+	}
+	for _, img := range doc.Images {
+		entry, err := idx.lookup(img.ID)
+		if err != nil || entry.Hash != img.Hash {
+			return true
+		}
+	}
+	return false
 }
 
 type stagedFile struct {
