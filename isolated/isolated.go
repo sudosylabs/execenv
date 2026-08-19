@@ -54,6 +54,7 @@ type Host struct {
 	slots  int
 	probe  func() error
 	launch launcher
+	attach attacher
 	grants map[execenv.ID]*environment
 }
 
@@ -90,6 +91,7 @@ func New(cfg Config) (*Host, error) {
 		slots:  slots,
 		probe:  func() error { return probePlatform(cfg) },
 		launch: newProcessLauncher(cfg),
+		attach: allowAttacher{},
 		grants: make(map[execenv.ID]*environment),
 	}
 	return h, nil
@@ -161,19 +163,41 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		h.mu.Unlock()
 		return nil, execenv.Error("ensure", err)
 	}
+	dests := append([]string(nil), h.cfg.Allow...)
+	h.mu.Unlock()
+	var att *netAttach
+	if spec.Network == execenv.NetworkAllowlist {
+		var err error
+		att, err = h.attach.Setup(spec.ID, dests)
+		if err != nil {
+			return nil, execenv.Error("ensure", err)
+		}
+	}
 	inst, err := h.launch.Start(ctx, startRequest{
 		ID:      spec.ID,
 		Kernel:  image.Kernel,
 		Rootfs:  image.Rootfs,
 		TreeDir: treeDir,
-		Network: spec.Network,
-		Allow:   append([]string(nil), h.cfg.Allow...),
+		Attach:  att,
 		Memory:  h.cfg.MemoryBytes,
 		CPU:     h.cfg.CPUMillis,
 	})
 	if err != nil {
-		h.mu.Unlock()
+		if att != nil {
+			att.close()
+		}
 		return nil, execenv.Error("ensure", err)
+	}
+	h.mu.Lock()
+	if _, exists := h.grants[spec.ID]; exists {
+		h.mu.Unlock()
+		_ = inst.Stop()
+		return nil, execenv.Error("ensure", execenv.ErrConflict)
+	}
+	if len(h.grants) >= h.slots {
+		h.mu.Unlock()
+		_ = inst.Stop()
+		return nil, execenv.Error("ensure", execenv.ErrCapacity)
 	}
 	env := &environment{
 		id:      spec.ID,

@@ -223,6 +223,18 @@ func testHostWithImages(t *testing.T, probe func() error, launch launcher, image
 	}
 	h.probe = probe
 	h.launch = launch
+	h.attach = &recordingAttacher{}
+	t.Cleanup(func() {
+		h.mu.Lock()
+		ids := make([]execenv.ID, 0, len(h.grants))
+		for id := range h.grants {
+			ids = append(ids, id)
+		}
+		h.mu.Unlock()
+		for _, id := range ids {
+			_ = h.Revoke(context.Background(), id)
+		}
+	})
 	return h
 }
 

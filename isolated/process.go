@@ -104,21 +104,9 @@ func (l *processLauncher) Start(ctx context.Context, req startRequest) (instance
 	if err := os.MkdirAll(req.TreeDir, 0o700); err != nil {
 		return nil, err
 	}
-	// Network none: no guest NIC. Allowlist: a tap plus a host filter
-	// of operator dests. Fail closed rather than boot an open NIC.
-	var attach *netAttach
-	if req.Network == execenv.NetworkAllowlist {
-		att, err := setupAllowlist(req.ID, req.Allow)
-		if err != nil {
-			return nil, err
-		}
-		attach = att
-	}
-	vm, err := writeMachineConfig(req, attach)
+	// Attach is already prepared by occupancy. None means no NIC.
+	vm, err := writeMachineConfig(req)
 	if err != nil {
-		if attach != nil {
-			attach.close()
-		}
 		return nil, err
 	}
 	// jailer --id <grant> --exec-file <runtime> --chroot-base-dir <parent>
@@ -146,14 +134,11 @@ func (l *processLauncher) Start(ctx context.Context, req startRequest) (instance
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	if err := cmd.Start(); err != nil {
-		if attach != nil {
-			attach.close()
-		}
 		return nil, execenv.ErrUnavailable
 	}
 	cleanup := func() {}
-	if attach != nil {
-		cleanup = attach.close
+	if req.Attach != nil {
+		cleanup = req.Attach.close
 	}
 	return &processInstance{cmd: cmd, dir: grantDir, cleanup: cleanup}, nil
 }
@@ -187,7 +172,7 @@ func guestCID(id execenv.ID) uint32 {
 	return cid
 }
 
-func writeMachineConfig(req startRequest, attach *netAttach) (string, error) {
+func writeMachineConfig(req startRequest) (string, error) {
 	mem := req.Memory / (1024 * 1024)
 	if mem <= 0 {
 		mem = 128
@@ -203,7 +188,7 @@ func writeMachineConfig(req startRequest, attach *netAttach) (string, error) {
 	doc := map[string]any{
 		"boot-source": map[string]any{
 			"kernel_image_path": req.Kernel,
-			"boot_args":         bootArgs(attach),
+			"boot_args":         bootArgs(req.Attach),
 		},
 		"drives": []map[string]any{
 			{
@@ -222,11 +207,11 @@ func writeMachineConfig(req startRequest, attach *netAttach) (string, error) {
 			"uds_path":  filepath.Join(filepath.Dir(req.TreeDir), "guest.sock"),
 		},
 	}
-	if attach != nil {
+	if req.Attach != nil {
 		doc["network-interfaces"] = []map[string]any{{
 			"iface_id":      "eth0",
-			"guest_mac":     attach.MAC,
-			"host_dev_name": attach.Dev,
+			"guest_mac":     req.Attach.MAC,
+			"host_dev_name": req.Attach.Dev,
 		}}
 	}
 	raw, err := json.Marshal(doc)

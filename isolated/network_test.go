@@ -1,6 +1,7 @@
 package isolated
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net"
@@ -45,6 +46,30 @@ func TestNewRejectsBadAllow(t *testing.T) {
 	}
 }
 
+func TestEnsureNoneDoesNotAttachNIC(t *testing.T) {
+	t.Parallel()
+	launch := &recordingLauncher{}
+	host := testHost(t, func() error { return nil }, launch)
+	env, err := host.Ensure(t.Context(), execenv.Spec{ID: "grant-1", Image: "default"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = env.Revoke(t.Context()) })
+	rec := host.attach.(*recordingAttacher)
+	rec.mu.Lock()
+	setups, last := rec.setups, rec.last
+	rec.mu.Unlock()
+	if setups != 0 || last != nil {
+		t.Fatalf("none attach setups=%d last=%v", setups, last)
+	}
+	launch.mu.Lock()
+	att := launch.last.Attach
+	launch.mu.Unlock()
+	if att != nil {
+		t.Fatal("launch received an attach for NetworkNone")
+	}
+}
+
 func TestEnsureAllowlistWithoutHostAllow(t *testing.T) {
 	t.Parallel()
 	host := testHost(t, func() error { return nil }, &recordingLauncher{})
@@ -56,40 +81,46 @@ func TestEnsureAllowlistWithoutHostAllow(t *testing.T) {
 	if !errors.Is(err, execenv.ErrNetwork) {
 		t.Fatalf("Ensure() error = %v, want ErrNetwork", err)
 	}
+	rec := host.attach.(*recordingAttacher)
+	rec.mu.Lock()
+	setups := rec.setups
+	rec.mu.Unlock()
+	if setups != 0 {
+		t.Fatalf("attach Setup called %d times, want 0", setups)
+	}
 }
 
 func TestEnsureAllowlistUsesHostDests(t *testing.T) {
 	t.Parallel()
 	launch := &recordingLauncher{}
 	dir := t.TempDir()
-	h, err := New(Config{
-		WorkDir: t.TempDir(),
-		Slots:   2,
-		Images:  []Image{writeCatalogImage(t, dir, "default", "root")},
-		Allow:   []string{"203.0.113.10"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.probe = func() error { return nil }
-	h.launch = launch
-	env, err := h.Ensure(t.Context(), execenv.Spec{
+	h := testHostWithImages(t, func() error { return nil }, launch,
+		writeCatalogImage(t, dir, "default", "root"),
+	)
+	h.cfg.Allow = []string{"203.0.113.10"}
+	rec := h.attach.(*recordingAttacher)
+	if _, err := h.Ensure(t.Context(), execenv.Spec{
 		ID:      "grant-1",
 		Image:   "default",
 		Network: execenv.NetworkAllowlist,
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = env.Revoke(t.Context()) })
+	rec.mu.Lock()
+	dests := append([]string(nil), rec.dests...)
+	att := rec.last
+	rec.mu.Unlock()
+	if len(dests) != 1 || dests[0] != "203.0.113.10" {
+		t.Fatalf("attach dests = %v, want host dests only", dests)
+	}
 	launch.mu.Lock()
 	req := launch.last
 	launch.mu.Unlock()
-	if req.Network != execenv.NetworkAllowlist {
-		t.Fatalf("Network = %v", req.Network)
+	if req.Attach == nil {
+		t.Fatal("launch Attach = nil")
 	}
-	if len(req.Allow) != 1 || req.Allow[0] != "203.0.113.10" {
-		t.Fatalf("Allow = %v, want host dests only", req.Allow)
+	if att == nil || req.Attach.Dev != att.Dev {
+		t.Fatal("launch did not consume the prepared attach")
 	}
 }
 
@@ -107,6 +138,8 @@ func TestEnsureNetworkChangeConflicts(t *testing.T) {
 	}
 	h.probe = func() error { return nil }
 	h.launch = &recordingLauncher{}
+	h.attach = &recordingAttacher{}
+	t.Cleanup(func() { _ = h.Revoke(context.Background(), "grant-1") })
 	if _, err := h.Ensure(t.Context(), execenv.Spec{ID: "grant-1", Image: "default"}); err != nil {
 		t.Fatal(err)
 	}
@@ -128,8 +161,7 @@ func TestMachineConfigOmitsNICWhenNone(t *testing.T) {
 		Kernel:  filepath.Join(dir, "k"),
 		Rootfs:  filepath.Join(dir, "r"),
 		TreeDir: filepath.Join(dir, "workspace"),
-		Network: execenv.NetworkNone,
-	}, nil)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,8 +184,8 @@ func TestMachineConfigAddsNICWhenAllowlist(t *testing.T) {
 		Kernel:  filepath.Join(dir, "k"),
 		Rootfs:  filepath.Join(dir, "r"),
 		TreeDir: filepath.Join(dir, "workspace"),
-		Network: execenv.NetworkAllowlist,
-	}, &att)
+		Attach:  &att,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
