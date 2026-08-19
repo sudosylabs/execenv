@@ -1,0 +1,37 @@
+# Pull-request smoke: bake fixture with a dummy kernel. Does not publish.
+name: catalog-smoke
+
+on:
+  pull_request:
+    paths:
+      - "catalog/**"
+      - "scripts/bake"
+      - "scripts/guest.sh"
+      - ".github/workflows/bake.yml"
+      - ".github/workflows/catalog-smoke.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  agent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Linux Agent
+        run: GOOS=linux GOARCH=amd64 go build -o execenv ./cmd/execenv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-binaries
+          path: execenv
+
+  bake:
+    needs: agent
+    uses: ./.github/workflows/bake.yml
+    with:
+      id: fixture
+      kernel: dummy
+      agent_artifact: linux-binaries

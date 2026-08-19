@@ -1,0 +1,89 @@
+# CI-only bake of one catalog Image. The grant Host never runs this.
+# Callers supply the linux Agent artifact; this workflow does not restamp.
+name: bake
+
+on:
+  workflow_call:
+    inputs:
+      id:
+        description: Catalog id to bake
+        required: true
+        type: string
+      kernel:
+        description: pin (KERNEL_URL) or dummy (PR smoke only)
+        required: true
+        type: string
+      agent_artifact:
+        description: Artifact that contains the linux execenv binary
+        required: false
+        type: string
+        default: linux-binaries
+      runner:
+        required: false
+        type: string
+        default: ubuntu-latest
+    secrets:
+      KERNEL_URL:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  bake:
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.agent_artifact }}
+      - name: Install bake tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y e2fsprogs
+          if ! command -v docker >/dev/null || ! docker info >/dev/null 2>&1; then
+            sudo apt-get install -y docker.io
+            sudo systemctl start docker || sudo service docker start
+          fi
+          docker info
+          command -v mkfs.ext4
+          chmod +x execenv scripts/bake
+      - name: Kernel
+        env:
+          KERNEL_URL: ${{ secrets.KERNEL_URL }}
+          KERNEL_MODE: ${{ inputs.kernel }}
+        run: |
+          mkdir -p bake-out
+          case "$KERNEL_MODE" in
+          pin)
+            test -n "$KERNEL_URL" || { echo "set secret KERNEL_URL to a versioned vmlinux URL" >&2; exit 1; }
+            curl -fsSL "$KERNEL_URL" -o bake-out/vmlinux
+            test -s bake-out/vmlinux
+            ;;
+          dummy)
+            dd if=/dev/zero of=bake-out/vmlinux bs=1k count=64
+            ;;
+          *)
+            echo "kernel must be pin or dummy" >&2
+            exit 1
+            ;;
+          esac
+      - name: Bake ${{ inputs.id }}
+        env:
+          CATALOG_ID: ${{ inputs.id }}
+        run: |
+          df=catalog/${CATALOG_ID}/Dockerfile
+          if [ "$CATALOG_ID" = "fixture" ] && [ ! -f "$df" ]; then
+            df=scripts/testdata/Dockerfile
+          fi
+          test -f "$df" || { echo "no Dockerfile for $CATALOG_ID" >&2; exit 1; }
+          scripts/bake --out "bake-${CATALOG_ID}" --kernel bake-out/vmlinux \
+            --id "$CATALOG_ID" --dockerfile "$df" --agent ./execenv
+          cp "bake-${CATALOG_ID}/rootfs.ext4" "bake-out/rootfs-${CATALOG_ID}.ext4"
+          cp bake-out/vmlinux "bake-out/vmlinux-${CATALOG_ID}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: disk-${{ inputs.id }}
+          path: |
+            bake-out/rootfs-${{ inputs.id }}.ext4
+            bake-out/vmlinux-${{ inputs.id }}
