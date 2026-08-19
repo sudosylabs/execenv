@@ -1,0 +1,23 @@
+# Review requests for sensitive paths. Last matching pattern wins.
+# Enforcement needs a branch rule: require a pull request, require
+# review from code owners, and do not allow admin bypass.
+#
+# Only @AbassHammed may approve changes to this file.
+
+.github/ @AbassHammed
+.github/workflows/ @AbassHammed
+scripts/ @AbassHammed
+catalog/ @AbassHammed
+Makefile @AbassHammed
+go.mod @AbassHammed
+go.sum @AbassHammed
+build.go @AbassHammed
+LICENSE @AbassHammed
+NOTICE @AbassHammed
+isolated/ @AbassHammed
+daemon/ @AbassHammed
+internal/ctl/ @AbassHammed
+
+# Exclusive owner of CODEOWNERS. Keep this last so a broader .github/
+# rule cannot add another reviewer.
+.github/CODEOWNERS @AbassHammed
