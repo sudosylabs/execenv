@@ -21,6 +21,7 @@ func Serve(ctx context.Context, ln net.Listener, inner execenv.Host, cfg ServerC
 	if inner == nil {
 		return execenv.Error("serve", execenv.ErrInvalid)
 	}
+	release := cfg.claimed()
 	if cfg.Security == SecurityTLS {
 		ln = tls.NewListener(ln, cfg.TLS)
 	}
@@ -36,29 +37,31 @@ func Serve(ctx context.Context, ln net.Listener, inner execenv.Host, cfg ServerC
 			}
 			return execenv.Error("serve", err)
 		}
-		go serveConn(ctx, conn, inner, cfg)
+		go serveConn(ctx, conn, inner, cfg, release)
 	}
 }
 
 type serverConn struct {
-	sess  *mux.Session
-	inner execenv.Host
-	cfg   ServerConfig
-	mu    sync.Mutex
-	authed bool
-	envs   map[execenv.ID]execenv.Env
-	terms  map[execenv.ID]execenv.Terminal
-	obs    map[execenv.ID]execenv.Observation
+	sess    *mux.Session
+	inner   execenv.Host
+	cfg     ServerConfig
+	release string
+	mu      sync.Mutex
+	authed  bool
+	envs    map[execenv.ID]execenv.Env
+	terms   map[execenv.ID]execenv.Terminal
+	obs     map[execenv.ID]execenv.Observation
 }
 
-func serveConn(ctx context.Context, conn net.Conn, inner execenv.Host, cfg ServerConfig) {
+func serveConn(ctx context.Context, conn net.Conn, inner execenv.Host, cfg ServerConfig, release string) {
 	sc := &serverConn{
-		sess:  newSession(conn),
-		inner: inner,
-		cfg:   cfg,
-		envs:  make(map[execenv.ID]execenv.Env),
-		terms: make(map[execenv.ID]execenv.Terminal),
-		obs:   make(map[execenv.ID]execenv.Observation),
+		sess:    newSession(conn),
+		inner:   inner,
+		cfg:     cfg,
+		release: release,
+		envs:    make(map[execenv.ID]execenv.Env),
+		terms:   make(map[execenv.ID]execenv.Terminal),
+		obs:     make(map[execenv.ID]execenv.Observation),
 	}
 	defer sc.close()
 	for {
@@ -151,6 +154,9 @@ func (sc *serverConn) auth(f frame) error {
 	if len(sc.cfg.Token) > 0 && subtle.ConstantTimeCompare(sc.cfg.Token, args.Token) != 1 {
 		return execenv.ErrInvalid
 	}
+	if args.Release != sc.release {
+		return execenv.ErrUnavailable
+	}
 	sc.authed = true
 	return nil
 }
@@ -230,9 +236,9 @@ func (sc *serverConn) copyPty(id execenv.ID, term execenv.Terminal) {
 		n, err := term.Read(buf)
 		if n > 0 {
 			_ = sc.sess.Send(frame{
-				Kind:   kindPty,
-				Grant:  string(id),
-				Extra:  append([]byte(nil), buf[:n]...),
+				Kind:  kindPty,
+				Grant: string(id),
+				Extra: append([]byte(nil), buf[:n]...),
 			})
 		}
 		if err != nil {

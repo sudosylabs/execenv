@@ -44,6 +44,17 @@ func TestInsecureRefusesNonLoopback(t *testing.T) {
 	}
 }
 
+func TestReadyReportsRelease(t *testing.T) {
+	host := startLoopback(t)
+	rep, err := host.Ready(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Release != execenv.Release {
+		t.Fatalf("Ready() Release = %q, want %q", rep.Release, execenv.Release)
+	}
+}
+
 func TestAttachEchoesBytes(t *testing.T) {
 	t.Parallel()
 	host := startLoopback(t)

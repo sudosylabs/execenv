@@ -90,9 +90,10 @@ func (h *Host) Ready(ctx context.Context) (execenv.Report, error) {
 		free = 0
 	}
 	return execenv.Report{
-		Usable: !h.unusable,
-		Images: append([]execenv.Image(nil), h.images...),
-		Slots:  free,
+		Usable:  !h.unusable,
+		Images:  append([]execenv.Image(nil), h.images...),
+		Slots:   free,
+		Release: execenv.Release,
 	}, nil
 }
 

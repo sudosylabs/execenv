@@ -37,9 +37,10 @@ type Capabilities struct {
 
 // Report is a point-in-time readiness snapshot.
 type Report struct {
-	Usable bool
-	Images []Image
-	Slots  int
+	Usable  bool
+	Images  []Image
+	Slots   int
+	Release string
 }
 
 // Spec asks a host to occupy a grant.

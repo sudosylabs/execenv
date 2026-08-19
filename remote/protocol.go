@@ -41,7 +41,8 @@ var (
 )
 
 type authArgs struct {
-	Token []byte
+	Token   []byte
+	Release string
 }
 
 type ensureArgs struct {

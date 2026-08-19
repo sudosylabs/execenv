@@ -35,6 +35,17 @@ type ServerConfig struct {
 	Security Security
 	TLS      *tls.Config
 	Token    []byte
+	// claim is the process stamp this listener will accept. Empty uses
+	// execenv.Release. Tests set it to force a mismatch without racing
+	// the global stamp.
+	claim string
+}
+
+func (cfg ServerConfig) claimed() string {
+	if cfg.claim != "" {
+		return cfg.claim
+	}
+	return execenv.Release
 }
 
 func validateClient(cfg Config) error {

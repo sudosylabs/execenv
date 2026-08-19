@@ -119,7 +119,7 @@ func (h *Host) Ready(ctx context.Context) (execenv.Report, error) {
 	}
 	// Hash files outside the lock so a large or odd rootfs cannot stall
 	// every other grant on this host.
-	return execenv.Report{Usable: usable, Images: verifiedIDs(images), Slots: free}, nil
+	return execenv.Report{Usable: usable, Images: verifiedIDs(images), Slots: free, Release: execenv.Release}, nil
 }
 
 // Ensure starts a microVM for a new grant or returns the existing occupancy.

@@ -72,7 +72,7 @@ func (c *Client) Close() error {
 }
 
 func (c *Client) authenticate() error {
-	extra, err := encodeExtra(authArgs{Token: c.cfg.Token})
+	extra, err := encodeExtra(authArgs{Token: c.cfg.Token, Release: execenv.Release})
 	if err != nil {
 		return execenv.Error("auth", err)
 	}
