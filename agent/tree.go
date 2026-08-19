@@ -1,26 +1,40 @@
 package agent
 
 import (
-	"maps"
 	"os"
 	"path/filepath"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/tree"
 )
 
-type node struct {
-	kind    execenv.NodeKind
-	version execenv.Version
-	data    []byte
-}
-
-// rewriteHome makes Home match files exactly. The directory itself is
-// kept so a mounted workspace is not unmounted by RemoveAll.
-func rewriteHome(home string, files map[string]node) error {
+// rewriteHome makes Home match files exactly. New contents are written to
+// a sibling directory first so a failed write leaves Home unchanged.
+func rewriteHome(home string, files tree.Snapshot) error {
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		return err
+	}
+	staging, err := os.MkdirTemp(filepath.Dir(home), "."+filepath.Base(home)+"-next-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(staging)
+	if err := writeNodes(staging, files); err != nil {
+		return err
+	}
 	if err := clearChildren(home); err != nil {
 		return err
 	}
-	return writeNodes(home, files)
+	entries, err := os.ReadDir(staging)
+	if err != nil {
+		return err
+	}
+	for _, ent := range entries {
+		if err := os.Rename(filepath.Join(staging, ent.Name()), filepath.Join(home, ent.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func clearChildren(home string) error {
@@ -39,13 +53,13 @@ func clearChildren(home string) error {
 	return nil
 }
 
-func writeNodes(home string, files map[string]node) error {
+func writeNodes(home string, files tree.Snapshot) error {
 	for path, ent := range files {
 		full, err := execenv.ResolvePath(home, path)
 		if err != nil {
 			return err
 		}
-		if ent.kind == execenv.KindDirectory {
+		if ent.Kind == execenv.KindDirectory {
 			if err := os.MkdirAll(full, 0o755); err != nil {
 				return err
 			}
@@ -54,194 +68,116 @@ func writeNodes(home string, files map[string]node) error {
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(full, ent.data, 0o644); err != nil {
+		if err := os.WriteFile(full, ent.Data, 0o644); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+// applyHome applies batch to disk. Guest files the batch does not name stay.
+// On failure this batch is reversed. On success stash files are discarded.
 func applyHome(home string, batch execenv.Batch) error {
+	var undos []func() error
+	var drop []string
+	rollback := func() {
+		for i := len(undos) - 1; i >= 0; i-- {
+			_ = undos[i]()
+		}
+	}
 	for _, mut := range batch.Mutations {
-		if err := applyDisk(home, mut); err != nil {
+		undo, stashPath, err := applyDisk(home, mut)
+		if err != nil {
+			rollback()
 			return err
 		}
+		undos = append(undos, undo)
+		if stashPath != "" {
+			drop = append(drop, stashPath)
+		}
+	}
+	for _, path := range drop {
+		_ = os.RemoveAll(path)
 	}
 	return nil
 }
 
-func applyDisk(home string, mut execenv.Mutation) error {
+func applyDisk(home string, mut execenv.Mutation) (undo func() error, stashPath string, err error) {
 	full, err := execenv.ResolvePath(home, mut.Path)
 	if err != nil {
-		return err
+		return nil, "", err
 	}
+	nop := func() error { return nil }
 	switch mut.Op {
 	case execenv.OpCreate, execenv.OpReplace:
+		prev, side, err := stash(full)
+		if err != nil {
+			return nil, "", err
+		}
 		if mut.Kind == execenv.KindDirectory {
-			return os.MkdirAll(full, 0o755)
+			if err := os.MkdirAll(full, 0o755); err != nil {
+				_ = prev()
+				return nil, "", err
+			}
+			return prev, side, nil
 		}
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			return err
+			_ = prev()
+			return nil, "", err
 		}
-		return os.WriteFile(full, mut.Data, 0o644)
+		if err := os.WriteFile(full, mut.Data, 0o644); err != nil {
+			_ = prev()
+			return nil, "", err
+		}
+		return prev, side, nil
 	case execenv.OpDelete:
-		return os.RemoveAll(full)
+		prev, side, err := stash(full)
+		if err != nil {
+			return nil, "", err
+		}
+		if err := os.Remove(full); err != nil && !os.IsNotExist(err) {
+			_ = prev()
+			return nil, "", err
+		}
+		return prev, side, nil
 	case execenv.OpMove:
 		from, err := execenv.ResolvePath(home, mut.From)
 		if err != nil {
-			return err
+			return nil, "", err
 		}
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			return err
+			return nil, "", err
 		}
-		return os.Rename(from, full)
+		if err := os.Rename(from, full); err != nil {
+			return nil, "", err
+		}
+		return func() error { return os.Rename(full, from) }, "", nil
 	default:
-		return execenv.ErrInvalid
+		return nop, "", execenv.ErrInvalid
 	}
 }
 
-func replaceInto(current map[string]node, tree execenv.Tree) (map[string]node, error) {
-	if len(tree) > execenv.MaxTreeEntries {
-		return nil, execenv.ErrTooLarge
+// stash moves path aside if it exists. side is the stash path to drop on
+// success. undo restores path. A missing path undoes with RemoveAll.
+func stash(path string) (undo func() error, side string, err error) {
+	if _, err := os.Lstat(path); os.IsNotExist(err) {
+		return func() error { return os.RemoveAll(path) }, "", nil
+	} else if err != nil {
+		return nil, "", err
 	}
-	var total int64
-	seen := make(map[string]struct{}, len(tree))
-	next := make(map[string]node, len(tree))
-	for _, item := range tree {
-		if err := execenv.ValidatePath(item.Path); err != nil {
-			return nil, err
-		}
-		if _, dup := seen[item.Path]; dup {
-			return nil, execenv.ErrInvalid
-		}
-		seen[item.Path] = struct{}{}
-		switch item.Kind {
-		case execenv.KindDirectory:
-			if item.Version != "" || item.Data != nil {
-				return nil, execenv.ErrInvalid
-			}
-			next[item.Path] = node{kind: execenv.KindDirectory}
-		case execenv.KindFile:
-			body, err := resolveBody(current[item.Path], item)
-			if err != nil {
-				return nil, err
-			}
-			total += int64(len(body))
-			if int64(len(body)) > execenv.MaxFileBytes || total > execenv.MaxTreeBytes {
-				return nil, execenv.ErrTooLarge
-			}
-			next[item.Path] = node{kind: execenv.KindFile, version: item.Version, data: body}
-		default:
-			return nil, execenv.ErrInvalid
-		}
+	dir := filepath.Dir(path)
+	tmp, err := os.MkdirTemp(dir, "."+filepath.Base(path)+"-")
+	if err != nil {
+		return nil, "", err
 	}
-	return next, nil
-}
-
-func resolveBody(existing node, item execenv.Node) ([]byte, error) {
-	if item.Data != nil {
-		return append([]byte(nil), item.Data...), nil
+	if err := os.Remove(tmp); err != nil {
+		return nil, "", err
 	}
-	if existing.kind != execenv.KindFile || existing.version == "" || existing.version != item.Version {
-		return nil, execenv.ErrInvalid
+	if err := os.Rename(path, tmp); err != nil {
+		return nil, "", err
 	}
-	return append([]byte(nil), existing.data...), nil
-}
-
-func applyInto(current map[string]node, batch execenv.Batch) (map[string]node, error) {
-	if len(batch.Mutations) > execenv.MaxTreeEntries {
-		return nil, execenv.ErrTooLarge
-	}
-	next := maps.Clone(current)
-	if next == nil {
-		next = make(map[string]node)
-	}
-	var total int64
-	for _, mut := range batch.Mutations {
-		if err := applyOne(next, mut, &total); err != nil {
-			return nil, err
-		}
-	}
-	return next, nil
-}
-
-func applyOne(next map[string]node, mut execenv.Mutation, total *int64) error {
-	if err := execenv.ValidatePath(mut.Path); err != nil {
-		return err
-	}
-	switch mut.Op {
-	case execenv.OpCreate:
-		if _, ok := next[mut.Path]; ok {
-			return execenv.ErrConflict
-		}
-		return put(next, mut, total)
-	case execenv.OpReplace:
-		ent, ok := next[mut.Path]
-		if !ok || ent.kind != execenv.KindFile {
-			return execenv.ErrNotFound
-		}
-		if mut.Expected != "" && ent.version != mut.Expected {
-			return execenv.ErrConflict
-		}
-		return put(next, mut, total)
-	case execenv.OpDelete:
-		ent, ok := next[mut.Path]
-		if !ok {
-			return execenv.ErrNotFound
-		}
-		if mut.Expected != "" && ent.kind == execenv.KindFile && ent.version != mut.Expected {
-			return execenv.ErrConflict
-		}
-		delete(next, mut.Path)
-		return nil
-	case execenv.OpMove:
-		if err := execenv.ValidatePath(mut.From); err != nil {
-			return err
-		}
-		ent, ok := next[mut.From]
-		if !ok {
-			return execenv.ErrNotFound
-		}
-		if mut.Expected != "" && ent.kind == execenv.KindFile && ent.version != mut.Expected {
-			return execenv.ErrConflict
-		}
-		if _, exists := next[mut.Path]; exists {
-			return execenv.ErrConflict
-		}
-		delete(next, mut.From)
-		next[mut.Path] = ent
-		return nil
-	default:
-		return execenv.ErrInvalid
-	}
-}
-
-func put(next map[string]node, mut execenv.Mutation, total *int64) error {
-	switch mut.Kind {
-	case execenv.KindDirectory:
-		if mut.Data != nil || mut.Version != "" {
-			return execenv.ErrInvalid
-		}
-		next[mut.Path] = node{kind: execenv.KindDirectory}
-		return nil
-	case execenv.KindFile:
-		if mut.Data == nil {
-			return execenv.ErrInvalid
-		}
-		if int64(len(mut.Data)) > execenv.MaxFileBytes {
-			return execenv.ErrTooLarge
-		}
-		*total += int64(len(mut.Data))
-		if *total > execenv.MaxTreeBytes {
-			return execenv.ErrTooLarge
-		}
-		next[mut.Path] = node{
-			kind:    execenv.KindFile,
-			version: mut.Version,
-			data:    append([]byte(nil), mut.Data...),
-		}
-		return nil
-	default:
-		return execenv.ErrInvalid
-	}
+	return func() error {
+		_ = os.RemoveAll(path)
+		return os.Rename(tmp, path)
+	}, tmp, nil
 }

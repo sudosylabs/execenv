@@ -90,6 +90,73 @@ func TestApplyLeavesGuestFile(t *testing.T) {
 	}
 }
 
+func TestApplyFailureRestoresHome(t *testing.T) {
+	t.Parallel()
+	cli, home := startAgent(t)
+	if err := cli.ReplaceTree(t.Context(), execenv.Tree{{
+		Path:    "blocked",
+		Kind:    execenv.KindFile,
+		Version: "v1",
+		Data:    []byte("old"),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	err := cli.Apply(t.Context(), execenv.Batch{Mutations: []execenv.Mutation{
+		{
+			Op:   execenv.OpReplace,
+			Path: "blocked",
+			Kind: execenv.KindFile,
+			Data: []byte("new"),
+		},
+		{
+			Op:   execenv.OpCreate,
+			Path: "blocked/nested.txt",
+			Kind: execenv.KindFile,
+			Data: []byte("nope"),
+		},
+	}})
+	if err == nil {
+		t.Fatal("Apply() succeeded with a file parent")
+	}
+	got, err := os.ReadFile(filepath.Join(home, "blocked"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "old" {
+		t.Fatalf("home after failed Apply = %q, want old", got)
+	}
+}
+
+func TestApplyReplaceDoesNotLeaveStash(t *testing.T) {
+	t.Parallel()
+	cli, home := startAgent(t)
+	if err := cli.ReplaceTree(t.Context(), execenv.Tree{{
+		Path: "a.txt", Kind: execenv.KindFile, Version: "v1", Data: []byte("one"),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.Apply(t.Context(), execenv.Batch{Mutations: []execenv.Mutation{{
+		Op: execenv.OpReplace, Path: "a.txt", Kind: execenv.KindFile, Data: []byte("two"),
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "a.txt" {
+		t.Fatalf("home entries = %v, want only a.txt", names(entries))
+	}
+}
+
+func names(entries []os.DirEntry) []string {
+	out := make([]string, 0, len(entries))
+	for _, ent := range entries {
+		out = append(out, ent.Name())
+	}
+	return out
+}
+
 func TestTouchInPtyBecomesWatch(t *testing.T) {
 	t.Parallel()
 	cli, _ := startAgent(t)

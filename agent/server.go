@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/tree"
 )
 
 // Config is one agent's occupancy of a home directory.
@@ -29,7 +30,7 @@ func Serve(ctx context.Context, conn net.Conn, cfg Config) error {
 	}
 	s := &server{
 		home:      cfg.Home,
-		projected: make(map[string]node),
+		projected: make(tree.Snapshot),
 		sess:      newSession(conn),
 	}
 	defer s.shutdown()
@@ -58,7 +59,7 @@ type server struct {
 	mu sync.Mutex
 	// projected is the last caller ReplaceTree/Apply, used only for
 	// version-skip. Open and Watch read Home on disk, including guest files.
-	projected map[string]node
+	projected tree.Snapshot
 	frozen    bool
 	term      *shell
 	watching  bool
@@ -135,7 +136,7 @@ func (s *server) replace(ctx context.Context, f frame) error {
 	if err := s.guard(); err != nil {
 		return err
 	}
-	next, err := replaceInto(s.projected, args.Tree)
+	next, err := tree.Replace(s.projected, args.Tree)
 	if err != nil {
 		return err
 	}
@@ -161,7 +162,7 @@ func (s *server) apply(ctx context.Context, f frame) error {
 	if err := s.guard(); err != nil {
 		return err
 	}
-	next, err := applyInto(s.projected, args.Batch)
+	next, err := tree.Apply(s.projected, args.Batch)
 	if err != nil {
 		return err
 	}

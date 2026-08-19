@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/tree"
 )
 
 var (
@@ -42,17 +43,10 @@ type environment struct {
 	revoked bool
 	term    *terminal
 	// files is the current projection. Paths are already-validated.
-	files map[string]node
+	files tree.Snapshot
 	obs   *observation
 	// watchErr is set when the current observation must die (lag, freeze, revoke).
 	watchErr error
-}
-
-// node is one projected path. data is nil for directories.
-type node struct {
-	kind    execenv.NodeKind
-	version execenv.Version
-	data    []byte
 }
 
 type terminal struct {
@@ -132,7 +126,7 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		image:   spec.Image,
 		network: spec.Network,
 		host:    h,
-		files:   make(map[string]node),
+		files:   make(tree.Snapshot),
 	}
 	h.grants[spec.ID] = env
 	return env, nil
