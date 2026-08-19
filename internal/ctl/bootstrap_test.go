@@ -2,7 +2,10 @@ package ctl
 
 import (
 	"bytes"
+	"crypto/x509"
+	"encoding/pem"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -206,6 +209,24 @@ func TestBootstrapKeepsTLSOnRerun(t *testing.T) {
 	if first.Security != "tls" || first.TLSCert == "" {
 		t.Fatalf("first config = %+v", first)
 	}
+	pemBytes, err := os.ReadFile(first.TLSCert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		t.Fatal("TLS cert PEM")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cert.DNSNames) != 1 || cert.DNSNames[0] != "execenv" {
+		t.Fatalf("DNSNames = %v", cert.DNSNames)
+	}
+	if len(cert.IPAddresses) != 1 || !cert.IPAddresses[0].Equal(net.IPv4(127, 0, 0, 1)) {
+		t.Fatalf("IPAddresses = %v", cert.IPAddresses)
+	}
 	opts.Insecure = true
 	if err := Bootstrap(opts, io.Discard); err != nil {
 		t.Fatal(err)
@@ -236,15 +257,15 @@ func testOpts(t *testing.T, root string) Options {
 		t.Fatal(err)
 	}
 	return Options{
-		Prefix:  filepath.Join(root, "usr", "local"),
-		Sysconf: filepath.Join(root, "etc", "execenv"),
-		State:   filepath.Join(root, "var", "lib", "execenv"),
-		Device:  device,
-		Listen:  "127.0.0.1:8443",
-		Slots:   8,
-		Execenv: execenvBin,
-		NoStart: true,
-		NoFetch: true,
+		Prefix:   filepath.Join(root, "usr", "local"),
+		Sysconf:  filepath.Join(root, "etc", "execenv"),
+		State:    filepath.Join(root, "var", "lib", "execenv"),
+		Device:   device,
+		Listen:   "127.0.0.1:8443",
+		Slots:    8,
+		Execenv:  execenvBin,
+		NoStart:  true,
+		NoFetch:  true,
 		Insecure: true,
 	}
 }

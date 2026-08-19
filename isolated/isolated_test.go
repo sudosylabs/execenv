@@ -33,6 +33,34 @@ func TestReadyFailsClosedWhenProbeFails(t *testing.T) {
 	}
 }
 
+func TestReadyFailsClosedWhenDeviceMissing(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS != "linux" {
+		t.Skip("device probe is linux-only")
+	}
+	dir := t.TempDir()
+	host, err := New(Config{
+		WorkDir: t.TempDir(),
+		Slots:   1,
+		Device:  filepath.Join(dir, "missing"),
+		Images:  []Image{writeCatalogImage(t, dir, "default", "rootfs")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := host.Ready(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Usable {
+		t.Fatal("Ready() Usable = true without an isolation device")
+	}
+	_, err = host.Ensure(t.Context(), execenv.Spec{ID: "grant-1", Image: "default"})
+	if !errors.Is(err, execenv.ErrUnavailable) {
+		t.Fatalf("Ensure() error = %v, want ErrUnavailable", err)
+	}
+}
+
 func TestEnsureStartsOneMachineAndReattaches(t *testing.T) {
 	t.Parallel()
 	launch := &recordingLauncher{}

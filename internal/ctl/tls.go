@@ -8,6 +8,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
+	"net"
 	"os"
 	"time"
 )
@@ -28,6 +29,8 @@ func ensureTLS(certPath, keyPath string) error {
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: "execenv"},
+		DNSNames:     []string{"execenv"},
+		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1).To4()},
 		NotBefore:    now.Add(-time.Hour),
 		NotAfter:     now.Add(3650 * 24 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,

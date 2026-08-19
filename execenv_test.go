@@ -2,11 +2,49 @@ package execenv_test
 
 import (
 	"errors"
+	"os"
+	"os/exec"
+	"strings"
 	"testing"
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/memory"
 )
+
+func TestRootPackageStdlibOnly(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command("go", "list", "-f", "{{ join .Imports \"\\n\" }}", ".")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		if strings.Contains(line, ".") {
+			t.Fatalf("root package imports %q; want standard library only", line)
+		}
+	}
+}
+
+func TestPublicSurfaceOmitsHypervisorNames(t *testing.T) {
+	t.Parallel()
+	banned := []string{"Firecracker", "firecracker", "jailer", "Jailer", "KVM", "kvm", "vsock"}
+	roots := []string{"doc.go", "execenv.go", "errors.go", "id.go", "isolated.go", "tree.go"}
+	for _, name := range roots {
+		body, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(body)
+		for _, word := range banned {
+			if strings.Contains(text, word) {
+				t.Fatalf("%s contains %q", name, word)
+			}
+		}
+	}
+}
 
 func TestValidateSpec(t *testing.T) {
 	t.Parallel()
