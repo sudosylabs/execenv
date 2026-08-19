@@ -34,7 +34,7 @@ func (s *server) stopPoll(err error) {
 		close(s.pollStop)
 		s.pollStop = nil
 	}
-	_ = s.sess.send(frame{
+	_ = s.sess.Send(frame{
 		Kind:   kindWatch,
 		Status: statusOf(err),
 	})
@@ -71,7 +71,7 @@ func (s *server) diffOnce() {
 			s.stopPoll(execenv.ErrUnavailable)
 			return
 		}
-		if err := s.sess.send(frame{Kind: kindWatch, Extra: raw}); err != nil {
+		if err := s.sess.Send(frame{Kind: kindWatch, Extra: raw}); err != nil {
 			s.stopPoll(execenv.ErrClosed)
 			return
 		}

@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/mux"
 )
 
 var _ execenv.Host = (*Client)(nil)
@@ -17,7 +18,7 @@ var _ execenv.Host = (*Client)(nil)
 // Client is a Host that speaks the execenv contract over one connection.
 type Client struct {
 	cfg     Config
-	sess    *session
+	sess    *mux.Session
 	seq     atomic.Uint64
 	mu      sync.Mutex
 	pending map[uint64]chan frame
@@ -67,7 +68,7 @@ func (c *Client) Close() error {
 	c.mu.Lock()
 	c.closed = true
 	c.mu.Unlock()
-	return c.sess.close()
+	return c.sess.Close()
 }
 
 func (c *Client) authenticate() error {
@@ -81,7 +82,7 @@ func (c *Client) authenticate() error {
 
 func (c *Client) readLoop() {
 	for {
-		f, err := c.sess.recv()
+		f, err := c.sess.Recv()
 		if err != nil {
 			c.failAll()
 			return
@@ -167,7 +168,7 @@ func (c *Client) call(ctx context.Context, method, grant string, extra []byte) (
 	}
 	c.pending[seq] = ch
 	c.mu.Unlock()
-	err := c.sess.send(frame{
+	err := c.sess.Send(frame{
 		Seq:    seq,
 		Kind:   kindRequest,
 		Method: method,
@@ -386,7 +387,7 @@ func (t *remoteTerminal) Write(p []byte) (int, error) {
 	t.mu.Unlock()
 	// PTY octets travel as kindPty, not as an RPC, so a hangup does not
 	// take the control channel down with it.
-	err := t.client.sess.send(frame{
+	err := t.client.sess.Send(frame{
 		Kind:  kindPty,
 		Grant: string(t.id),
 		Extra: append([]byte(nil), p...),

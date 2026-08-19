@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/mux"
 	"github.com/sudosylabs/execenv/internal/tree"
 )
 
@@ -36,10 +37,10 @@ func Serve(ctx context.Context, conn net.Conn, cfg Config) error {
 	defer s.shutdown()
 	go func() {
 		<-ctx.Done()
-		_ = s.sess.close()
+		_ = s.sess.Close()
 	}()
 	for {
-		f, err := s.sess.recv()
+		f, err := s.sess.Recv()
 		if err != nil {
 			return nil
 		}
@@ -54,7 +55,7 @@ func Serve(ctx context.Context, conn net.Conn, cfg Config) error {
 
 type server struct {
 	home string
-	sess *session
+	sess *mux.Session
 
 	mu sync.Mutex
 	// projected is the last caller ReplaceTree/Apply, used only for
@@ -73,7 +74,7 @@ func (s *server) shutdown() {
 	s.killShell()
 	s.stopPoll(execenv.ErrClosed)
 	s.mu.Unlock()
-	_ = s.sess.close()
+	_ = s.sess.Close()
 }
 
 func (s *server) handle(ctx context.Context, f frame) {
@@ -107,7 +108,7 @@ func (s *server) handle(ctx context.Context, f frame) {
 }
 
 func (s *server) reply(req frame, err error, extra []byte) error {
-	return s.sess.send(frame{
+	return s.sess.Send(frame{
 		Seq:    req.Seq,
 		Kind:   kindResponse,
 		Method: req.Method,
@@ -266,7 +267,7 @@ func (s *server) copyPty(sh *shell) {
 	for {
 		n, err := sh.master.Read(buf)
 		if n > 0 {
-			_ = s.sess.send(frame{
+			_ = s.sess.Send(frame{
 				Kind:  kindPty,
 				Extra: append([]byte(nil), buf[:n]...),
 			})
@@ -276,7 +277,7 @@ func (s *server) copyPty(sh *shell) {
 			if err != io.EOF {
 				status = statusOf(err)
 			}
-			_ = s.sess.send(frame{Kind: kindPty, Status: status})
+			_ = s.sess.Send(frame{Kind: kindPty, Status: status})
 			s.mu.Lock()
 			if s.term == sh {
 				s.term = nil

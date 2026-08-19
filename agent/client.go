@@ -9,11 +9,12 @@ import (
 	"sync/atomic"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/mux"
 )
 
 // Client is the host side of one agent connection.
 type Client struct {
-	sess    *session
+	sess    *mux.Session
 	seq     atomic.Uint64
 	mu      sync.Mutex
 	pending map[uint64]chan frame
@@ -35,7 +36,7 @@ func NewClient(conn net.Conn) *Client {
 // Close hangs up the agent connection. The machine is not torn down.
 func (c *Client) Close() error {
 	c.Hangup(execenv.ErrClosed)
-	return c.sess.close()
+	return c.sess.Close()
 }
 
 // Hangup fails the live PTY and Watch with err without closing the
@@ -63,7 +64,7 @@ func (c *Client) Hangup(err error) {
 
 func (c *Client) readLoop() {
 	for {
-		f, err := c.sess.recv()
+		f, err := c.sess.Recv()
 		if err != nil {
 			c.failAll()
 			return
@@ -149,7 +150,7 @@ func (c *Client) call(ctx context.Context, method string, extra []byte) ([]byte,
 	}
 	c.pending[seq] = ch
 	c.mu.Unlock()
-	err := c.sess.send(frame{
+	err := c.sess.Send(frame{
 		Seq:    seq,
 		Kind:   kindRequest,
 		Method: method,
@@ -321,7 +322,7 @@ func (t *clientTerm) Write(p []byte) (int, error) {
 		return 0, execenv.Error("write", err)
 	}
 	t.mu.Unlock()
-	err := t.client.sess.send(frame{
+	err := t.client.sess.Send(frame{
 		Kind:  kindPty,
 		Extra: append([]byte(nil), p...),
 	})

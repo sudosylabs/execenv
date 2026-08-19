@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/mux"
 )
 
 // Serve accepts connections on ln and serves inner. Each connection is one
@@ -40,7 +41,7 @@ func Serve(ctx context.Context, ln net.Listener, inner execenv.Host, cfg ServerC
 }
 
 type serverConn struct {
-	sess  *session
+	sess  *mux.Session
 	inner execenv.Host
 	cfg   ServerConfig
 	mu    sync.Mutex
@@ -61,7 +62,7 @@ func serveConn(ctx context.Context, conn net.Conn, inner execenv.Host, cfg Serve
 	}
 	defer sc.close()
 	for {
-		f, err := sc.sess.recv()
+		f, err := sc.sess.Recv()
 		if err != nil {
 			return
 		}
@@ -86,7 +87,7 @@ func (sc *serverConn) close() {
 		delete(sc.obs, id)
 	}
 	// Grants stay on the inner host. A dropped client is hangup, not revoke.
-	_ = sc.sess.close()
+	_ = sc.sess.Close()
 }
 
 func (sc *serverConn) handle(ctx context.Context, f frame) {
@@ -132,7 +133,7 @@ func (sc *serverConn) handle(ctx context.Context, f frame) {
 }
 
 func (sc *serverConn) reply(req frame, err error, extra []byte) error {
-	return sc.sess.send(frame{
+	return sc.sess.Send(frame{
 		Seq:    req.Seq,
 		Kind:   kindResponse,
 		Method: req.Method,
@@ -228,14 +229,14 @@ func (sc *serverConn) copyPty(id execenv.ID, term execenv.Terminal) {
 	for {
 		n, err := term.Read(buf)
 		if n > 0 {
-			_ = sc.sess.send(frame{
+			_ = sc.sess.Send(frame{
 				Kind:   kindPty,
 				Grant:  string(id),
 				Extra:  append([]byte(nil), buf[:n]...),
 			})
 		}
 		if err != nil {
-			_ = sc.sess.send(frame{
+			_ = sc.sess.Send(frame{
 				Kind:   kindPty,
 				Grant:  string(id),
 				Status: statusOf(err),
@@ -342,7 +343,7 @@ func (sc *serverConn) copyWatch(id execenv.ID, obs execenv.Observation) {
 	for {
 		ev, err := obs.Next(context.Background())
 		if err != nil {
-			_ = sc.sess.send(frame{
+			_ = sc.sess.Send(frame{
 				Kind:   kindWatch,
 				Grant:  string(id),
 				Status: statusOf(err),
@@ -353,7 +354,7 @@ func (sc *serverConn) copyWatch(id execenv.ID, obs execenv.Observation) {
 		if err != nil {
 			return
 		}
-		_ = sc.sess.send(frame{
+		_ = sc.sess.Send(frame{
 			Kind:  kindWatch,
 			Grant: string(id),
 			Extra: extra,
