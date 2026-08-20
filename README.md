@@ -602,3 +602,9 @@ not installed on the grant host.
 scripts/bake --out ./out --kernel ./vmlinux --agent ./execenv \
   --id python --dockerfile ./catalog/python/Dockerfile
 ```
+
+## Community
+
+- [Contributing](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
