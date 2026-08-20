@@ -21,7 +21,7 @@ const (
 	defaultDevice     = "/dev/kvm"
 	runtimeName       = "firecracker"
 	supervisorName    = "jailer"
-	runtimeVersion    = "v1.10.1"
+	runtimeVersion    = "v1.16.1"
 	defaultListen     = "0.0.0.0:8443"
 	defaultSlots      = 8
 	defaultPrefix     = "/usr/local"

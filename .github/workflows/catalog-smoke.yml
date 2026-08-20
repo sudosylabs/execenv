@@ -1,8 +1,17 @@
-# Pull-request smoke: bake fixture with a dummy kernel. Does not publish.
+# PR and main smoke: bake fixture with a dummy kernel. Does not publish.
 name: catalog-smoke
 
 on:
   pull_request:
+    paths:
+      - "catalog/**"
+      - "scripts/bake"
+      - "scripts/guest.sh"
+      - ".github/workflows/bake.yml"
+      - ".github/workflows/catalog-smoke.yml"
+  push:
+    branches:
+      - main
     paths:
       - "catalog/**"
       - "scripts/bake"
