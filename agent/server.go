@@ -273,18 +273,26 @@ func (s *server) copyPty(sh *shell) {
 			})
 		}
 		if err != nil {
-			status := ""
-			if err != io.EOF {
-				status = statusOf(err)
-			}
-			_ = s.sess.Send(frame{Kind: kindPty, Status: status})
 			s.mu.Lock()
+			frozen := s.frozen
 			if s.term == sh {
 				s.term = nil
 			}
 			s.mu.Unlock()
+			_ = s.sess.Send(frame{Kind: kindPty, Status: ptyEndStatus(frozen, err)})
 			return
 		}
+	}
+}
+
+func ptyEndStatus(frozen bool, err error) string {
+	switch {
+	case frozen:
+		return statusOf(execenv.ErrFrozen)
+	case err == nil || err == io.EOF || isPtyHangup(err):
+		return ""
+	default:
+		return statusOf(err)
 	}
 }
 

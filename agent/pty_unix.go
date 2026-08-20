@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"syscall"
@@ -58,6 +59,10 @@ func startPTY(cmd *exec.Cmd, win execenv.Window) (*os.File, error) {
 	}
 	_ = pts.Close()
 	return master, nil
+}
+
+func isPtyHangup(err error) bool {
+	return errors.Is(err, unix.EIO)
 }
 
 func setWindow(master *os.File, win execenv.Window) error {

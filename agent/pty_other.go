@@ -8,6 +8,10 @@ import (
 	"github.com/sudosylabs/execenv"
 )
 
+func isPtyHangup(error) bool {
+	return false
+}
+
 func startShell(string, execenv.Window) (*shell, error) {
 	return nil, execenv.ErrUnavailable
 }
