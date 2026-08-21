@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"log/slog"
 	"net"
 	"os"
@@ -58,7 +59,26 @@ func serveListener(ctx context.Context, ln net.Listener, inner execenv.Host, cfg
 			_ = ln.Close()
 			return execenv.Error("tls", execenv.ErrInvalid)
 		}
-		server.TLS = &tls.Config{Certificates: []tls.Certificate{cert}}
+		tlsConfig := &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS13}
+		if cfg.TLSClientCA != "" {
+			raw, err := os.ReadFile(cfg.TLSClientCA)
+			if err != nil {
+				_ = ln.Close()
+				return execenv.Error("tls", execenv.ErrInvalid)
+			}
+			pool := x509.NewCertPool()
+			if !pool.AppendCertsFromPEM(raw) {
+				_ = ln.Close()
+				return execenv.Error("tls", execenv.ErrInvalid)
+			}
+			tlsConfig.ClientCAs = pool
+			if cfg.Token == "" {
+				tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+			} else {
+				tlsConfig.ClientAuth = tls.VerifyClientCertIfGiven
+			}
+		}
+		server.TLS = tlsConfig
 	}
 	return remote.Serve(ctx, ln, inner, server)
 }
@@ -107,5 +127,3 @@ func newAdapter(cfg Config) (execenv.Host, error) {
 		return nil, execenv.Error("adapter", execenv.ErrInvalid)
 	}
 }
-
-

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"sync"
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/internal/tree"
@@ -13,7 +14,11 @@ const watchBuffer = 32
 
 type observation struct {
 	env    *environment
+	mu     sync.Mutex
+	cursor execenv.Cursor
 	events chan execenv.Event
+	err    error
+	once   sync.Once
 }
 
 // ReplaceTree converges the projection to tree. See execenv.Node for the
@@ -33,6 +38,8 @@ func (e *environment) ReplaceTree(ctx context.Context, snap execenv.Tree) error 
 		return execenv.Error("replace", err)
 	}
 	e.files = next
+	e.failWatch(execenv.ErrLagged)
+	e.log.Reset()
 	return nil
 }
 
@@ -55,7 +62,7 @@ func (e *environment) Apply(ctx context.Context, batch execenv.Batch) error {
 	return nil
 }
 
-func (e *environment) Watch(ctx context.Context) (execenv.Observation, error) {
+func (e *environment) Watch(ctx context.Context, after execenv.Cursor) (execenv.Observation, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, execenv.Error("watch", err)
 	}
@@ -67,12 +74,19 @@ func (e *environment) Watch(ctx context.Context) (execenv.Observation, error) {
 	if e.obs != nil {
 		return nil, execenv.Error("watch", execenv.ErrBusy)
 	}
+	cursor, replay, err := e.log.Since(after)
+	if err != nil {
+		return nil, execenv.Error("watch", err)
+	}
 	obs := &observation{
 		env:    e,
-		events: make(chan execenv.Event, watchBuffer),
+		cursor: cursor,
+		events: make(chan execenv.Event, max(watchBuffer, len(replay))),
+	}
+	for _, event := range replay {
+		obs.events <- event
 	}
 	e.obs = obs
-	e.watchErr = nil
 	return obs, nil
 }
 
@@ -221,6 +235,7 @@ func (e *environment) guard(op string) error {
 }
 
 func (e *environment) emit(event execenv.Event) {
+	event = e.log.Append(event)
 	if e.obs == nil {
 		return
 	}
@@ -235,27 +250,55 @@ func (e *environment) failWatch(err error) {
 	if e.obs == nil {
 		return
 	}
-	e.watchErr = err
-	close(e.obs.events)
+	e.obs.fail(err)
 	e.obs = nil
 }
 
+func (o *observation) Cursor() execenv.Cursor {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.cursor
+}
+
 func (o *observation) Next(ctx context.Context) (execenv.Event, error) {
+	o.mu.Lock()
+	failed := o.err
+	o.mu.Unlock()
+	if failed != nil {
+		return execenv.Event{}, execenv.Error("watch", failed)
+	}
 	select {
 	case <-ctx.Done():
 		return execenv.Event{}, execenv.Error("watch", ctx.Err())
 	case ev, ok := <-o.events:
 		if !ok {
-			o.env.mu.Lock()
-			err := o.env.watchErr
-			o.env.mu.Unlock()
+			o.mu.Lock()
+			err := o.err
+			o.mu.Unlock()
 			if err == nil {
 				err = execenv.ErrClosed
 			}
 			return execenv.Event{}, execenv.Error("watch", err)
 		}
+		o.mu.Lock()
+		if o.err != nil {
+			err := o.err
+			o.mu.Unlock()
+			return execenv.Event{}, execenv.Error("watch", err)
+		}
+		o.cursor = ev.Cursor
+		o.mu.Unlock()
 		return ev, nil
 	}
+}
+
+func (o *observation) fail(err error) {
+	o.once.Do(func() {
+		o.mu.Lock()
+		o.err = err
+		o.mu.Unlock()
+		close(o.events)
+	})
 }
 
 func (o *observation) Close() error {

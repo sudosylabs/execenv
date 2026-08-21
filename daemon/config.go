@@ -28,18 +28,19 @@ const (
 // Config is the operator document that turns a machine into a host.
 // Token, file bodies, and PTY octets must never be logged.
 type Config struct {
-	Listen   string  `json:"listen"`
-	Token    string  `json:"token"`
-	Security string  `json:"security"`
-	Adapter  string  `json:"adapter"`
-	TLSCert    string `json:"tls_cert,omitempty"`
-	TLSKey     string `json:"tls_key,omitempty"`
-	WorkDir    string `json:"work_dir,omitempty"`
-	Device     string `json:"device,omitempty"`
-	Runtime    string `json:"runtime,omitempty"`
-	Supervisor string `json:"supervisor,omitempty"`
-	Images     []Image `json:"images"`
-	Slots      int    `json:"slots"`
+	Listen      string  `json:"listen"`
+	Token       string  `json:"token"`
+	Security    string  `json:"security"`
+	Adapter     string  `json:"adapter"`
+	TLSCert     string  `json:"tls_cert,omitempty"`
+	TLSKey      string  `json:"tls_key,omitempty"`
+	TLSClientCA string  `json:"tls_client_ca,omitempty"`
+	WorkDir     string  `json:"work_dir,omitempty"`
+	Device      string  `json:"device,omitempty"`
+	Runtime     string  `json:"runtime,omitempty"`
+	Supervisor  string  `json:"supervisor,omitempty"`
+	Images      []Image `json:"images"`
+	Slots       int     `json:"slots"`
 	// Isolated grants use these as machine defaults. Memory ignores them.
 	CPUMillis   int           `json:"cpu_millis,omitempty"`
 	MemoryBytes int64         `json:"memory_bytes,omitempty"`
@@ -146,7 +147,7 @@ func Save(path string, cfg Config) error {
 }
 
 func (cfg *Config) validate() error {
-	if cfg.Listen == "" || cfg.Token == "" || cfg.Security == "" || cfg.Adapter == "" {
+	if cfg.Listen == "" || cfg.Security == "" || cfg.Adapter == "" {
 		return execenv.Error("config", execenv.ErrInvalid)
 	}
 	cfg.Security = strings.ToLower(cfg.Security)
@@ -160,7 +161,13 @@ func (cfg *Config) validate() error {
 		if cfg.TLSCert == "" || cfg.TLSKey == "" {
 			return execenv.Error("config", execenv.ErrInvalid)
 		}
+		if cfg.Token == "" && cfg.TLSClientCA == "" {
+			return execenv.Error("config", execenv.ErrInvalid)
+		}
 	case securityLocal:
+		if cfg.Token == "" || cfg.TLSClientCA != "" {
+			return execenv.Error("config", execenv.ErrInvalid)
+		}
 	default:
 		return execenv.Error("config", execenv.ErrInvalid)
 	}

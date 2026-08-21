@@ -5,6 +5,7 @@
 //
 // The projected tree is not durable authority. ReplaceTree and Apply push
 // caller state into the grant. Watch and Open report what the isolated
-// environment wrote. Losing a grant must not be treated as losing caller
-// state the caller already has.
+// environment wrote. Watch cursors permit bounded replay after a connection
+// loss; ReplaceTree starts a new observation generation. Losing a grant must
+// not be treated as losing caller state the caller already has.
 package execenv

@@ -35,6 +35,9 @@ func Run(t *testing.T, factory Factory) {
 		if !hasImage(report.Images, "default") {
 			t.Fatalf("Ready() Images = %v, want default", report.Images)
 		}
+		if !hasNetwork(report.Networks, execenv.NetworkNone) {
+			t.Fatalf("Ready() Networks = %v, want NetworkNone", report.Networks)
+		}
 		if report.Slots < 1 {
 			t.Fatalf("Ready() Slots = %d, want at least 1", report.Slots)
 		}
@@ -74,6 +77,17 @@ func Run(t *testing.T, factory Factory) {
 		_, err := host.Ensure(context.Background(), execenv.Spec{ID: "grant-1", Image: "missing"})
 		if !errors.Is(err, execenv.ErrUnknownImage) {
 			t.Fatalf("Ensure() error = %v, want ErrUnknownImage", err)
+		}
+	})
+
+	t.Run("existing id conflicts before catalog lookup", func(t *testing.T) {
+		host := factory(t)
+		if _, err := host.Ensure(context.Background(), execenv.Spec{ID: "grant-1", Image: "default"}); err != nil {
+			t.Fatal(err)
+		}
+		_, err := host.Ensure(context.Background(), execenv.Spec{ID: "grant-1", Image: "missing"})
+		if !errors.Is(err, execenv.ErrConflict) {
+			t.Fatalf("Ensure() error = %v, want ErrConflict", err)
 		}
 	})
 
@@ -368,7 +382,7 @@ func Run(t *testing.T, factory Factory) {
 		if err != nil {
 			t.Fatalf("Ensure() error = %v", err)
 		}
-		obs, err := env.Watch(context.Background())
+		obs, err := env.Watch(context.Background(), "")
 		if err != nil {
 			t.Fatalf("Watch() error = %v", err)
 		}
@@ -382,6 +396,9 @@ func Run(t *testing.T, factory Factory) {
 		}
 		if ev.Op != execenv.OpCreate || ev.Path != "out.txt" {
 			t.Fatalf("event = %+v", ev)
+		}
+		if ev.Cursor == "" || obs.Cursor() != ev.Cursor {
+			t.Fatalf("event cursor = %q observation cursor = %q", ev.Cursor, obs.Cursor())
 		}
 		body, err := env.Open(context.Background(), "out.txt")
 		if err != nil {
@@ -434,6 +451,15 @@ func Run(t *testing.T, factory Factory) {
 			t.Fatalf("Ensure() error = %v, want context.Canceled", err)
 		}
 	})
+}
+
+func hasNetwork(networks []execenv.Network, want execenv.Network) bool {
+	for _, network := range networks {
+		if network == want {
+			return true
+		}
+	}
+	return false
 }
 
 func hasImage(images []execenv.Image, want execenv.Image) bool {

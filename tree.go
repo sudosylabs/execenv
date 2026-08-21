@@ -20,6 +20,8 @@ const (
 	MaxPathSegments = 16
 	// MaxSegmentBytes is the maximum UTF-8 length of one path component.
 	MaxSegmentBytes = 255
+	// MaxCursorBytes bounds an opaque Watch cursor.
+	MaxCursorBytes = 128
 )
 
 // Version is an opaque caller token for one file's current content.
@@ -88,13 +90,20 @@ type Batch struct {
 	Mutations []Mutation
 }
 
+// Cursor is an opaque position in one environment's guest-change stream.
+// An empty cursor starts at the current position. A non-empty cursor resumes
+// after the event it names, or fails with ErrLagged when replay is no longer
+// possible.
+type Cursor string
+
 // Event is one guest-originated change. Caller-originated ReplaceTree and
 // Apply calls do not appear here; Watch is how the host reports what the
 // isolated environment wrote on its own.
 type Event struct {
-	Op   Op
-	Path string
-	From string
+	Cursor Cursor
+	Op     Op
+	Path   string
+	From   string
 }
 
 // Observation is a live stream of guest-originated events.
@@ -102,8 +111,35 @@ type Event struct {
 // (lag, freeze, revoke). After a non-nil error the observation is spent;
 // open a new Watch after resynchronizing with ReplaceTree or Open.
 type Observation interface {
+	// Cursor returns the latest position delivered by this observation. It is
+	// already meaningful before the first event, so callers can persist it as
+	// soon as Watch succeeds.
+	Cursor() Cursor
 	Next(ctx context.Context) (Event, error)
 	Close() error
+}
+
+// ValidateEvent reports ErrInvalid when a guest-change event cannot be used.
+func ValidateEvent(event Event) error {
+	if event.Cursor == "" || len(event.Cursor) > MaxCursorBytes || !utf8.ValidString(string(event.Cursor)) {
+		return ErrInvalid
+	}
+	if err := ValidatePath(event.Path); err != nil {
+		return err
+	}
+	switch event.Op {
+	case OpCreate, OpReplace, OpDelete:
+		if event.From != "" {
+			return ErrInvalid
+		}
+	case OpMove:
+		if err := ValidatePath(event.From); err != nil {
+			return err
+		}
+	default:
+		return ErrInvalid
+	}
+	return nil
 }
 
 // GuestWriter is an optional adapter hook for tests. It mutates the

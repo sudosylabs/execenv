@@ -94,8 +94,8 @@ func run(ctx context.Context, host execenv.Host) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("usable=%v images=%v slots=%d release=%s\n",
-		rep.Usable, rep.Images, rep.Slots, rep.Release)
+	fmt.Printf("usable=%v images=%v networks=%v slots=%d release=%s\n",
+		rep.Usable, rep.Images, rep.Networks, rep.Slots, rep.Release)
 }
 ```
 
@@ -139,7 +139,10 @@ func Dial() (execenv.Host, error) {
 ```
 
 `remote.New` dials, authenticates with the token, and checks the process
-stamp. Keep one client per host for the life of the process.
+stamp. A verified client certificate may replace the token when the host
+enables mutual TLS. Keep one client per host for the life of the process.
+`Timeout` bounds dialing and authentication; `OperationTimeout` caps every
+call and defaults to 30 seconds.
 
 Cleartext is loopback-only:
 
@@ -169,10 +172,11 @@ if !rep.Usable {
 }
 ```
 
-`Images` is the catalog ids on that machine. `Slots` is how many more
-grants it will take. `Release` is the process stamp (display only; a
-mismatch already failed at dial). One client talks to one host. If you
-have several machines, you choose among them.
+`Images` is the catalog ids on that machine. `Networks` is the network modes
+the host offers. `Slots` is how many more grants it will take. `Release` is
+the process stamp (display only; a mismatch already failed at dial). One
+client talks to one host. If you have several machines, you choose among
+them.
 
 ### Ensure
 
@@ -198,8 +202,9 @@ if err != nil {
 | No remaining slots | `ErrCapacity` |
 | Allowlist requested, host has no dests | `ErrNetwork` |
 
-Ids and image names are 1–64 characters in `[A-Za-z0-9._-:]`. Ensure does
-not download images. The guest may start on first `Attach`, not at Ensure.
+Ids and image names are 1–64 characters in `[A-Za-z0-9._-:]`. Concurrent
+identical `Ensure` calls for one new id coalesce into one launch. Ensure does
+not download images; occupying a new grant starts its guest.
 
 ### ReplaceTree
 
@@ -236,6 +241,10 @@ equality and never parses it.
 After reconnect or thaw, replace from **your** last acknowledged
 snapshot, not from unacked guest bytes.
 
+A successful `ReplaceTree` starts a new Watch generation. Any live
+observation fails with `ErrLagged`, and cursors from the replaced projection
+cannot be resumed.
+
 ### Apply
 
 Atomic incremental edits. The whole batch succeeds or nothing changes.
@@ -267,17 +276,26 @@ path) and `Path` (new path). `OpDelete` removes a path.
 or deleted. Your own `ReplaceTree` / `Apply` calls do not appear here.
 
 ```go
-obs, err := env.Watch(ctx)
+cursor := loadAcknowledgedCursor()
+obs, err := env.Watch(ctx, cursor)
 if err != nil {
 	return err
 }
 defer obs.Close()
 
+// This is meaningful even before the first event. Persist it if cursor was
+// empty so a reconnect can resume changes made after Watch succeeded.
+cursor = obs.Cursor()
+
 for {
 	ev, err := obs.Next(ctx)
 	if err != nil {
+		if errors.Is(err, execenv.ErrConnection) {
+			// Redial, Ensure the same grant, then Watch(ctx, cursor).
+		}
 		if errors.Is(err, execenv.ErrLagged) {
-			// events were dropped; ReplaceTree from your store, Watch again
+			// Replay is unavailable. ReplaceTree from your store, then start
+			// a new generation with Watch(ctx, "").
 		}
 		return err
 	}
@@ -298,11 +316,16 @@ for {
 	case execenv.OpMove:
 		moveInYourStore(ev.From, ev.Path)
 	}
+	// Commit the mutation and ev.Cursor together. Do not acknowledge a
+	// cursor before the corresponding file mutation is durable.
+	cursor = ev.Cursor
 }
 ```
 
-After a non-nil `Next` error the observation is spent. Open a new Watch
-once you have resynchronized.
+The host retains the most recent 64 guest events. A non-empty cursor resumes
+strictly after its event. An unknown, replaced, or evicted cursor returns
+`ErrLagged`; resynchronize with `ReplaceTree`. After a non-nil `Next` error
+the observation is spent.
 
 Paths are POSIX-relative: no leading `/`, no `..`, no NUL, UTF-8.
 
@@ -398,9 +421,13 @@ Do not log tokens, tree bodies, or PTY octets.
 | Entries per ReplaceTree or Apply | 500 |
 | One file body | 10 MiB |
 | Sum of bodies in one call | 50 MiB |
+| Encoded protocol frame | 72 MiB |
+| PTY frame | 64 KiB |
+| Guest-event replay window | 64 events |
 | Path length | 1024 bytes UTF-8 |
 | Path segments | 16 |
 | One segment | 255 bytes |
+| Watch cursor | 128 bytes |
 | Terminals per environment | 1 |
 
 The workspace inside the guest is `/workspace`.
@@ -526,10 +553,21 @@ A 32-byte random token is written into Host configuration (mode `0600`).
 It is never printed. Copy it once into the application’s secret store.
 Ordinary logs must never contain it.
 
+Mutual TLS is also supported. Set `tls_client_ca` in Host configuration to a
+PEM CA that verifies caller certificates. With a token configured, either a
+valid token or a verified certificate authenticates the caller. With an empty
+token, a verified client certificate is required. TLS defaults to version 1.3.
+
 For a public hostname, a typical client config is: listen
 `0.0.0.0:8443`, replace `tls.crt` / `tls.key` with a cert whose SAN is
 that hostname, set the application’s `ServerName` to the same name, and
 open 8443 on the firewall only to the application network.
+
+The daemon takes an exclusive lock on `work_dir`. A second daemon cannot use
+the same state directory. Startup removes stale grant projections after the
+previous process has released that lock; revoke removes the grant directory.
+The installed systemd unit kills the whole process group, and Linux children
+also receive a parent-death signal when a directly-run daemon exits abruptly.
 
 ### Install catalog images
 

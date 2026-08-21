@@ -50,10 +50,25 @@ type openArgs struct {
 
 type attachArgs struct {
 	Window execenv.Window
+	Stream uint64
 }
 
 type resizeArgs struct {
 	Window execenv.Window
+	Stream uint64
+}
+
+type streamArgs struct {
+	Stream uint64
+}
+
+type watchArgs struct {
+	After  execenv.Cursor
+	Stream uint64
+}
+
+type watchResult struct {
+	Cursor execenv.Cursor
 }
 
 func newSession(conn net.Conn) *mux.Session {

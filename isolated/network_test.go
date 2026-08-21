@@ -98,6 +98,13 @@ func TestEnsureAllowlistUsesHostDests(t *testing.T) {
 		writeCatalogImage(t, dir, "default", "root"),
 	)
 	h.cfg.Allow = []string{"203.0.113.10"}
+	report, err := h.Ready(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Networks) != 2 || report.Networks[1] != execenv.NetworkAllowlist {
+		t.Fatalf("Ready() Networks = %v, want none and allowlist", report.Networks)
+	}
 	rec := h.attach.(*recordingAttacher)
 	if _, err := h.Ensure(t.Context(), execenv.Spec{
 		ID:      "grant-1",

@@ -31,7 +31,7 @@ func (e *environment) Apply(ctx context.Context, batch execenv.Batch) error {
 	return client.Apply(ctx, batch)
 }
 
-func (e *environment) Watch(ctx context.Context) (execenv.Observation, error) {
+func (e *environment) Watch(ctx context.Context, after execenv.Cursor) (execenv.Observation, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, execenv.Error("watch", err)
 	}
@@ -39,7 +39,7 @@ func (e *environment) Watch(ctx context.Context) (execenv.Observation, error) {
 	if err != nil {
 		return nil, err
 	}
-	return client.Watch(ctx)
+	return client.Watch(ctx, after)
 }
 
 func (e *environment) Open(ctx context.Context, path string) (io.ReadCloser, error) {

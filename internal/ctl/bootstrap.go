@@ -358,6 +358,7 @@ func writeUnit(opts Options) error {
 		"Type=simple\n" +
 		"ExecStart=" + opts.execenvPath() + " -config " + opts.configPath() + "\n" +
 		"Restart=on-failure\n" +
+		"KillMode=control-group\n" +
 		"NoNewPrivileges=true\n" +
 		"\n" +
 		"[Install]\n" +

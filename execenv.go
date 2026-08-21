@@ -37,10 +37,11 @@ type Capabilities struct {
 
 // Report is a point-in-time readiness snapshot.
 type Report struct {
-	Usable  bool
-	Images  []Image
-	Slots   int
-	Release string
+	Usable   bool
+	Images   []Image
+	Networks []Network
+	Slots    int
+	Release  string
 }
 
 // Spec asks a host to occupy a grant.
@@ -76,7 +77,7 @@ type Env interface {
 	Apply(ctx context.Context, batch Batch) error
 	// Watch streams guest-originated filesystem events. One observation
 	// may be current. Overflow fails closed with ErrLagged.
-	Watch(ctx context.Context) (Observation, error)
+	Watch(ctx context.Context, after Cursor) (Observation, error)
 	// Open reads the current body of a projected file.
 	Open(ctx context.Context, path string) (io.ReadCloser, error)
 	Freeze(ctx context.Context) error

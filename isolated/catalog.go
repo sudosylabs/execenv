@@ -6,9 +6,26 @@ import (
 	"encoding/hex"
 	"io"
 	"os"
+	"sort"
+	"sync"
 
 	"github.com/sudosylabs/execenv"
 )
+
+type fileStamp struct {
+	size    int64
+	modTime int64
+	mode    os.FileMode
+}
+
+type imageRecord struct {
+	mu      sync.Mutex
+	image   Image
+	kernel  fileStamp
+	rootfs  fileStamp
+	checked bool
+	valid   bool
+}
 
 // ValidDigest reports whether hash is a 64-digit hex SHA-256.
 func ValidDigest(hash string) bool {
@@ -56,22 +73,55 @@ func (img Image) matchesCatalog() bool {
 	return subtle.ConstantTimeCompare(want, got) == 1
 }
 
-func (h *Host) snapshotImages() []Image {
-	out := make([]Image, 0, len(h.images))
-	for _, image := range h.images {
-		out = append(out, image)
+func newImageRecord(image Image) *imageRecord {
+	record := &imageRecord{image: image}
+	_, _ = record.verified()
+	return record
+}
+
+// verified avoids re-hashing multi-gigabyte artifacts on every health poll.
+// It revalidates whenever either file's cheap stat fingerprint changes.
+func (r *imageRecord) verified() (Image, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	kernel, kernelOK := stamp(r.image.Kernel)
+	rootfs, rootfsOK := stamp(r.image.Rootfs)
+	if r.checked && kernelOK && rootfsOK && kernel == r.kernel && rootfs == r.rootfs {
+		return r.image, r.valid
+	}
+	r.kernel = kernel
+	r.rootfs = rootfs
+	r.checked = true
+	r.valid = kernelOK && rootfsOK && r.image.matchesCatalog()
+	return r.image, r.valid
+
+}
+
+func (h *Host) snapshotImages() []*imageRecord {
+	out := make([]*imageRecord, 0, len(h.images))
+	for _, record := range h.images {
+		out = append(out, record)
 	}
 	return out
 }
 
-func verifiedIDs(images []Image) []execenv.Image {
+func verifiedIDs(images []*imageRecord) []execenv.Image {
 	ids := make([]execenv.Image, 0, len(images))
-	for _, image := range images {
-		if image.matchesCatalog() {
+	for _, record := range images {
+		if image, ok := record.verified(); ok {
 			ids = append(ids, image.ID)
 		}
 	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	return ids
+}
+
+func stamp(path string) (fileStamp, bool) {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return fileStamp{}, false
+	}
+	return fileStamp{size: info.Size(), modTime: info.ModTime().UnixNano(), mode: info.Mode()}, true
 }
 
 func regularFile(path string) bool {

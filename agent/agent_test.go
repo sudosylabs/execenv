@@ -160,7 +160,7 @@ func names(entries []os.DirEntry) []string {
 func TestTouchInPtyBecomesWatch(t *testing.T) {
 	t.Parallel()
 	cli, _ := startAgent(t)
-	obs, err := cli.Watch(t.Context())
+	obs, err := cli.Watch(t.Context(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,6 +184,38 @@ func TestTouchInPtyBecomesWatch(t *testing.T) {
 	}
 	_ = body.Close()
 }
+
+func TestWatchReplaysChangesMadeWhileDetached(t *testing.T) {
+	cli, home := startAgent(t)
+	first, err := cli.Watch(t.Context(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor := first.Cursor()
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "offline.txt"), []byte("kept"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Let the guest-side watcher record the change before resuming, which also
+	// exercises delivery of replay frames sent before the Watch response.
+	time.Sleep(2 * pollIntervalForTest)
+	resumed, err := cli.Watch(t.Context(), cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = resumed.Close() })
+	event, err := resumed.Next(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Path != "offline.txt" || event.Cursor == "" {
+		t.Fatalf("replayed event = %+v", event)
+	}
+}
+
+const pollIntervalForTest = 50 * time.Millisecond
 
 func TestClosePtyIsHangup(t *testing.T) {
 	t.Parallel()

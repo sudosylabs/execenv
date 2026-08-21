@@ -33,6 +33,30 @@ func TestReadyFailsClosedWhenProbeFails(t *testing.T) {
 	}
 }
 
+func TestNewCleansStaleGrantsAndLocksWorkDir(t *testing.T) {
+	workDir := t.TempDir()
+	stale := filepath.Join(workDir, "grants", "stale", "workspace", "left.txt")
+	if err := os.MkdirAll(filepath.Dir(stale), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stale, []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	imageDir := t.TempDir()
+	image := writeCatalogImage(t, imageDir, "default", "root")
+	host, err := New(Config{WorkDir: workDir, Images: []Image{image}, Slots: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = host.lock.Close() })
+	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale grant stat error = %v, want not exist", err)
+	}
+	if _, err := New(Config{WorkDir: workDir, Images: []Image{image}, Slots: 1}); err == nil {
+		t.Fatal("second host acquired the same work directory")
+	}
+}
+
 func TestReadyFailsClosedWhenDeviceMissing(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS != "linux" {
@@ -79,6 +103,38 @@ func TestEnsureStartsOneMachineAndReattaches(t *testing.T) {
 	launch.mu.Lock()
 	starts := launch.starts
 	launch.mu.Unlock()
+	if starts != 1 {
+		t.Fatalf("starts = %d, want 1", starts)
+	}
+}
+
+func TestConcurrentEnsureCoalescesOneLaunch(t *testing.T) {
+	launch := &blockingLauncher{started: make(chan struct{}), release: make(chan struct{})}
+	host := testHost(t, func() error { return nil }, launch)
+	type result struct {
+		env execenv.Env
+		err error
+	}
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			env, err := host.Ensure(t.Context(), execenv.Spec{ID: "grant-1", Image: "default"})
+			results <- result{env: env, err: err}
+		}()
+	}
+	<-launch.started
+	close(launch.release)
+	first := <-results
+	second := <-results
+	if first.err != nil || second.err != nil {
+		t.Fatalf("Ensure errors = %v, %v", first.err, second.err)
+	}
+	if first.env.ID() != second.env.ID() {
+		t.Fatalf("Ensure IDs = %q, %q", first.env.ID(), second.env.ID())
+	}
+	launch.inner.mu.Lock()
+	starts := launch.inner.starts
+	launch.inner.mu.Unlock()
 	if starts != 1 {
 		t.Fatalf("starts = %d, want 1", starts)
 	}
@@ -175,7 +231,7 @@ func TestTouchInPtyBecomesWatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	obs, err := env.Watch(t.Context())
+	obs, err := env.Watch(t.Context(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,6 +318,7 @@ func testHostWithImages(t *testing.T, probe func() error, launch launcher, image
 		for _, id := range ids {
 			_ = h.Revoke(context.Background(), id)
 		}
+		_ = h.lock.Close()
 	})
 	return h
 }

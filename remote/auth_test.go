@@ -46,3 +46,35 @@ func TestAuthRefusesReleaseMismatch(t *testing.T) {
 		t.Fatalf("New() error = %v, want ErrUnavailable", err)
 	}
 }
+
+func TestAuthTimeoutClosesSilentConnection(t *testing.T) {
+	inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() {
+		_ = Serve(ctx, ln, inner, ServerConfig{
+			Security:    SecurityInsecureLocal,
+			Token:       []byte("secret"),
+			AuthTimeout: 50 * time.Millisecond,
+		})
+	}()
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+	var one [1]byte
+	if _, err := conn.Read(one[:]); err == nil {
+		t.Fatal("silent unauthenticated connection remained open")
+	} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		t.Fatal("client deadline expired before the server auth timeout closed the connection")
+	}
+}

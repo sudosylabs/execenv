@@ -50,7 +50,7 @@ func TestLiveTouchAppearsOnWatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = env.Revoke(t.Context()) })
-	obs, err := env.Watch(t.Context())
+	obs, err := env.Watch(t.Context(), "")
 	if err != nil {
 		t.Fatal(err)
 	}

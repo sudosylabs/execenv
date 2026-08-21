@@ -64,6 +64,38 @@ func TestLoadAcceptsLocalMemory(t *testing.T) {
 	}
 }
 
+func TestLoadAcceptsMutualTLSWithoutToken(t *testing.T) {
+	t.Parallel()
+	_, err := Load(writeConfig(t, `{
+		"listen": "127.0.0.1:8443",
+		"security": "tls",
+		"adapter": "isolated",
+		"tls_cert": "cert.pem",
+		"tls_key": "key.pem",
+		"tls_client_ca": "client-ca.pem",
+		"work_dir": "/tmp/execenv",
+		"images": [],
+		"slots": 2
+	}`))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+}
+
+func TestLoadRejectsInsecureLocalWithoutToken(t *testing.T) {
+	t.Parallel()
+	_, err := Load(writeConfig(t, `{
+		"listen": "127.0.0.1:0",
+		"security": "insecure_local",
+		"adapter": "memory",
+		"images": [],
+		"slots": 1
+	}`))
+	if !errors.Is(err, execenv.ErrInvalid) {
+		t.Fatalf("Load() error = %v, want ErrInvalid", err)
+	}
+}
+
 func TestLoadDoesNotPutTokenInError(t *testing.T) {
 	t.Parallel()
 	_, err := Load(writeConfig(t, `{

@@ -133,6 +133,7 @@ func (l *processLauncher) Start(ctx context.Context, req startRequest) (instance
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
+	configureChild(cmd)
 	if err := cmd.Start(); err != nil {
 		return nil, execenv.ErrUnavailable
 	}

@@ -8,10 +8,11 @@ import (
 	"time"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/watchlog"
 )
 
 const (
-	watchBuffer = 32
+	watchBuffer = watchlog.DefaultCapacity
 	pollEvery   = 50 * time.Millisecond
 )
 
@@ -25,19 +26,33 @@ func (s *server) resetSnap() {
 }
 
 func (s *server) stopPoll(err error) {
-	if !s.watching {
-		return
-	}
+	wasWatching := s.watching
+	stream := s.watchStream
 	s.watching = false
+	s.watchStream = 0
 	s.watchErr = err
 	if s.pollStop != nil {
 		close(s.pollStop)
 		s.pollStop = nil
 	}
-	_ = s.sess.Send(frame{
-		Kind:   kindWatch,
-		Status: statusOf(err),
-	})
+	if wasWatching {
+		_ = s.sess.Send(frame{
+			Kind:   kindWatch,
+			Stream: stream,
+			Status: statusOf(err),
+		})
+	}
+}
+
+func (s *server) invalidateWatch(err error) {
+	if !s.watching {
+		return
+	}
+	s.watching = false
+	stream := s.watchStream
+	s.watchStream = 0
+	s.watchErr = err
+	_ = s.sess.Send(frame{Kind: kindWatch, Stream: stream, Status: statusOf(err)})
 }
 
 func (s *server) poll(stop <-chan struct{}) {
@@ -56,22 +71,28 @@ func (s *server) poll(stop <-chan struct{}) {
 func (s *server) diffOnce() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.watching {
+	if s.pollStop == nil {
 		return
 	}
 	next := scanHome(s.home)
 	events := diffSnap(s.snap, next)
 	if len(events) > watchBuffer {
-		s.stopPoll(execenv.ErrLagged)
+		s.invalidateWatch(execenv.ErrLagged)
+		s.log.Reset()
+		s.snap = next
 		return
 	}
 	for _, ev := range events {
+		ev = s.log.Append(ev)
+		if !s.watching {
+			continue
+		}
 		raw, err := encodeExtra(ev)
 		if err != nil {
 			s.stopPoll(execenv.ErrUnavailable)
 			return
 		}
-		if err := s.sess.Send(frame{Kind: kindWatch, Extra: raw}); err != nil {
+		if err := s.sess.Send(frame{Kind: kindWatch, Stream: s.watchStream, Extra: raw}); err != nil {
 			s.stopPoll(execenv.ErrClosed)
 			return
 		}

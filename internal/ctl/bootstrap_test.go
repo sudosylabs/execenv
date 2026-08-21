@@ -114,6 +114,9 @@ func TestBootstrapWritesConfigWithoutLeakingSecrets(t *testing.T) {
 	if !strings.Contains(string(body), "-config "+filepath.Join(opts.Sysconf, "host.json")) {
 		t.Fatalf("unit = %s", body)
 	}
+	if !strings.Contains(string(body), "KillMode=control-group") {
+		t.Fatalf("unit does not contain process-group cleanup: %s", body)
+	}
 	if strings.Contains(string(body), firstToken) {
 		t.Fatal("systemd unit contains the token")
 	}

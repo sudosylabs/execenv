@@ -1,6 +1,7 @@
 package mux
 
 import (
+	"encoding/binary"
 	"errors"
 	"io"
 	"net"
@@ -74,5 +75,29 @@ func TestEncodeExtra(t *testing.T) {
 	}
 	if err := DecodeExtra(nil, &out); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSessionRejectsOversizedPty(t *testing.T) {
+	a, b := net.Pipe()
+	t.Cleanup(func() { _ = a.Close(); _ = b.Close() })
+	session := NewSession(a)
+	err := session.Send(Frame{Kind: KindPty, Extra: make([]byte, MaxPtyBytes+1)})
+	if !errors.Is(err, execenv.ErrTooLarge) {
+		t.Fatalf("Send() error = %v, want ErrTooLarge", err)
+	}
+}
+
+func TestSessionRejectsOversizedLengthBeforeAllocation(t *testing.T) {
+	a, b := net.Pipe()
+	t.Cleanup(func() { _ = a.Close(); _ = b.Close() })
+	session := NewSession(b)
+	go func() {
+		var header [4]byte
+		binary.BigEndian.PutUint32(header[:], MaxFrameBytes+1)
+		_, _ = a.Write(header[:])
+	}()
+	if _, err := session.Recv(); !errors.Is(err, execenv.ErrTooLarge) {
+		t.Fatalf("Recv() error = %v, want ErrTooLarge", err)
 	}
 }

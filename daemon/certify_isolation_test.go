@@ -110,7 +110,7 @@ func TestCertifyRemoteHarvestsGuestFile(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	obs, err := env.Watch(t.Context())
+	obs, err := env.Watch(t.Context(), "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"sync"
@@ -16,6 +17,7 @@ import (
 type Client struct {
 	sess    *mux.Session
 	seq     atomic.Uint64
+	stream  atomic.Uint64
 	mu      sync.Mutex
 	pending map[uint64]chan frame
 	term    *clientTerm
@@ -108,7 +110,7 @@ func (c *Client) deliverPty(f frame) {
 	c.mu.Lock()
 	term := c.term
 	c.mu.Unlock()
-	if term == nil {
+	if term == nil || term.stream != f.Stream {
 		return
 	}
 	if f.Status != "" {
@@ -122,19 +124,32 @@ func (c *Client) deliverWatch(f frame) {
 	c.mu.Lock()
 	obs := c.obs
 	c.mu.Unlock()
-	if obs == nil {
+	if obs == nil || obs.stream != f.Stream {
 		return
 	}
 	if f.Status != "" {
-		obs.fail(errorFromStatus(f.Status))
+		c.finishObservation(obs, errorFromStatus(f.Status))
 		return
 	}
 	var ev execenv.Event
 	if err := decodeExtra(f.Extra, &ev); err != nil {
-		obs.fail(execenv.ErrUnavailable)
+		c.finishObservation(obs, execenv.ErrUnavailable)
+		return
+	}
+	if err := execenv.ValidateEvent(ev); err != nil {
+		c.finishObservation(obs, execenv.ErrUnavailable)
 		return
 	}
 	obs.push(ev)
+}
+
+func (c *Client) finishObservation(obs *clientObs, err error) {
+	c.mu.Lock()
+	if c.obs == obs {
+		c.obs = nil
+	}
+	c.mu.Unlock()
+	obs.fail(err)
 }
 
 func (c *Client) call(ctx context.Context, method string, extra []byte) ([]byte, error) {
@@ -150,13 +165,23 @@ func (c *Client) call(ctx context.Context, method string, extra []byte) ([]byte,
 	}
 	c.pending[seq] = ch
 	c.mu.Unlock()
-	err := c.sess.Send(frame{
+	request := frame{
 		Seq:    seq,
 		Kind:   kindRequest,
 		Method: method,
 		Extra:  extra,
-	})
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		request.Deadline = deadline.UnixNano()
+	}
+	err := c.sess.Send(request)
 	if err != nil {
+		c.mu.Lock()
+		delete(c.pending, seq)
+		c.mu.Unlock()
+		if errors.Is(err, execenv.ErrTooLarge) || errors.Is(err, execenv.ErrInvalid) {
+			return nil, execenv.Error(method, err)
+		}
 		return nil, execenv.Error(method, execenv.ErrUnavailable)
 	}
 	select {
@@ -212,30 +237,63 @@ func (c *Client) Open(ctx context.Context, path string) (io.ReadCloser, error) {
 }
 
 // Watch streams guest-originated changes under Home.
-func (c *Client) Watch(ctx context.Context) (execenv.Observation, error) {
-	if _, err := c.call(ctx, methodWatch, nil); err != nil {
-		return nil, err
+func (c *Client) Watch(ctx context.Context, after execenv.Cursor) (execenv.Observation, error) {
+	stream := c.stream.Add(1)
+	extra, err := encodeExtra(watchArgs{After: after, Stream: stream})
+	if err != nil {
+		return nil, execenv.Error("watch", err)
 	}
-	obs := newClientObs(c)
+	obs := newClientObs(c, stream, after)
 	c.mu.Lock()
+	if c.obs != nil {
+		c.mu.Unlock()
+		return nil, execenv.Error("watch", execenv.ErrBusy)
+	}
 	c.obs = obs
 	c.mu.Unlock()
+	out, err := c.call(ctx, methodWatch, extra)
+	if err != nil {
+		c.mu.Lock()
+		if c.obs == obs {
+			c.obs = nil
+		}
+		c.mu.Unlock()
+		obs.fail(err)
+		return nil, err
+	}
+	var result watchResult
+	if err := decodeExtra(out, &result); err != nil {
+		_ = obs.Close()
+		return nil, execenv.Error("watch", execenv.ErrUnavailable)
+	}
+	obs.setInitialCursor(result.Cursor, after)
 	return obs, nil
 }
 
 // Attach starts a login shell with cwd at Home.
 func (c *Client) Attach(ctx context.Context, win execenv.Window) (execenv.Terminal, error) {
-	extra, err := encodeExtra(attachArgs{Window: win})
+	stream := c.stream.Add(1)
+	extra, err := encodeExtra(attachArgs{Window: win, Stream: stream})
 	if err != nil {
 		return nil, execenv.Error("attach", err)
 	}
-	if _, err := c.call(ctx, methodAttach, extra); err != nil {
-		return nil, err
-	}
-	term := newClientTerm(c)
+	term := newClientTerm(c, stream)
 	c.mu.Lock()
+	if c.term != nil {
+		c.mu.Unlock()
+		return nil, execenv.Error("attach", execenv.ErrBusy)
+	}
 	c.term = term
 	c.mu.Unlock()
+	if _, err := c.call(ctx, methodAttach, extra); err != nil {
+		c.mu.Lock()
+		if c.term == term {
+			c.term = nil
+		}
+		c.mu.Unlock()
+		term.hangup(err)
+		return nil, err
+	}
 	return term, nil
 }
 
@@ -260,6 +318,7 @@ func (c *Client) Thaw(ctx context.Context) error {
 
 type clientTerm struct {
 	client *Client
+	stream uint64
 	mu     sync.Mutex
 	cond   *sync.Cond
 	buf    []byte
@@ -267,8 +326,8 @@ type clientTerm struct {
 	dead   error
 }
 
-func newClientTerm(c *Client) *clientTerm {
-	t := &clientTerm{client: c}
+func newClientTerm(c *Client, stream uint64) *clientTerm {
+	t := &clientTerm{client: c, stream: stream}
 	t.cond = sync.NewCond(&t.mu)
 	return t
 }
@@ -323,17 +382,21 @@ func (t *clientTerm) Write(p []byte) (int, error) {
 	}
 	t.mu.Unlock()
 	err := t.client.sess.Send(frame{
-		Kind:  kindPty,
-		Extra: append([]byte(nil), p...),
+		Kind:   kindPty,
+		Stream: t.stream,
+		Extra:  append([]byte(nil), p...),
 	})
 	if err != nil {
+		if errors.Is(err, execenv.ErrTooLarge) {
+			return 0, execenv.Error("write", err)
+		}
 		return 0, execenv.Error("write", execenv.ErrClosed)
 	}
 	return len(p), nil
 }
 
 func (t *clientTerm) Resize(ctx context.Context, win execenv.Window) error {
-	extra, err := encodeExtra(resizeArgs{Window: win})
+	extra, err := encodeExtra(resizeArgs{Window: win, Stream: t.stream})
 	if err != nil {
 		return execenv.Error("resize", err)
 	}
@@ -346,7 +409,11 @@ func (t *clientTerm) Close() error {
 	t.closed = true
 	t.cond.Broadcast()
 	t.mu.Unlock()
-	_, err := t.client.call(context.Background(), methodDetach, nil)
+	extra, encodeErr := encodeExtra(streamArgs{Stream: t.stream})
+	if encodeErr != nil {
+		return execenv.Error("detach", encodeErr)
+	}
+	_, err := t.client.call(context.Background(), methodDetach, extra)
 	t.client.mu.Lock()
 	if t.client.term == t {
 		t.client.term = nil
@@ -357,40 +424,87 @@ func (t *clientTerm) Close() error {
 
 type clientObs struct {
 	client *Client
+	stream uint64
 	events chan execenv.Event
 	errc   chan error
 	once   sync.Once
+	mu     sync.Mutex
+	cursor execenv.Cursor
+	failed error
 }
 
-func newClientObs(c *Client) *clientObs {
+func newClientObs(c *Client, stream uint64, cursor execenv.Cursor) *clientObs {
 	return &clientObs{
 		client: c,
+		stream: stream,
 		events: make(chan execenv.Event, watchBuffer),
 		errc:   make(chan error, 1),
+		cursor: cursor,
 	}
+}
+
+func (o *clientObs) Cursor() execenv.Cursor {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.cursor
+}
+
+func (o *clientObs) setInitialCursor(cursor, after execenv.Cursor) {
+	o.mu.Lock()
+	if o.cursor == after {
+		o.cursor = cursor
+	}
+	o.mu.Unlock()
 }
 
 func (o *clientObs) push(ev execenv.Event) {
 	select {
 	case o.events <- ev:
 	default:
-		o.fail(execenv.ErrLagged)
+		o.abort(execenv.ErrLagged)
 	}
+}
+
+func (o *clientObs) abort(err error) {
+	o.client.finishObservation(o, err)
+	go func() {
+		extra, encodeErr := encodeExtra(streamArgs{Stream: o.stream})
+		if encodeErr == nil {
+			_, _ = o.client.call(context.Background(), methodUnwatch, extra)
+		}
+	}()
 }
 
 func (o *clientObs) fail(err error) {
 	o.once.Do(func() {
+		o.mu.Lock()
+		o.failed = err
+		o.mu.Unlock()
 		o.errc <- err
 		close(o.events)
 	})
 }
 
 func (o *clientObs) Next(ctx context.Context) (execenv.Event, error) {
+	o.mu.Lock()
+	failed := o.failed
+	o.mu.Unlock()
+	if failed != nil {
+		return execenv.Event{}, execenv.Error("watch", failed)
+	}
 	select {
 	case <-ctx.Done():
 		return execenv.Event{}, execenv.Error("watch", ctx.Err())
 	case ev, ok := <-o.events:
 		if ok {
+			o.mu.Lock()
+			if o.failed != nil {
+				err := o.failed
+				o.mu.Unlock()
+				return execenv.Event{}, execenv.Error("watch", err)
+			}
+			o.cursor = ev.Cursor
+			o.mu.Unlock()
 			return ev, nil
 		}
 	}
@@ -404,7 +518,11 @@ func (o *clientObs) Next(ctx context.Context) (execenv.Event, error) {
 
 func (o *clientObs) Close() error {
 	o.fail(execenv.ErrClosed)
-	_, err := o.client.call(context.Background(), methodUnwatch, nil)
+	extra, encodeErr := encodeExtra(streamArgs{Stream: o.stream})
+	if encodeErr != nil {
+		return execenv.Error("unwatch", encodeErr)
+	}
+	_, err := o.client.call(context.Background(), methodUnwatch, extra)
 	o.client.mu.Lock()
 	if o.client.obs == o {
 		o.client.obs = nil

@@ -7,10 +7,12 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"time"
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/internal/mux"
 	"github.com/sudosylabs/execenv/internal/tree"
+	"github.com/sudosylabs/execenv/internal/watchlog"
 )
 
 // Config is one agent's occupancy of a home directory.
@@ -33,6 +35,7 @@ func Serve(ctx context.Context, conn net.Conn, cfg Config) error {
 		home:      cfg.Home,
 		projected: make(tree.Snapshot),
 		sess:      newSession(conn),
+		log:       watchlog.New(watchlog.DefaultCapacity),
 	}
 	defer s.shutdown()
 	go func() {
@@ -46,7 +49,7 @@ func Serve(ctx context.Context, conn net.Conn, cfg Config) error {
 		}
 		switch f.Kind {
 		case kindPty:
-			s.writePty(f.Extra)
+			s.writePty(f)
 		case kindRequest:
 			s.handle(ctx, f)
 		}
@@ -60,13 +63,16 @@ type server struct {
 	mu sync.Mutex
 	// projected is the last caller ReplaceTree/Apply, used only for
 	// version-skip. Open and Watch read Home on disk, including guest files.
-	projected tree.Snapshot
-	frozen    bool
-	term      *shell
-	watching  bool
-	watchErr  error
-	snap      map[string]fileMeta
-	pollStop  chan struct{}
+	projected   tree.Snapshot
+	frozen      bool
+	term        *shell
+	termStream  uint64
+	watching    bool
+	watchStream uint64
+	watchErr    error
+	snap        map[string]fileMeta
+	pollStop    chan struct{}
+	log         *watchlog.Log
 }
 
 func (s *server) shutdown() {
@@ -78,6 +84,11 @@ func (s *server) shutdown() {
 }
 
 func (s *server) handle(ctx context.Context, f frame) {
+	if f.Deadline > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, time.Unix(0, f.Deadline))
+		defer cancel()
+	}
 	var extra []byte
 	var err error
 	switch f.Method {
@@ -88,13 +99,13 @@ func (s *server) handle(ctx context.Context, f frame) {
 	case methodOpen:
 		extra, err = s.open(ctx, f)
 	case methodWatch:
-		err = s.watch(ctx)
+		extra, err = s.watch(ctx, f)
 	case methodUnwatch:
-		err = s.unwatch()
+		err = s.unwatch(f)
 	case methodAttach:
 		err = s.attach(ctx, f)
 	case methodDetach:
-		err = s.detach()
+		err = s.detach(f)
 	case methodResize:
 		err = s.resize(ctx, f)
 	case methodFreeze:
@@ -146,6 +157,8 @@ func (s *server) replace(ctx context.Context, f frame) error {
 		return err
 	}
 	s.projected = next
+	s.invalidateWatch(execenv.ErrLagged)
+	s.log.Reset()
 	s.resetSnap()
 	return nil
 }
@@ -210,30 +223,60 @@ func (s *server) open(ctx context.Context, f frame) ([]byte, error) {
 	return encodeExtra(data)
 }
 
-func (s *server) watch(ctx context.Context) error {
+func (s *server) watch(ctx context.Context, f frame) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return nil, err
+	}
+	var args watchArgs
+	if err := decodeExtra(f.Extra, &args); err != nil || args.Stream == 0 {
+		return nil, execenv.ErrInvalid
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.guard(); err != nil {
-		return err
+		return nil, err
 	}
 	if s.watching {
-		return execenv.ErrBusy
+		return nil, execenv.ErrBusy
+	}
+	cursor, replay, err := s.log.Since(args.After)
+	if err != nil {
+		return nil, err
 	}
 	s.watching = true
+	s.watchStream = args.Stream
 	s.watchErr = nil
-	s.resetSnap()
-	s.pollStop = make(chan struct{})
-	go s.poll(s.pollStop)
-	return nil
+	if s.pollStop == nil {
+		s.resetSnap()
+		s.pollStop = make(chan struct{})
+		go s.poll(s.pollStop)
+	}
+	for _, event := range replay {
+		raw, err := encodeExtra(event)
+		if err != nil {
+			s.watching = false
+			return nil, execenv.ErrUnavailable
+		}
+		if err := s.sess.Send(frame{Kind: kindWatch, Stream: args.Stream, Extra: raw}); err != nil {
+			s.watching = false
+			return nil, execenv.ErrClosed
+		}
+	}
+	return encodeExtra(watchResult{Cursor: cursor})
 }
 
-func (s *server) unwatch() error {
+func (s *server) unwatch(f frame) error {
+	var args streamArgs
+	if err := decodeExtra(f.Extra, &args); err != nil || args.Stream == 0 {
+		return execenv.ErrInvalid
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.stopPoll(execenv.ErrClosed)
+	if s.watchStream == args.Stream {
+		s.watching = false
+		s.watchStream = 0
+		s.watchErr = execenv.ErrClosed
+	}
 	return nil
 }
 
@@ -242,7 +285,7 @@ func (s *server) attach(ctx context.Context, f frame) error {
 		return err
 	}
 	var args attachArgs
-	if err := decodeExtra(f.Extra, &args); err != nil {
+	if err := decodeExtra(f.Extra, &args); err != nil || args.Stream == 0 {
 		return execenv.ErrInvalid
 	}
 	s.mu.Lock()
@@ -258,18 +301,20 @@ func (s *server) attach(ctx context.Context, f frame) error {
 		return execenv.ErrUnavailable
 	}
 	s.term = sh
-	go s.copyPty(sh)
+	s.termStream = args.Stream
+	go s.copyPty(args.Stream, sh)
 	return nil
 }
 
-func (s *server) copyPty(sh *shell) {
+func (s *server) copyPty(stream uint64, sh *shell) {
 	buf := make([]byte, 32*1024)
 	for {
 		n, err := sh.master.Read(buf)
 		if n > 0 {
 			_ = s.sess.Send(frame{
-				Kind:  kindPty,
-				Extra: append([]byte(nil), buf[:n]...),
+				Kind:   kindPty,
+				Stream: stream,
+				Extra:  append([]byte(nil), buf[:n]...),
 			})
 		}
 		if err != nil {
@@ -277,9 +322,10 @@ func (s *server) copyPty(sh *shell) {
 			frozen := s.frozen
 			if s.term == sh {
 				s.term = nil
+				s.termStream = 0
 			}
 			s.mu.Unlock()
-			_ = s.sess.Send(frame{Kind: kindPty, Status: ptyEndStatus(frozen, err)})
+			_ = s.sess.Send(frame{Kind: kindPty, Stream: stream, Status: ptyEndStatus(frozen, err)})
 			return
 		}
 	}
@@ -296,21 +342,28 @@ func ptyEndStatus(frozen bool, err error) string {
 	}
 }
 
-func (s *server) writePty(p []byte) {
+func (s *server) writePty(f frame) {
 	s.mu.Lock()
 	term := s.term
+	stream := s.termStream
 	frozen := s.frozen
 	s.mu.Unlock()
-	if term == nil || frozen {
+	if term == nil || frozen || stream != f.Stream {
 		return
 	}
-	_, _ = term.master.Write(p)
+	_, _ = term.master.Write(f.Extra)
 }
 
-func (s *server) detach() error {
+func (s *server) detach(f frame) error {
+	var args streamArgs
+	if err := decodeExtra(f.Extra, &args); err != nil || args.Stream == 0 {
+		return execenv.ErrInvalid
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.killShell()
+	if s.termStream == args.Stream {
+		s.killShell()
+	}
 	return nil
 }
 
@@ -319,17 +372,18 @@ func (s *server) resize(ctx context.Context, f frame) error {
 		return err
 	}
 	var args resizeArgs
-	if err := decodeExtra(f.Extra, &args); err != nil {
+	if err := decodeExtra(f.Extra, &args); err != nil || args.Stream == 0 {
 		return execenv.ErrInvalid
 	}
 	s.mu.Lock()
 	term := s.term
+	stream := s.termStream
 	frozen := s.frozen
 	s.mu.Unlock()
 	if frozen {
 		return execenv.ErrFrozen
 	}
-	if term == nil {
+	if term == nil || stream != args.Stream {
 		return execenv.ErrClosed
 	}
 	return setWindow(term.master, args.Window)
@@ -363,6 +417,7 @@ func (s *server) killShell() {
 	}
 	s.term.close()
 	s.term = nil
+	s.termStream = 0
 }
 
 type shell struct {

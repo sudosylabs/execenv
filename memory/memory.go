@@ -9,6 +9,7 @@ import (
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/internal/tree"
+	"github.com/sudosylabs/execenv/internal/watchlog"
 )
 
 var (
@@ -45,8 +46,7 @@ type environment struct {
 	// files is the current projection. Paths are already-validated.
 	files tree.Snapshot
 	obs   *observation
-	// watchErr is set when the current observation must die (lag, freeze, revoke).
-	watchErr error
+	log   *watchlog.Log
 }
 
 type terminal struct {
@@ -90,10 +90,11 @@ func (h *Host) Ready(ctx context.Context) (execenv.Report, error) {
 		free = 0
 	}
 	return execenv.Report{
-		Usable:  !h.unusable,
-		Images:  append([]execenv.Image(nil), h.images...),
-		Slots:   free,
-		Release: execenv.Release,
+		Usable:   !h.unusable,
+		Images:   append([]execenv.Image(nil), h.images...),
+		Networks: []execenv.Network{execenv.NetworkNone, execenv.NetworkAllowlist},
+		Slots:    free,
+		Release:  execenv.Release,
 	}, nil
 }
 
@@ -110,14 +111,14 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 	if h.unusable {
 		return nil, execenv.Error("ensure", execenv.ErrUnavailable)
 	}
-	if !h.hasImage(spec.Image) {
-		return nil, execenv.Error("ensure", execenv.ErrUnknownImage)
-	}
 	if env, ok := h.grants[spec.ID]; ok {
 		if env.image != spec.Image || env.network != spec.Network {
 			return nil, execenv.Error("ensure", execenv.ErrConflict)
 		}
 		return env, nil
+	}
+	if !h.hasImage(spec.Image) {
+		return nil, execenv.Error("ensure", execenv.ErrUnknownImage)
 	}
 	if len(h.grants) >= h.slots {
 		return nil, execenv.Error("ensure", execenv.ErrCapacity)
@@ -128,6 +129,7 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		network: spec.Network,
 		host:    h,
 		files:   make(tree.Snapshot),
+		log:     watchlog.New(watchlog.DefaultCapacity),
 	}
 	h.grants[spec.ID] = env
 	return env, nil

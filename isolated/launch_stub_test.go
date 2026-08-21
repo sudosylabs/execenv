@@ -72,6 +72,23 @@ type recordingLauncher struct {
 	fail      error
 }
 
+type blockingLauncher struct {
+	inner   recordingLauncher
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (l *blockingLauncher) Start(ctx context.Context, req startRequest) (instance, error) {
+	l.once.Do(func() { close(l.started) })
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-l.release:
+		return l.inner.Start(ctx, req)
+	}
+}
+
 func (l *recordingLauncher) Start(ctx context.Context, req startRequest) (instance, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
