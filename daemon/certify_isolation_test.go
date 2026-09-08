@@ -29,73 +29,7 @@ const harvestBody = "from-host\n"
 // bootstrapped host process, the client is remote.New, Attach is a guest
 // shell, and a guest-created file is harvested. Not an echo PTY.
 func TestCertifyRemoteHarvestsGuestFile(t *testing.T) {
-	if os.Getenv("EXECENV_ISOLATION") != "1" {
-		t.Skip("set EXECENV_ISOLATION=1 on a machine with isolation hardware")
-	}
-	if runtime.GOOS != "linux" {
-		t.Skip("certify is linux-only")
-	}
-	kernel := os.Getenv("EXECENV_FIXTURE_KERNEL")
-	rootfs := os.Getenv("EXECENV_FIXTURE_ROOTFS")
-	if kernel == "" || rootfs == "" {
-		t.Skip("set EXECENV_FIXTURE_KERNEL and EXECENV_FIXTURE_ROOTFS")
-	}
-	hash, err := isolated.Digest(kernel, rootfs)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	root := t.TempDir()
-	stub := filepath.Join(root, "execenv")
-	build := exec.Command("go", "build", "-o", stub, "github.com/sudosylabs/execenv/cmd/execenv")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build execenv: %v\n%s", err, out)
-	}
-	opts := ctl.Options{
-		Prefix:  filepath.Join(root, "usr", "local"),
-		Sysconf: filepath.Join(root, "etc", "execenv"),
-		State:   filepath.Join(root, "var", "lib", "execenv"),
-		Listen:  "127.0.0.1:0",
-		Slots:   1,
-		Execenv: stub,
-		NoStart: true,
-		NoFetch: true,
-	}
-	if err := ctl.Bootstrap(opts, io.Discard); err != nil {
-		t.Fatalf("bootstrap: %v", err)
-	}
-	path := filepath.Join(opts.Sysconf, "host.json")
-	cfg, err := daemon.Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := freeLoopback(t)
-	cfg.Listen = addr
-	cfg.Images = []daemon.Image{{
-		ID:     "default",
-		Kernel: kernel,
-		Rootfs: rootfs,
-		Hash:   hash,
-	}}
-	if err := daemon.Save(path, cfg); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err = daemon.Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	startHostProcess(t, filepath.Join(opts.Prefix, "bin", "execenv"), path, addr)
-	client, err := remote.New(remote.Config{
-		Address:  addr,
-		Security: remote.SecurityTLS,
-		Token:    []byte(cfg.Token),
-		TLS:      harvestTLS(t, cfg.TLSCert),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = client.Close() })
+	client := startCertifyHost(t, false)
 
 	env, err := client.Ensure(t.Context(), execenv.Spec{ID: "grant-1", Image: "default"})
 	if err != nil {
@@ -204,4 +138,78 @@ func harvestTLS(t *testing.T, certPath string) *tls.Config {
 		t.Fatal("bootstrap TLS cert")
 	}
 	return &tls.Config{RootCAs: pool}
+}
+
+func startCertifyHost(t *testing.T, requireJournal bool) *remote.Client {
+	t.Helper()
+	if os.Getenv("EXECENV_ISOLATION") != "1" {
+		t.Skip("set EXECENV_ISOLATION=1 on a machine with isolation hardware")
+	}
+	if runtime.GOOS != "linux" {
+		t.Skip("certify is linux-only")
+	}
+	kernel := os.Getenv("EXECENV_FIXTURE_KERNEL")
+	rootfs := os.Getenv("EXECENV_FIXTURE_ROOTFS")
+	if kernel == "" || rootfs == "" {
+		t.Skip("set EXECENV_FIXTURE_KERNEL and EXECENV_FIXTURE_ROOTFS")
+	}
+	hash, err := isolated.Digest(kernel, rootfs)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	stub := filepath.Join(root, "execenv")
+	build := exec.Command("go", "build", "-o", stub, "github.com/sudosylabs/execenv/cmd/execenv")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build execenv: %v\n%s", err, out)
+	}
+	opts := ctl.Options{
+		Prefix:  filepath.Join(root, "usr", "local"),
+		Sysconf: filepath.Join(root, "etc", "execenv"),
+		State:   filepath.Join(root, "var", "lib", "execenv"),
+		Listen:  "127.0.0.1:0",
+		Slots:   1,
+		Execenv: stub,
+		NoStart: true,
+		NoFetch: true,
+	}
+	if err := ctl.Bootstrap(opts, io.Discard); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	path := filepath.Join(opts.Sysconf, "host.json")
+	cfg, err := daemon.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := freeLoopback(t)
+	cfg.Listen = addr
+	cfg.RequireJournal = requireJournal
+	cfg.Images = []daemon.Image{{
+		ID:     "default",
+		Kernel: kernel,
+		Rootfs: rootfs,
+		Hash:   hash,
+	}}
+	if err := daemon.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = daemon.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	startHostProcess(t, filepath.Join(opts.Prefix, "bin", "execenv"), path, addr)
+	client, err := remote.New(remote.Config{
+		Address:  addr,
+		Security: remote.SecurityTLS,
+		Token:    []byte(cfg.Token),
+		TLS:      harvestTLS(t, cfg.TLSCert),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	return client
 }

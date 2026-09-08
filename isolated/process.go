@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -33,6 +34,7 @@ func newProcessLauncher(cfg Config) launcher {
 type processInstance struct {
 	cmd     *exec.Cmd
 	dir     string
+	done    <-chan struct{}
 	cleanup func()
 }
 
@@ -141,21 +143,32 @@ func (l *processLauncher) Start(ctx context.Context, req startRequest) (instance
 	if req.Attach != nil {
 		cleanup = req.Attach.close
 	}
-	return &processInstance{cmd: cmd, dir: grantDir, cleanup: cleanup}, nil
+	done := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(done) }()
+	return &processInstance{cmd: cmd, dir: grantDir, cleanup: cleanup, done: done}, nil
 }
 
-func (p *processInstance) Pause() error {
-	return signalProcess(p.cmd, true)
+func (p *processInstance) Pause(ctx context.Context) error {
+	return signalProcess(ctx, p.cmd, true)
 }
 
-func (p *processInstance) Resume() error {
-	return signalProcess(p.cmd, false)
+func (p *processInstance) Resume(ctx context.Context) error {
+	return signalProcess(ctx, p.cmd, false)
 }
 
-func (p *processInstance) Stop() error {
-	if p.cmd != nil && p.cmd.Process != nil {
-		_ = p.cmd.Process.Kill()
-		_, _ = p.cmd.Process.Wait()
+func (p *processInstance) Stop(ctx context.Context) error {
+	if p.cmd == nil || p.cmd.Process == nil || p.done == nil {
+		return execenv.ErrUnavailable
+	}
+	if err := p.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return err
+	}
+	// The launch-owned waiter reaps exactly once. Killing a process is not a
+	// destruction acknowledgement until that waiter observes its exit.
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-p.done:
 	}
 	if p.cleanup != nil {
 		p.cleanup()

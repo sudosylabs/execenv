@@ -275,6 +275,7 @@ func TestSaveRoundTripAllowAndResources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg.RequireJournal = true
 	cfg.Network = "allowlist"
 	cfg.Allow = []string{"203.0.113.8"}
 	cfg.CPUMillis = 1000
@@ -287,7 +288,7 @@ func TestSaveRoundTripAllowAndResources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again.Token != "secret" || again.CPUMillis != 1000 || again.DiskBytes != 20<<30 {
+	if !again.RequireJournal || again.Token != "secret" || again.CPUMillis != 1000 || again.DiskBytes != 20<<30 {
 		t.Fatalf("round-trip = %+v", again)
 	}
 	if len(again.Allow) != 1 || again.Allow[0] != "203.0.113.8" || again.Network != "allowlist" {

@@ -22,6 +22,8 @@ type Factory func(t *testing.T) execenv.Host
 // Run exercises the portable occupancy and PTY contract.
 func Run(t *testing.T, factory Factory) {
 	t.Helper()
+	runControl(t, factory)
+	runProjection(t, factory)
 
 	t.Run("ready reports the default image", func(t *testing.T) {
 		host := factory(t)
@@ -200,14 +202,9 @@ func Run(t *testing.T, factory Factory) {
 		if err := env.Thaw(context.Background()); err != nil {
 			t.Fatalf("Thaw() error = %v", err)
 		}
-		if _, err := term.Write([]byte("x")); !errors.Is(err, execenv.ErrFrozen) {
-			t.Fatalf("Write() after Thaw() on old terminal error = %v, want ErrFrozen", err)
+		if _, err := env.Attach(context.Background(), execenv.Window{}); !errors.Is(err, execenv.ErrBusy) {
+			t.Fatalf("Attach after thaw = %v, want existing PTY busy", err)
 		}
-		term, err = env.Attach(context.Background(), execenv.Window{})
-		if err != nil {
-			t.Fatalf("Attach() after Thaw() error = %v", err)
-		}
-		t.Cleanup(func() { _ = term.Close() })
 		if _, err := term.Write([]byte("ok")); err != nil {
 			t.Fatalf("Write() after Thaw() error = %v", err)
 		}

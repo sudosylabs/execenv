@@ -20,9 +20,23 @@ import (
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/agent"
 	"github.com/sudosylabs/execenv/daemon"
+	"github.com/sudosylabs/execenv/internal/workload"
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "guest-init" {
+		if err := workload.RunInit(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) == 2 && os.Args[1] == "workload-shell" {
+		if err := workload.ExecShell(); err != nil {
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "agent" {
 		os.Exit(runAgent(os.Args[2:]))
 	}
@@ -49,6 +63,7 @@ func main() {
 func runAgent(args []string) int {
 	fs := flag.NewFlagSet("agent", flag.ContinueOnError)
 	home := fs.String("home", "", "projected home directory")
+	contained := fs.Bool("contain-workload", false, "require a kernel-acknowledged unprivileged workload barrier")
 	listen := fs.String("listen", "", "unix socket the host dials; empty uses the guest link")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -71,7 +86,7 @@ func runAgent(args []string) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	if err := agent.ListenAndServe(ctx, ln, agent.Config{Home: *home}); err != nil {
+	if err := agent.ListenAndServe(ctx, ln, agent.Config{Home: *home, ContainWorkload: *contained}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}

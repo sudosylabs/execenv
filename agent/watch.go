@@ -2,9 +2,11 @@ package agent
 
 import (
 	"crypto/sha256"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/sudosylabs/execenv"
@@ -17,8 +19,9 @@ const (
 )
 
 type fileMeta struct {
-	dir  bool
-	hash [sha256.Size]byte
+	unsupported bool
+	dir         bool
+	hash        [sha256.Size]byte
 }
 
 func (s *server) resetSnap() {
@@ -71,10 +74,16 @@ func (s *server) poll(stop <-chan struct{}) {
 func (s *server) diffOnce() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.pollStop == nil {
+	if s.pollStop == nil || s.frozen {
 		return
 	}
 	next := scanHome(s.home)
+	if !validScan(s.snap) || !validScan(next) || changedKinds(s.snap, next) {
+		s.invalidateWatch(execenv.ErrLagged)
+		s.log.Reset()
+		s.snap = next
+		return
+	}
 	events := diffSnap(s.snap, next)
 	if len(events) > watchBuffer {
 		s.invalidateWatch(execenv.ErrLagged)
@@ -104,6 +113,7 @@ func scanHome(home string) map[string]fileMeta {
 	out := make(map[string]fileMeta)
 	_ = filepath.WalkDir(home, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			out[path] = fileMeta{unsupported: true}
 			return nil
 		}
 		if path == home {
@@ -115,12 +125,14 @@ func scanHome(home string) map[string]fileMeta {
 		}
 		rel = filepath.ToSlash(rel)
 		if execenv.ValidatePath(rel) != nil {
+			out[rel] = fileMeta{unsupported: true}
 			if d.IsDir() {
 				return fs.SkipDir
 			}
 			return nil
 		}
 		if d.Type()&fs.ModeSymlink != 0 {
+			out[rel] = fileMeta{unsupported: true}
 			return nil
 		}
 		if d.IsDir() {
@@ -128,10 +140,12 @@ func scanHome(home string) map[string]fileMeta {
 			return nil
 		}
 		if !d.Type().IsRegular() {
+			out[rel] = fileMeta{unsupported: true}
 			return nil
 		}
 		sum, err := hashFile(path)
 		if err != nil {
+			out[rel] = fileMeta{unsupported: true}
 			return nil
 		}
 		out[rel] = fileMeta{hash: sum}
@@ -142,9 +156,17 @@ func scanHome(home string) map[string]fileMeta {
 
 func hashFile(path string) ([sha256.Size]byte, error) {
 	var zero [sha256.Size]byte
-	data, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return zero, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, execenv.MaxFileBytes+1))
+	if err != nil {
+		return zero, err
+	}
+	if len(data) > execenv.MaxFileBytes {
+		return zero, execenv.ErrTooLarge
 	}
 	return sha256.Sum256(data), nil
 }
@@ -179,4 +201,52 @@ func diffSnap(old, next map[string]fileMeta) []execenv.Event {
 		events = append(events, execenv.Event{Op: execenv.OpCreate, Path: path})
 	}
 	return events
+}
+
+// projectSnap advances only the exact paths affected by acknowledged caller
+// mutations. Unrelated guest writes retain their previous observation baseline.
+func (s *server) projectSnap(batch execenv.Batch) {
+	if s.snap == nil {
+		s.snap = make(map[string]fileMeta)
+	}
+	for _, mutation := range batch.Mutations {
+		switch mutation.Op {
+		case execenv.OpCreate, execenv.OpReplace:
+			s.snap[mutation.Path] = fileMeta{dir: mutation.Kind == execenv.KindDirectory, hash: sha256.Sum256(mutation.Data)}
+		case execenv.OpDelete:
+			for key := range s.snap {
+				if key == mutation.Path || strings.HasPrefix(key, mutation.Path+"/") {
+					delete(s.snap, key)
+				}
+			}
+		case execenv.OpMove:
+			moved := make(map[string]fileMeta)
+			for key, meta := range s.snap {
+				if key == mutation.From || strings.HasPrefix(key, mutation.From+"/") {
+					moved[mutation.Path+strings.TrimPrefix(key, mutation.From)] = meta
+					delete(s.snap, key)
+				}
+			}
+			for key, meta := range moved {
+				s.snap[key] = meta
+			}
+		}
+	}
+}
+
+func validScan(snapshot map[string]fileMeta) bool {
+	for _, meta := range snapshot {
+		if meta.unsupported {
+			return false
+		}
+	}
+	return true
+}
+func changedKinds(old, next map[string]fileMeta) bool {
+	for path, meta := range old {
+		if current, ok := next[path]; ok && current.dir != meta.dir {
+			return true
+		}
+	}
+	return false
 }

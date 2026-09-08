@@ -38,6 +38,8 @@ func Serve(ctx context.Context, ln net.Listener, inner execenv.Host, cfg ServerC
 		<-ctx.Done()
 		_ = ln.Close()
 	}()
+	uploads := newProjectionUploads()
+	downloads := newSemanticDownloads()
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -46,18 +48,20 @@ func Serve(ctx context.Context, ln net.Listener, inner execenv.Host, cfg ServerC
 			}
 			return execenv.Error("serve", err)
 		}
-		go serveConn(ctx, conn, inner, cfg, release)
+		go serveConn(ctx, conn, inner, cfg, release, uploads, downloads)
 	}
 }
 
 type serverConn struct {
-	sess    *mux.Session
-	conn    net.Conn
-	inner   execenv.Host
-	cfg     ServerConfig
-	release string
-	ctx     context.Context
-	cancel  context.CancelFunc
+	uploads   *projectionUploads
+	downloads *semanticDownloads
+	sess      *mux.Session
+	conn      net.Conn
+	inner     execenv.Host
+	cfg       ServerConfig
+	release   string
+	ctx       context.Context
+	cancel    context.CancelFunc
 
 	mu          sync.Mutex
 	closed      bool
@@ -70,9 +74,11 @@ type serverConn struct {
 	inflight    chan struct{}
 }
 
-func serveConn(parent context.Context, conn net.Conn, inner execenv.Host, cfg ServerConfig, release string) {
+func serveConn(parent context.Context, conn net.Conn, inner execenv.Host, cfg ServerConfig, release string, uploads *projectionUploads, downloads *semanticDownloads) {
 	ctx, cancel := context.WithCancel(parent)
 	sc := &serverConn{
+		uploads:     uploads,
+		downloads:   downloads,
 		sess:        newSession(conn),
 		conn:        conn,
 		inner:       inner,
@@ -100,7 +106,11 @@ func serveConn(parent context.Context, conn net.Conn, inner execenv.Host, cfg Se
 		return
 	}
 	err = sc.auth(first)
-	_ = sc.reply(first, err, nil)
+	var authExtra []byte
+	if err == nil {
+		authExtra, err = encodeExtra(authResult{Protocol: protocolVersion, Capabilities: inner.Capabilities()})
+	}
+	_ = sc.reply(first, err, authExtra)
 	if err != nil {
 		return
 	}
@@ -174,6 +184,12 @@ func (sc *serverConn) dispatch(f frame) {
 
 func (sc *serverConn) close() {
 	sc.cancel()
+	if sc.downloads != nil {
+		sc.downloads.close(sc)
+	}
+	if sc.uploads != nil {
+		sc.uploads.close(sc)
+	}
 	sc.mu.Lock()
 	if sc.closed {
 		sc.mu.Unlock()
@@ -203,17 +219,37 @@ func (sc *serverConn) close() {
 }
 
 func (sc *serverConn) handle(f frame) {
+	if epochMethod(f.Method) {
+		if err := sc.unwrapEpoch(&f); err != nil {
+			_ = sc.reply(f, err, nil)
+			return
+		}
+	}
 	ctx, cancel := sc.operationContext(f)
 	defer cancel()
 	var err error
 	var extra []byte
 	switch f.Method {
+	case methodObserve, methodObservationAcknowledge, methodObservationOpen, methodObservationRead, methodObservationClose, methodObservationConfirm:
+		extra, err = sc.semantic(ctx, f)
+	case methodProjectionInitialize:
+		extra, err = sc.initializeProjection(ctx, f)
+	case methodProjectionApply:
+		extra, err = sc.applyProjection(ctx, f)
+	case methodProjectionUploadBegin, methodProjectionUploadChunk, methodProjectionUploadFinish, methodProjectionUploadAbort:
+		extra, err = sc.projectionUpload(ctx, f)
+	case methodControl:
+		extra, err = sc.control(ctx, f)
+	case methodControlStatus:
+		extra, err = sc.controlStatus(ctx, f)
 	case methodAuth:
 		err = execenv.ErrInvalid
 	case methodReady:
 		extra, err = sc.ready(ctx)
 	case methodEnsure:
 		extra, err = sc.ensure(ctx, f)
+	case methodRevokeEpoch:
+		err = sc.revokeEpoch(ctx, f)
 	case methodRevoke:
 		err = sc.revoke(ctx, f)
 	case methodAttach:
@@ -271,7 +307,7 @@ func (sc *serverConn) auth(f frame) error {
 	if !tokenOK && !certificateOK {
 		return execenv.ErrInvalid
 	}
-	if args.Release != sc.release {
+	if args.Release != sc.release || args.Protocol != protocolVersion {
 		return execenv.ErrUnavailable
 	}
 	return nil
@@ -301,7 +337,11 @@ func (sc *serverConn) ensure(ctx context.Context, f frame) ([]byte, error) {
 	}
 	sc.envs[args.Spec.ID] = env
 	sc.mu.Unlock()
-	return nil, nil
+	var result ensureResult
+	if controlled, ok := env.(execenv.ControlledEnv); ok {
+		result.Epoch = controlled.Epoch()
+	}
+	return encodeExtra(result)
 }
 
 func (sc *serverConn) env(id execenv.ID) (execenv.Env, error) {

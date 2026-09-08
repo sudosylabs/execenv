@@ -31,8 +31,13 @@ const (
 
 // Capabilities describes adapter-kind facts. They do not name a hypervisor.
 type Capabilities struct {
-	Isolated bool
-	Freeze   bool
+	Isolated       bool
+	Freeze         bool
+	OrderedControl bool
+	// JournalProjection covers fenced Apply and content uploads, not semantic observation.
+	JournalProjection bool
+	// SemanticObservations includes immutable event content and explicit retention acknowledgement.
+	SemanticObservations bool
 }
 
 // Report is a point-in-time readiness snapshot.

@@ -13,31 +13,43 @@ import (
 // stubInstance records lifecycle and serves a local agent on a Unix
 // socket so unit tests never need a microVM.
 type stubInstance struct {
-	mu      sync.Mutex
-	paused  bool
-	stopped bool
-	sock    string
-	ln      net.Listener
-	cancel  context.CancelFunc
+	mu        sync.Mutex
+	paused    bool
+	pauseErr  error
+	resumeErr error
+	stopErr   error
+	stopped   bool
+	sock      string
+	ln        net.Listener
+	cancel    context.CancelFunc
 }
 
-func (s *stubInstance) Pause() error {
+func (s *stubInstance) Pause(context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.pauseErr != nil {
+		return s.pauseErr
+	}
 	s.paused = true
 	return nil
 }
 
-func (s *stubInstance) Resume() error {
+func (s *stubInstance) Resume(context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.resumeErr != nil {
+		return s.resumeErr
+	}
 	s.paused = false
 	return nil
 }
 
-func (s *stubInstance) Stop() error {
+func (s *stubInstance) Stop(context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.stopErr != nil {
+		return s.stopErr
+	}
 	s.stopped = true
 	if s.cancel != nil {
 		s.cancel()

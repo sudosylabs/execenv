@@ -3,6 +3,7 @@ package agent_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -262,9 +263,11 @@ func TestFreezeStopsIO(t *testing.T) {
 	if err := cli.Thaw(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	term, err = cli.Attach(t.Context(), execenv.Window{})
-	if err != nil {
+	if _, err := term.Write([]byte("echo retained\n")); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := cli.Attach(t.Context(), execenv.Window{}); !errors.Is(err, execenv.ErrBusy) {
+		t.Fatalf("second attach: %v", err)
 	}
 	_ = term.Close()
 }
@@ -314,5 +317,125 @@ func waitEvent(t *testing.T, ctx context.Context, obs execenv.Observation, op ex
 		if ev.Op == op && ev.Path == path {
 			return true
 		}
+	}
+}
+
+func TestFreezeThawPreservesShellProcessAndState(t *testing.T) {
+	cli, home := startAgent(t)
+	if err := cli.Verify(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	term, err := cli.Attach(t.Context(), execenv.Window{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = term.Close() })
+	// Have the shell record its actual PID and an unexported variable. A newly
+	// attached shell cannot reconstruct this state from the projection.
+	if _, err := term.Write([]byte("retained=proof; printf '%s' \"$$\" > before-pid\n")); err != nil {
+		t.Fatal(err)
+	}
+	before := waitFile(t, filepath.Join(home, "before-pid"))
+	if err := cli.Freeze(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.Thaw(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := term.Write([]byte("printf '%s:%s' \"$$\" \"$retained\" > after-state\n")); err != nil {
+		t.Fatal(err)
+	}
+	after := waitFile(t, filepath.Join(home, "after-state"))
+	if string(after) != fmt.Sprintf("%s:proof", before) {
+		t.Fatalf("shell state lost: before=%q after=%q", before, after)
+	}
+}
+
+func waitFile(t *testing.T, path string) []byte {
+	t.Helper()
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if body, err := os.ReadFile(path); err == nil && len(body) > 0 {
+			return body
+		}
+		select {
+		case <-deadline.C:
+			t.Fatal("shell output file not written")
+			return nil
+		case <-tick.C:
+		}
+	}
+}
+
+func TestCloseWhileFrozenIsDeferredUntilThaw(t *testing.T) {
+	cli, _ := startAgent(t)
+	term, err := cli.Attach(t.Context(), execenv.Window{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.Freeze(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	if err := term.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(started) > time.Second {
+		t.Fatal("closing paused terminal waited for guest RPC")
+	}
+	if err := cli.Thaw(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := cli.Attach(t.Context(), execenv.Window{})
+	if err != nil {
+		t.Fatalf("closed stream still occupied terminal: %v", err)
+	}
+	defer replacement.Close()
+	if err := term.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := replacement.Write([]byte("echo successor\n")); err != nil {
+		t.Fatalf("old close affected replacement: %v", err)
+	}
+}
+
+func TestFrozenObservationClosesWithoutRPCAndResumesItsCursor(t *testing.T) {
+	cli, home := startAgent(t)
+	if err := cli.ReplaceTree(t.Context(), execenv.Tree{{Path: "file", Kind: execenv.KindFile, Version: "v1", Data: []byte("old")}}); err != nil {
+		t.Fatal(err)
+	}
+	obs, err := cli.Watch(t.Context(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor := obs.Cursor()
+	if err := cli.Freeze(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if _, err := obs.Next(ctx); !errors.Is(err, execenv.ErrFrozen) {
+		t.Fatalf("frozen watch: %v", err)
+	}
+	if err := obs.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.Thaw(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := cli.Watch(t.Context(), cursor)
+	if err != nil {
+		t.Fatalf("retained cursor: %v", err)
+	}
+	defer resumed.Close()
+	if err := os.WriteFile(filepath.Join(home, "file"), []byte("new"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	event, err := resumed.Next(ctx)
+	if err != nil || event.Path != "file" || event.Op != execenv.OpReplace {
+		t.Fatalf("resumed observation: %+v %v", event, err)
 	}
 }

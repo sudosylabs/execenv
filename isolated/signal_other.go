@@ -1,7 +1,11 @@
-//go:build !unix
+//go:build !linux
 
 package isolated
 
-import "os/exec"
+import (
+	"context"
+	"github.com/sudosylabs/execenv"
+	"os/exec"
+)
 
-func signalProcess(*exec.Cmd, bool) error { return nil }
+func signalProcess(context.Context, *exec.Cmd, bool) error { return execenv.ErrUnavailable }

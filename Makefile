@@ -46,7 +46,7 @@ certify:
 	@test "$$(uname -s)" = Linux || (echo "certify is linux-only" >&2; exit 2)
 	@test -n "$(EXECENV_FIXTURE_KERNEL)" || (echo "EXECENV_FIXTURE_KERNEL is required" >&2; exit 2)
 	@test -n "$(EXECENV_FIXTURE_ROOTFS)" || (echo "EXECENV_FIXTURE_ROOTFS is required" >&2; exit 2)
-	EXECENV_ISOLATION=1 go test -tags=isolation -count=1 ./daemon -run TestCertifyRemoteHarvestsGuestFile
+	EXECENV_ISOLATION=1 go test -tags=isolation -count=1 ./daemon -run TestCertifyRemote
 
 # CI bake. Not part of check, not an execenv command, not used on the
 # grant host. KERNEL is a local vmlinux. AGENT is a linux execenv binary.

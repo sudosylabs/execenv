@@ -220,8 +220,11 @@ func TestGuestInitStartsAgentWithoutNetwork(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(body)
-	if !strings.Contains(text, execenv.GuestHome) || !strings.Contains(text, "agent") {
-		t.Fatal("guest init does not start the agent at home")
+	if !strings.Contains(text, execenv.GuestHome) || !strings.Contains(text, "guest-init") || !strings.Contains(text, "-contain-workload") {
+		t.Fatal("guest init does not start the contained agent with a child reaper")
+	}
+	if !strings.Contains(text, "mount -t cgroup2") || !strings.Contains(text, "|| exit 1") {
+		t.Fatal("guest init does not require the kernel workload hierarchy")
 	}
 	if !strings.Contains(text, execenv.GuestBin) {
 		t.Fatal("guest init does not exec the installed binary")

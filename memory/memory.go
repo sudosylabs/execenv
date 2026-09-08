@@ -8,6 +8,10 @@ import (
 	"sync"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/control"
+	"github.com/sudosylabs/execenv/internal/guesttree"
+	"github.com/sudosylabs/execenv/internal/observations"
+	"github.com/sudosylabs/execenv/internal/projection"
 	"github.com/sudosylabs/execenv/internal/tree"
 	"github.com/sudosylabs/execenv/internal/watchlog"
 )
@@ -35,14 +39,19 @@ type Host struct {
 }
 
 type environment struct {
-	mu      sync.Mutex
-	id      execenv.ID
-	image   execenv.Image
-	network execenv.Network
-	host    *Host
-	frozen  bool
-	revoked bool
-	term    *terminal
+	control         *control.State
+	projection      *projection.State
+	semantic        *observations.Log
+	guestTree       *guesttree.Snapshot
+	projectionFence execenv.ProjectionFence
+	mu              sync.Mutex
+	id              execenv.ID
+	image           execenv.Image
+	network         execenv.Network
+	host            *Host
+	frozen          bool
+	revoked         bool
+	term            *terminal
 	// files is the current projection. Paths are already-validated.
 	files tree.Snapshot
 	obs   *observation
@@ -56,6 +65,7 @@ type terminal struct {
 	buf    []byte
 	win    execenv.Window
 	closed bool
+	frozen bool
 	dead   error
 }
 
@@ -75,7 +85,7 @@ func New(cfg Config) (*Host, error) {
 
 // Capabilities reports adapter-kind facts.
 func (h *Host) Capabilities() execenv.Capabilities {
-	return execenv.Capabilities{Isolated: false, Freeze: true}
+	return execenv.Capabilities{Isolated: false, Freeze: true, OrderedControl: true, JournalProjection: true, SemanticObservations: true}
 }
 
 // Ready reports configured images and remaining slots.
@@ -124,12 +134,14 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		return nil, execenv.Error("ensure", execenv.ErrCapacity)
 	}
 	env := &environment{
-		id:      spec.ID,
-		image:   spec.Image,
-		network: spec.Network,
-		host:    h,
-		files:   make(tree.Snapshot),
-		log:     watchlog.New(watchlog.DefaultCapacity),
+		control:    control.New(spec.ID),
+		projection: projection.New(),
+		id:         spec.ID,
+		image:      spec.Image,
+		network:    spec.Network,
+		host:       h,
+		files:      make(tree.Snapshot),
+		log:        watchlog.New(watchlog.DefaultCapacity),
 	}
 	h.grants[spec.ID] = env
 	return env, nil
@@ -141,15 +153,32 @@ func (h *Host) Revoke(ctx context.Context, id execenv.ID) error {
 		return execenv.Error("revoke", err)
 	}
 	h.mu.Lock()
-	env, ok := h.grants[id]
-	if ok {
-		delete(h.grants, id)
-	}
-	h.mu.Unlock()
-	if !ok {
+	defer h.mu.Unlock()
+	env := h.grants[id]
+	if env == nil {
 		return nil
 	}
-	return env.revoke()
+	if err := env.revoke(); err != nil {
+		return err
+	}
+	delete(h.grants, id)
+	return nil
+}
+
+func (h *Host) revokeExact(ctx context.Context, env *environment) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.grants[env.id] != env {
+		return nil
+	}
+	if err := env.revoke(); err != nil {
+		return err
+	}
+	delete(h.grants, env.id)
+	return nil
 }
 
 func (h *Host) hasImage(want execenv.Image) bool {
@@ -179,6 +208,10 @@ func (e *environment) Attach(ctx context.Context, win execenv.Window) (execenv.T
 }
 
 func (e *environment) Freeze(ctx context.Context) error {
+	return e.control.Legacy(ctx, execenv.ControlFrozen, func() error { return e.freeze(ctx) })
+}
+
+func (e *environment) freeze(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return execenv.Error("freeze", err)
 	}
@@ -189,14 +222,17 @@ func (e *environment) Freeze(ctx context.Context) error {
 	}
 	e.frozen = true
 	if e.term != nil {
-		e.term.kill(execenv.ErrFrozen)
-		e.term = nil
+		e.term.setFrozen(true)
 	}
 	e.failWatch(execenv.ErrFrozen)
 	return nil
 }
 
 func (e *environment) Thaw(ctx context.Context) error {
+	return e.control.Legacy(ctx, execenv.ControlRunning, func() error { return e.thaw(ctx) })
+}
+
+func (e *environment) thaw(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return execenv.Error("thaw", err)
 	}
@@ -206,6 +242,9 @@ func (e *environment) Thaw(ctx context.Context) error {
 		return execenv.Error("thaw", execenv.ErrRevoked)
 	}
 	e.frozen = false
+	if e.term != nil {
+		e.term.setFrozen(false)
+	}
 	return nil
 }
 
@@ -213,10 +252,14 @@ func (e *environment) Revoke(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return execenv.Error("revoke", err)
 	}
-	return e.host.Revoke(ctx, e.id)
+	return e.host.revokeExact(ctx, e)
 }
 
 func (e *environment) revoke() error {
+	return e.control.Legacy(context.Background(), execenv.ControlRevoked, e.stop)
+}
+
+func (e *environment) stop() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.revoked = true
@@ -241,6 +284,13 @@ func newTerminal(env *environment, win execenv.Window) *terminal {
 	return term
 }
 
+func (t *terminal) setFrozen(frozen bool) {
+	t.mu.Lock()
+	t.frozen = frozen
+	t.cond.Broadcast()
+	t.mu.Unlock()
+}
+
 func (t *terminal) finished() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -257,7 +307,7 @@ func (t *terminal) kill(reason error) {
 func (t *terminal) Read(p []byte) (int, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	for len(t.buf) == 0 && !t.closed && t.dead == nil {
+	for (t.frozen || len(t.buf) == 0) && !t.closed && t.dead == nil {
 		t.cond.Wait()
 	}
 	if t.dead != nil {
@@ -277,6 +327,9 @@ func (t *terminal) Write(p []byte) (int, error) {
 	if t.dead != nil {
 		return 0, execenv.Error("write", t.dead)
 	}
+	if t.frozen {
+		return 0, execenv.Error("terminal", execenv.ErrFrozen)
+	}
 	if t.closed {
 		return 0, execenv.Error("write", execenv.ErrClosed)
 	}
@@ -293,6 +346,9 @@ func (t *terminal) Resize(ctx context.Context, win execenv.Window) error {
 	defer t.mu.Unlock()
 	if t.dead != nil {
 		return execenv.Error("resize", t.dead)
+	}
+	if t.frozen {
+		return execenv.Error("terminal", execenv.ErrFrozen)
 	}
 	if t.closed {
 		return execenv.Error("resize", execenv.ErrClosed)

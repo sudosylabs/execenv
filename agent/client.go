@@ -8,6 +8,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/internal/mux"
@@ -23,6 +24,8 @@ type Client struct {
 	term    *clientTerm
 	obs     *clientObs
 	closed  bool
+	journal bool
+	frozen  bool
 }
 
 // NewClient takes an already-dialed guest link. It does not occupy a grant.
@@ -33,6 +36,23 @@ func NewClient(conn net.Conn) *Client {
 	}
 	go c.readLoop()
 	return c
+}
+
+// Verify rejects a guest helper that cannot preserve the current control
+// semantics. Host readiness must not infer capability from its own binary.
+func (c *Client) Verify(ctx context.Context) error {
+	out, err := c.call(ctx, methodHello, nil)
+	if err != nil {
+		return execenv.Error("agent protocol", execenv.ErrUnavailable)
+	}
+	var result helloResult
+	if err := decodeExtra(out, &result); err != nil || result.Version != protocolVersion {
+		return execenv.Error("agent protocol", execenv.ErrUnavailable)
+	}
+	c.mu.Lock()
+	c.journal = result.Journal
+	c.mu.Unlock()
+	return nil
 }
 
 // Close hangs up the agent connection. The machine is not torn down.
@@ -97,11 +117,11 @@ func (c *Client) failAll() {
 		delete(c.pending, seq)
 	}
 	if c.term != nil {
-		c.term.hangup(execenv.ErrClosed)
+		c.term.hangup(execenv.ErrConnection)
 		c.term = nil
 	}
 	if c.obs != nil {
-		c.obs.fail(execenv.ErrClosed)
+		c.obs.fail(execenv.ErrConnection)
 		c.obs = nil
 	}
 }
@@ -153,6 +173,8 @@ func (c *Client) finishObservation(obs *clientObs, err error) {
 }
 
 func (c *Client) call(ctx context.Context, method string, extra []byte) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	if err := ctx.Err(); err != nil {
 		return nil, execenv.Error(method, err)
 	}
@@ -272,6 +294,9 @@ func (c *Client) Watch(ctx context.Context, after execenv.Cursor) (execenv.Obser
 
 // Attach starts a login shell with cwd at Home.
 func (c *Client) Attach(ctx context.Context, win execenv.Window) (execenv.Terminal, error) {
+	if err := c.ioGuard(); err != nil {
+		return nil, err
+	}
 	stream := c.stream.Add(1)
 	extra, err := encodeExtra(attachArgs{Window: win, Stream: stream})
 	if err != nil {
@@ -299,21 +324,55 @@ func (c *Client) Attach(ctx context.Context, win execenv.Window) (execenv.Termin
 
 // Freeze stops agent I/O. Home and the connection stay.
 func (c *Client) Freeze(ctx context.Context) error {
-	_, err := c.call(ctx, methodFreeze, nil)
 	c.mu.Lock()
-	term := c.term
-	c.term = nil
+	c.frozen = true
 	c.mu.Unlock()
-	if term != nil {
-		term.hangup(execenv.ErrFrozen)
-	}
+	_, err := c.call(ctx, methodFreeze, nil)
 	return err
 }
 
-// Thaw allows Attach and tree I/O again.
+// Thaw reopens I/O only after the guest acknowledges recovery.
 func (c *Client) Thaw(ctx context.Context) error {
 	_, err := c.call(ctx, methodThaw, nil)
-	return err
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	term := c.term
+	c.mu.Unlock()
+	if term != nil {
+		term.mu.Lock()
+		closed := term.closed
+		term.mu.Unlock()
+		if closed {
+			extra, err := encodeExtra(streamArgs{Stream: term.stream})
+			if err != nil {
+				return err
+			}
+			if _, err := c.call(ctx, methodDetach, extra); err != nil {
+				return err
+			}
+			c.mu.Lock()
+			if c.term == term {
+				c.term = nil
+			}
+			c.mu.Unlock()
+		}
+	}
+	c.mu.Lock()
+	c.frozen = false
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *Client) ioGuard() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.frozen {
+		return execenv.ErrFrozen
+	}
+	return nil
 }
 
 type clientTerm struct {
@@ -371,6 +430,9 @@ func (t *clientTerm) Read(p []byte) (int, error) {
 }
 
 func (t *clientTerm) Write(p []byte) (int, error) {
+	if err := t.client.ioGuard(); err != nil {
+		return 0, err
+	}
 	t.mu.Lock()
 	if t.closed || t.dead != nil {
 		err := t.dead
@@ -396,6 +458,9 @@ func (t *clientTerm) Write(p []byte) (int, error) {
 }
 
 func (t *clientTerm) Resize(ctx context.Context, win execenv.Window) error {
+	if err := t.client.ioGuard(); err != nil {
+		return err
+	}
 	extra, err := encodeExtra(resizeArgs{Window: win, Stream: t.stream})
 	if err != nil {
 		return execenv.Error("resize", err)
@@ -409,6 +474,15 @@ func (t *clientTerm) Close() error {
 	t.closed = true
 	t.cond.Broadcast()
 	t.mu.Unlock()
+	// A paused guest cannot acknowledge RPC. Keep the exact closed stream
+	// attached internally; Thaw drains its deferred detach before reopening I/O.
+	t.client.mu.Lock()
+	frozen := t.client.frozen
+	t.client.mu.Unlock()
+	if frozen {
+		return nil
+	}
+
 	extra, encodeErr := encodeExtra(streamArgs{Stream: t.stream})
 	if encodeErr != nil {
 		return execenv.Error("detach", encodeErr)
@@ -458,9 +532,19 @@ func (o *clientObs) setInitialCursor(cursor, after execenv.Cursor) {
 }
 
 func (o *clientObs) push(ev execenv.Event) {
+	o.mu.Lock()
+	if o.failed != nil {
+		o.mu.Unlock()
+		return
+	}
+	overflow := false
 	select {
 	case o.events <- ev:
 	default:
+		overflow = true
+	}
+	o.mu.Unlock()
+	if overflow {
 		o.abort(execenv.ErrLagged)
 	}
 }
@@ -517,6 +601,12 @@ func (o *clientObs) Next(ctx context.Context) (execenv.Event, error) {
 }
 
 func (o *clientObs) Close() error {
+	o.mu.Lock()
+	failed := o.failed != nil
+	o.mu.Unlock()
+	if failed {
+		return nil
+	}
 	o.fail(execenv.ErrClosed)
 	extra, encodeErr := encodeExtra(streamArgs{Stream: o.stream})
 	if encodeErr != nil {

@@ -26,9 +26,9 @@ type startRequest struct {
 // Connect is the guest link the host dials after Start; the public Host
 // type does not name the transport.
 type instance interface {
-	Pause() error
-	Resume() error
-	Stop() error
+	Pause(context.Context) error
+	Resume(context.Context) error
+	Stop(context.Context) error
 	Connect(ctx context.Context) (net.Conn, error)
 }
 

@@ -13,6 +13,7 @@ import (
 	"github.com/sudosylabs/execenv/internal/mux"
 	"github.com/sudosylabs/execenv/internal/tree"
 	"github.com/sudosylabs/execenv/internal/watchlog"
+	"github.com/sudosylabs/execenv/internal/workload"
 )
 
 // Config is one agent's occupancy of a home directory.
@@ -20,28 +21,55 @@ type Config struct {
 	// Home is the projected tree. It is cwd and $HOME for the login
 	// shell. The image root is not this directory and stays read-only.
 	Home string
+	// ContainWorkload requires a dedicated guest with a usable kernel write
+	// barrier and launches every workload process unprivileged. Unsupported
+	// configurations fail before serving or accepting a terminal.
+	ContainWorkload bool
 }
 
 // Serve handles one host connection. Closing the PTY or the connection is
 // hangup: Home stays. The caller tears the machine down separately.
 func Serve(ctx context.Context, conn net.Conn, cfg Config) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	if cfg.Home == "" {
 		return execenv.Error("agent", execenv.ErrInvalid)
 	}
 	if err := os.MkdirAll(cfg.Home, 0o700); err != nil {
 		return execenv.Error("agent", err)
 	}
+	var group *workload.Group
+	if cfg.ContainWorkload {
+		var err error
+		group, err = workload.Open()
+		if err != nil {
+			return execenv.Error("workload", err)
+		}
+		defer group.Close()
+		if err := group.OwnHome(cfg.Home); err != nil {
+			return execenv.Error("workload", err)
+		}
+	}
 	s := &server{
+		workload:  group,
 		home:      cfg.Home,
 		projected: make(tree.Snapshot),
 		sess:      newSession(conn),
 		log:       watchlog.New(watchlog.DefaultCapacity),
+	}
+	if group != nil {
+		s.journal = newDiskJournal(cfg.Home, group, group.OwnHome)
+		defer s.journal.close()
 	}
 	defer s.shutdown()
 	go func() {
 		<-ctx.Done()
 		_ = s.sess.Close()
 	}()
+	return s.serveFrames(ctx)
+}
+
+func (s *server) serveFrames(ctx context.Context) error {
 	for {
 		f, err := s.sess.Recv()
 		if err != nil {
@@ -57,8 +85,12 @@ func Serve(ctx context.Context, conn net.Conn, cfg Config) error {
 }
 
 type server struct {
-	home string
-	sess *mux.Session
+	home          string
+	workload      *workload.Group
+	workloadErr   error
+	journal       *diskJournal
+	journalUpload *journalUpload
+	sess          *mux.Session
 
 	mu sync.Mutex
 	// projected is the last caller ReplaceTree/Apply, used only for
@@ -89,9 +121,17 @@ func (s *server) handle(ctx context.Context, f frame) {
 		ctx, cancel = context.WithDeadline(ctx, time.Unix(0, f.Deadline))
 		defer cancel()
 	}
+	if err := ctx.Err(); err != nil {
+		_ = s.reply(f, err, nil)
+		return
+	}
 	var extra []byte
 	var err error
 	switch f.Method {
+	case methodJournalUploadBegin, methodJournalUploadChunk, methodJournalUploadFinish, methodJournalUploadAbort, methodJournalInitialize, methodJournalApply, methodJournalObserve, methodJournalContent, methodJournalAcknowledge, methodJournalConfirm:
+		extra, err = s.journalCall(ctx, f)
+	case methodHello:
+		extra, err = encodeExtra(helloResult{Version: protocolVersion, Journal: s.journal != nil})
 	case methodReplace:
 		err = s.replace(ctx, f)
 	case methodApply:
@@ -129,6 +169,14 @@ func (s *server) reply(req frame, err error, extra []byte) error {
 }
 
 func (s *server) guard() error {
+	if s.workload != nil {
+		if err := s.workload.Check(); err != nil {
+			return err
+		}
+	}
+	if s.workloadErr != nil {
+		return execenv.ErrUnavailable
+	}
 	if s.frozen {
 		return execenv.ErrFrozen
 	}
@@ -145,6 +193,9 @@ func (s *server) replace(ctx context.Context, f frame) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.journal != nil && s.journal.state.Initialized() {
+		return execenv.ErrConflict
+	}
 	if err := s.guard(); err != nil {
 		return err
 	}
@@ -153,7 +204,7 @@ func (s *server) replace(ctx context.Context, f frame) error {
 		return err
 	}
 	// Full snapshot: unlisted paths, including guest-created files, go.
-	if err := rewriteHome(s.home, next); err != nil {
+	if err := s.commitLegacy(ctx, nil, func() error { return rewriteHome(s.home, next) }); err != nil {
 		return err
 	}
 	s.projected = next
@@ -173,6 +224,9 @@ func (s *server) apply(ctx context.Context, f frame) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.journal != nil && s.journal.state.Initialized() {
+		return execenv.ErrConflict
+	}
 	if err := s.guard(); err != nil {
 		return err
 	}
@@ -180,12 +234,13 @@ func (s *server) apply(ctx context.Context, f frame) error {
 	if err != nil {
 		return err
 	}
-	// Incremental: guest files that the batch does not name stay on disk.
-	if err := applyHome(s.home, args.Batch); err != nil {
+	// A contained workload stays stopped through precondition checks, disk
+	// changes and ownership updates. A refused precondition does not poison it.
+	if err := s.commitLegacy(ctx, func() error { return checkProjectionDisk(s.home, s.projected, args.Batch) }, func() error { return applyHome(s.home, args.Batch) }); err != nil {
 		return err
 	}
 	s.projected = next
-	s.resetSnap()
+	s.projectSnap(args.Batch)
 	return nil
 }
 
@@ -233,11 +288,20 @@ func (s *server) watch(ctx context.Context, f frame) ([]byte, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.journal != nil && s.journal.state.Initialized() {
+		return nil, execenv.ErrConflict
+	}
 	if err := s.guard(); err != nil {
 		return nil, err
 	}
 	if s.watching {
 		return nil, execenv.ErrBusy
+	}
+	if s.pollStop == nil {
+		s.resetSnap()
+	}
+	if !validScan(s.snap) {
+		return nil, execenv.ErrLagged
 	}
 	cursor, replay, err := s.log.Since(args.After)
 	if err != nil {
@@ -247,7 +311,6 @@ func (s *server) watch(ctx context.Context, f frame) ([]byte, error) {
 	s.watchStream = args.Stream
 	s.watchErr = nil
 	if s.pollStop == nil {
-		s.resetSnap()
 		s.pollStop = make(chan struct{})
 		go s.poll(s.pollStop)
 	}
@@ -296,7 +359,13 @@ func (s *server) attach(ctx context.Context, f frame) error {
 	if s.term != nil && !s.term.done() {
 		return execenv.ErrBusy
 	}
-	sh, err := startShell(s.home, args.Window)
+	if s.workload != nil {
+		if err := s.workload.Kill(ctx); err != nil {
+			s.workloadErr = err
+			return err
+		}
+	}
+	sh, err := startShell(s.home, args.Window, s.workload)
 	if err != nil {
 		return execenv.ErrUnavailable
 	}
@@ -396,8 +465,7 @@ func (s *server) freeze(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.frozen = true
-	s.killShell()
-	s.stopPoll(execenv.ErrFrozen)
+	s.invalidateWatch(execenv.ErrFrozen)
 	return nil
 }
 
@@ -407,6 +475,11 @@ func (s *server) thaw(ctx context.Context) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.workload != nil {
+		if err := s.workload.Check(); err != nil {
+			return err
+		}
+	}
 	s.frozen = false
 	return nil
 }
@@ -416,6 +489,11 @@ func (s *server) killShell() {
 		return
 	}
 	s.term.close()
+	if s.workload != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		s.workloadErr = s.workload.Kill(ctx)
+		cancel()
+	}
 	s.term = nil
 	s.termStream = 0
 }
@@ -423,18 +501,52 @@ func (s *server) killShell() {
 type shell struct {
 	master *os.File
 	cmd    *exec.Cmd
+	exited chan struct{}
 }
 
 func (sh *shell) done() bool {
-	if sh == nil || sh.cmd.ProcessState != nil {
+	if sh == nil {
 		return true
 	}
-	return false
+	select {
+	case <-sh.exited:
+		return true
+	default:
+		return false
+	}
 }
 
 func (sh *shell) close() {
 	if sh.cmd.Process != nil {
-		hangup(sh.cmd)
+		hangup(sh.cmd, sh.exited)
 	}
 	_ = sh.master.Close()
+}
+
+func (s *server) commitLegacy(ctx context.Context, validate, commit func() error) error {
+	if s.workload == nil {
+		if validate != nil {
+			if err := validate(); err != nil {
+				return err
+			}
+		}
+		return commit()
+	}
+	var refused error
+	err := s.workload.Stopped(ctx, func() error {
+		if validate != nil {
+			if err := validate(); err != nil {
+				refused = err
+				return nil
+			}
+		}
+		if err := commit(); err != nil {
+			return err
+		}
+		return s.journal.ownTree()
+	})
+	if err != nil {
+		return err
+	}
+	return refused
 }

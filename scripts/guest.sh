@@ -8,4 +8,5 @@ mkdir -p /workspace
 mount -t tmpfs -o size=2G tmpfs /workspace 2>/dev/null
 export HOME=/workspace
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-exec /usr/local/bin/execenv agent -home /workspace
+mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null || exit 1
+exec /usr/local/bin/execenv guest-init -home /workspace -contain-workload

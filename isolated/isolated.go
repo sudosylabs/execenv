@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/control"
 )
 
 var (
@@ -33,14 +34,17 @@ type Image struct {
 // device and the two processes that supervise a microVM. Empty values use
 // platform defaults. Those defaults live in the probe, not in this type.
 type Config struct {
-	Images      []Image
-	Slots       int
-	WorkDir     string
-	Device      string
-	Runtime     string
-	Supervisor  string
-	CPUMillis   int
-	MemoryBytes int64
+	// RequireJournal refuses guests that cannot prove native journal support.
+	// Leave disabled until the installed guest artifacts have been certified.
+	RequireJournal bool
+	Images         []Image
+	Slots          int
+	WorkDir        string
+	Device         string
+	Runtime        string
+	Supervisor     string
+	CPUMillis      int
+	MemoryBytes    int64
 	// Allow is the host's IPv4 dests. Grants cannot add dests. Empty
 	// means this host does not offer NetworkAllowlist.
 	Allow []string
@@ -112,7 +116,7 @@ func New(cfg Config) (*Host, error) {
 
 // Capabilities reports that this adapter isolates grants.
 func (h *Host) Capabilities() execenv.Capabilities {
-	return execenv.Capabilities{Isolated: true, Freeze: true}
+	return execenv.Capabilities{Isolated: true, Freeze: true, OrderedControl: true, JournalProjection: h.cfg.RequireJournal, SemanticObservations: h.cfg.RequireJournal}
 }
 
 // Ready fails closed (Usable=false) when isolation is missing. Images is
@@ -241,6 +245,7 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		return h.completeEnsure(call, nil, execenv.Error("ensure", err), treeDir)
 	}
 	env := &environment{
+		control: control.New(spec.ID),
 		id:      spec.ID,
 		image:   image,
 		network: spec.Network,
@@ -301,19 +306,37 @@ func (h *Host) Revoke(ctx context.Context, id execenv.ID) error {
 		case <-done:
 		}
 	}
-	env, ok := h.grants[id]
-	if ok {
-		delete(h.grants, id)
-	}
-	h.mu.Unlock()
-	if !ok {
+	defer h.mu.Unlock()
+	env := h.grants[id]
+	if env == nil {
 		return nil
 	}
-	err := env.revoke()
-	if removeErr := os.RemoveAll(filepath.Join(h.cfg.WorkDir, "grants", string(id))); err == nil {
-		err = removeErr
+	return h.retireLocked(env)
+}
+
+func (h *Host) revokeExact(ctx context.Context, env *environment) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	return execenv.Error("revoke", err)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.grants[env.id] != env {
+		return nil
+	}
+	return h.retireLocked(env)
+}
+
+// Keep the slot and identity reserved until destruction is acknowledged. This
+// also prevents old cleanup from deleting a newly occupied grant directory.
+func (h *Host) retireLocked(env *environment) error {
+	if err := env.revoke(); err != nil {
+		return execenv.Error("revoke", err)
+	}
+	if err := os.RemoveAll(filepath.Join(h.cfg.WorkDir, "grants", string(env.id))); err != nil {
+		return execenv.Error("revoke", err)
+	}
+	delete(h.grants, env.id)
+	return nil
 }
 
 func (h *Host) grant(id execenv.ID) (*environment, error) {

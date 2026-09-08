@@ -4,10 +4,9 @@ package agent
 
 import "os/exec"
 
-func hangup(cmd *exec.Cmd) {
+func hangup(cmd *exec.Cmd, _ <-chan struct{}) {
 	if cmd == nil || cmd.Process == nil {
 		return
 	}
 	_ = cmd.Process.Kill()
-	_, _ = cmd.Process.Wait()
 }

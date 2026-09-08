@@ -6,6 +6,8 @@ package tree
 
 import (
 	"maps"
+	"path"
+	"strings"
 
 	"github.com/sudosylabs/execenv"
 )
@@ -57,6 +59,9 @@ func Replace(current Snapshot, tree execenv.Tree) (Snapshot, error) {
 			return nil, execenv.ErrInvalid
 		}
 	}
+	if err := validateTopology(next); err != nil {
+		return nil, err
+	}
 	return next, nil
 }
 
@@ -86,12 +91,18 @@ func Apply(current Snapshot, batch execenv.Batch) (Snapshot, error) {
 			return nil, err
 		}
 	}
+	if err := validateTopology(next); err != nil {
+		return nil, err
+	}
 	return next, nil
 }
 
 func applyOne(next Snapshot, mut execenv.Mutation, total *int64) error {
 	if err := execenv.ValidatePath(mut.Path); err != nil {
 		return err
+	}
+	if mut.Recursive && mut.Op != execenv.OpDelete {
+		return execenv.ErrInvalid
 	}
 	switch mut.Op {
 	case execenv.OpCreate:
@@ -116,6 +127,18 @@ func applyOne(next Snapshot, mut execenv.Mutation, total *int64) error {
 		if mut.Expected != "" && ent.Kind == execenv.KindFile && ent.Version != mut.Expected {
 			return execenv.ErrConflict
 		}
+		if ent.Kind == execenv.KindFile && mut.Recursive {
+			return execenv.ErrInvalid
+		}
+		prefix := mut.Path + "/"
+		for key := range next {
+			if strings.HasPrefix(key, prefix) {
+				if !mut.Recursive {
+					return execenv.ErrConflict
+				}
+				delete(next, key)
+			}
+		}
 		delete(next, mut.Path)
 		return nil
 	case execenv.OpMove:
@@ -132,8 +155,29 @@ func applyOne(next Snapshot, mut execenv.Mutation, total *int64) error {
 		if _, exists := next[mut.Path]; exists {
 			return execenv.ErrConflict
 		}
-		delete(next, mut.From)
-		next[mut.Path] = ent
+		if strings.HasPrefix(mut.Path, mut.From+"/") {
+			return execenv.ErrInvalid
+		}
+		moved := make(Snapshot)
+		for key, node := range next {
+			if key != mut.From && !strings.HasPrefix(key, mut.From+"/") {
+				continue
+			}
+			dest := mut.Path + strings.TrimPrefix(key, mut.From)
+			if err := execenv.ValidatePath(dest); err != nil {
+				return err
+			}
+			if _, exists := next[dest]; exists {
+				return execenv.ErrConflict
+			}
+			moved[dest] = node
+		}
+		for key := range next {
+			if key == mut.From || strings.HasPrefix(key, mut.From+"/") {
+				delete(next, key)
+			}
+		}
+		maps.Copy(next, moved)
 		return nil
 	default:
 		return execenv.ErrInvalid
@@ -168,4 +212,25 @@ func put(next Snapshot, mut execenv.Mutation, total *int64) error {
 	default:
 		return execenv.ErrInvalid
 	}
+}
+
+// Missing parent entries retain the original implicit-directory convention;
+// an explicitly projected file can never become another node's parent.
+func validateTopology(nodes Snapshot) error {
+	if len(nodes) > execenv.MaxTreeEntries {
+		return execenv.ErrTooLarge
+	}
+	var total int64
+	for key, node := range nodes {
+		total += int64(len(node.Data))
+		if total > execenv.MaxTreeBytes {
+			return execenv.ErrTooLarge
+		}
+		for parent := path.Dir(key); parent != "."; parent = path.Dir(parent) {
+			if ancestor, ok := nodes[parent]; ok && ancestor.Kind != execenv.KindDirectory {
+				return execenv.ErrConflict
+			}
+		}
+	}
+	return nil
 }

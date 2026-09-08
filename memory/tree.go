@@ -177,16 +177,20 @@ func (e *environment) writeGuest(path string, data []byte) error {
 	if err := e.guard("guest"); err != nil {
 		return err
 	}
-	_, existed := e.files[path]
-	e.files[path] = tree.Node{
-		Kind:    execenv.KindFile,
-		Version: "guest",
-		Data:    append([]byte(nil), data...),
-	}
 	op := execenv.OpCreate
-	if existed {
+	if _, existed := e.files[path]; existed {
 		op = execenv.OpReplace
 	}
+	next, err := tree.Apply(e.files, execenv.Batch{Mutations: []execenv.Mutation{{Op: op, Path: path, Kind: execenv.KindFile, Version: "guest", Data: append([]byte{}, data...)}}})
+	if err != nil {
+		return err
+	}
+	if e.projection.Initialized() {
+		if err := e.recordGuest(next, "", ""); err != nil {
+			return err
+		}
+	}
+	e.files = next
 	e.emit(execenv.Event{Op: op, Path: path})
 	return nil
 }
@@ -200,7 +204,16 @@ func (e *environment) removeGuest(path string) error {
 	if _, ok := e.files[path]; !ok {
 		return execenv.Error("guest", execenv.ErrNotFound)
 	}
-	delete(e.files, path)
+	next, err := tree.Apply(e.files, execenv.Batch{Mutations: []execenv.Mutation{{Op: execenv.OpDelete, Path: path, Recursive: e.files[path].Kind == execenv.KindDirectory}}})
+	if err != nil {
+		return err
+	}
+	if e.projection.Initialized() {
+		if err := e.recordGuest(next, "", ""); err != nil {
+			return err
+		}
+	}
+	e.files = next
 	e.emit(execenv.Event{Op: execenv.OpDelete, Path: path})
 	return nil
 }
@@ -211,15 +224,23 @@ func (e *environment) moveGuest(from, to string) error {
 	if err := e.guard("guest"); err != nil {
 		return err
 	}
-	ent, ok := e.files[from]
+	_, ok := e.files[from]
 	if !ok {
 		return execenv.Error("guest", execenv.ErrNotFound)
 	}
 	if _, exists := e.files[to]; exists {
 		return execenv.Error("guest", execenv.ErrConflict)
 	}
-	delete(e.files, from)
-	e.files[to] = ent
+	next, err := tree.Apply(e.files, execenv.Batch{Mutations: []execenv.Mutation{{Op: execenv.OpMove, From: from, Path: to}}})
+	if err != nil {
+		return err
+	}
+	if e.projection.Initialized() {
+		if err := e.recordGuest(next, from, to); err != nil {
+			return err
+		}
+	}
+	e.files = next
 	e.emit(execenv.Event{Op: execenv.OpMove, Path: to, From: from})
 	return nil
 }
@@ -230,6 +251,9 @@ func (e *environment) guard(op string) error {
 	}
 	if e.frozen {
 		return execenv.Error(op, execenv.ErrFrozen)
+	}
+	if e.projection.Initialized() && (op == "apply" || op == "replace" || op == "watch") {
+		return execenv.Error(op, execenv.ErrConflict)
 	}
 	return nil
 }

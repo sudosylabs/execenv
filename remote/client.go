@@ -18,15 +18,16 @@ var _ execenv.Host = (*Client)(nil)
 
 // Client is a Host that speaks the execenv contract over one connection.
 type Client struct {
-	cfg     Config
-	sess    *mux.Session
-	seq     atomic.Uint64
-	stream  atomic.Uint64
-	mu      sync.Mutex
-	pending map[uint64]chan frame
-	terms   map[execenv.ID]*remoteTerminal
-	obs     map[execenv.ID]*remoteObservation
-	closed  bool
+	capabilities execenv.Capabilities
+	cfg          Config
+	sess         *mux.Session
+	seq          atomic.Uint64
+	stream       atomic.Uint64
+	mu           sync.Mutex
+	pending      map[uint64]chan frame
+	terms        map[execenv.ID]*remoteTerminal
+	obs          map[execenv.ID]*remoteObservation
+	closed       bool
 }
 
 // New dials cfg.Address. The constructor is inert aside from the dial and
@@ -77,14 +78,22 @@ func (c *Client) Close() error {
 }
 
 func (c *Client) authenticate() error {
-	extra, err := encodeExtra(authArgs{Token: c.cfg.Token, Release: execenv.Release})
+	extra, err := encodeExtra(authArgs{Token: c.cfg.Token, Release: execenv.Release, Protocol: protocolVersion})
 	if err != nil {
 		return execenv.Error("auth", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeoutOrDefault(c.cfg.Timeout))
 	defer cancel()
-	_, err = c.call(ctx, methodAuth, "", extra)
-	return err
+	out, err := c.call(ctx, methodAuth, "", extra)
+	if err != nil {
+		return err
+	}
+	var result authResult
+	if err := decodeExtra(out, &result); err != nil || result.Protocol != protocolVersion {
+		return execenv.ErrUnavailable
+	}
+	c.capabilities = result.Capabilities
+	return nil
 }
 
 func (c *Client) readLoop() {
@@ -225,7 +234,7 @@ func (c *Client) call(ctx context.Context, method, grant string, extra []byte) (
 // Capabilities is local. A remote host is isolated; the wire does not name
 // how isolation is implemented.
 func (c *Client) Capabilities() execenv.Capabilities {
-	return execenv.Capabilities{Isolated: true, Freeze: true}
+	return c.capabilities
 }
 
 func (c *Client) Ready(ctx context.Context) (execenv.Report, error) {
@@ -245,10 +254,15 @@ func (c *Client) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, er
 	if err != nil {
 		return nil, execenv.Error("ensure", err)
 	}
-	if _, err := c.call(ctx, methodEnsure, string(spec.ID), extra); err != nil {
+	out, err := c.call(ctx, methodEnsure, string(spec.ID), extra)
+	if err != nil {
 		return nil, err
 	}
-	return &remoteEnv{client: c, id: spec.ID}, nil
+	var result ensureResult
+	if err := decodeExtra(out, &result); err != nil {
+		return nil, execenv.ErrUnavailable
+	}
+	return &remoteEnv{client: c, id: spec.ID, epoch: result.Epoch}, nil
 }
 
 func (c *Client) Revoke(ctx context.Context, id execenv.ID) error {
@@ -257,27 +271,39 @@ func (c *Client) Revoke(ctx context.Context, id execenv.ID) error {
 }
 
 type remoteEnv struct {
-	client *Client
-	id     execenv.ID
+	revoked atomic.Bool
+	epoch   string
+	client  *Client
+	id      execenv.ID
 }
 
 func (e *remoteEnv) ID() execenv.ID { return e.id }
 
 func (e *remoteEnv) Attach(ctx context.Context, win execenv.Window) (execenv.Terminal, error) {
+	if e.revoked.Load() {
+		return nil, execenv.ErrRevoked
+	}
 	stream := e.client.stream.Add(1)
 	extra, err := encodeExtra(attachArgs{Window: win, Stream: stream})
 	if err != nil {
 		return nil, execenv.Error("attach", err)
 	}
 	term := newRemoteTerminal(e.client, e.id, stream)
+	term.epoch = e.epoch
 	e.client.mu.Lock()
-	if e.client.terms[e.id] != nil {
+	if current := e.client.terms[e.id]; current != nil {
+		current.mu.Lock()
+		frozen := current.frozen
+		current.mu.Unlock()
 		e.client.mu.Unlock()
+		if frozen {
+			return nil, execenv.ErrFrozen
+		}
 		return nil, execenv.Error("attach", execenv.ErrBusy)
 	}
 	e.client.terms[e.id] = term
 	e.client.mu.Unlock()
-	if _, err := e.client.call(ctx, methodAttach, string(e.id), extra); err != nil {
+	if _, err := e.call(ctx, methodAttach, string(e.id), extra); err != nil {
 		e.client.mu.Lock()
 		if e.client.terms[e.id] == term {
 			delete(e.client.terms, e.id)
@@ -294,7 +320,7 @@ func (e *remoteEnv) ReplaceTree(ctx context.Context, tree execenv.Tree) error {
 	if err != nil {
 		return execenv.Error("replace", err)
 	}
-	_, err = e.client.call(ctx, methodReplace, string(e.id), extra)
+	_, err = e.call(ctx, methodReplace, string(e.id), extra)
 	return err
 }
 
@@ -303,7 +329,7 @@ func (e *remoteEnv) Apply(ctx context.Context, batch execenv.Batch) error {
 	if err != nil {
 		return execenv.Error("apply", err)
 	}
-	_, err = e.client.call(ctx, methodApply, string(e.id), extra)
+	_, err = e.call(ctx, methodApply, string(e.id), extra)
 	return err
 }
 
@@ -321,7 +347,7 @@ func (e *remoteEnv) Watch(ctx context.Context, after execenv.Cursor) (execenv.Ob
 	}
 	e.client.obs[e.id] = obs
 	e.client.mu.Unlock()
-	out, err := e.client.call(ctx, methodWatch, string(e.id), extra)
+	out, err := e.call(ctx, methodWatch, string(e.id), extra)
 	if err != nil {
 		e.client.mu.Lock()
 		if e.client.obs[e.id] == obs {
@@ -345,7 +371,7 @@ func (e *remoteEnv) Open(ctx context.Context, path string) (io.ReadCloser, error
 	if err != nil {
 		return nil, execenv.Error("open", err)
 	}
-	out, err := e.client.call(ctx, methodOpen, string(e.id), extra)
+	out, err := e.call(ctx, methodOpen, string(e.id), extra)
 	if err != nil {
 		return nil, err
 	}
@@ -357,19 +383,29 @@ func (e *remoteEnv) Open(ctx context.Context, path string) (io.ReadCloser, error
 }
 
 func (e *remoteEnv) Freeze(ctx context.Context) error {
-	_, err := e.client.call(ctx, methodFreeze, string(e.id), nil)
-	e.client.hangupTerm(e.id, execenv.ErrFrozen)
+	_, err := e.call(ctx, methodFreeze, string(e.id), nil)
+	e.setTermFrozen(true)
 	return err
 }
 
 func (e *remoteEnv) Thaw(ctx context.Context) error {
-	_, err := e.client.call(ctx, methodThaw, string(e.id), nil)
+	_, err := e.call(ctx, methodThaw, string(e.id), nil)
+	if err == nil {
+		e.setTermFrozen(false)
+	}
 	return err
 }
 
 func (e *remoteEnv) Revoke(ctx context.Context) error {
-	err := e.client.Revoke(ctx, e.id)
-	e.client.hangupTerm(e.id, execenv.ErrRevoked)
+	extra, err := encodeExtra(e.epoch)
+	if err != nil {
+		return err
+	}
+	_, err = e.client.call(ctx, methodRevokeEpoch, string(e.id), extra)
+	if err == nil {
+		e.revoked.Store(true)
+		e.hangupTerm(execenv.ErrRevoked)
+	}
 	return err
 }
 
@@ -383,7 +419,20 @@ func (c *Client) hangupTerm(id execenv.ID, err error) {
 	}
 }
 
+func (e *remoteEnv) setTermFrozen(frozen bool) {
+	e.client.mu.Lock()
+	term := e.client.terms[e.id]
+	e.client.mu.Unlock()
+	if term != nil && term.epoch == e.epoch {
+		term.mu.Lock()
+		term.frozen = frozen
+		term.cond.Broadcast()
+		term.mu.Unlock()
+	}
+}
+
 type remoteTerminal struct {
+	epoch  string
 	client *Client
 	id     execenv.ID
 	stream uint64
@@ -391,6 +440,7 @@ type remoteTerminal struct {
 	cond   *sync.Cond
 	buf    []byte
 	closed bool
+	frozen bool
 	dead   error
 }
 
@@ -440,6 +490,10 @@ func (t *remoteTerminal) Read(p []byte) (int, error) {
 
 func (t *remoteTerminal) Write(p []byte) (int, error) {
 	t.mu.Lock()
+	if t.frozen {
+		t.mu.Unlock()
+		return 0, execenv.ErrFrozen
+	}
 	if t.closed || t.dead != nil {
 		err := t.dead
 		if err == nil {
@@ -467,6 +521,12 @@ func (t *remoteTerminal) Write(p []byte) (int, error) {
 }
 
 func (t *remoteTerminal) Resize(ctx context.Context, win execenv.Window) error {
+	t.mu.Lock()
+	frozen := t.frozen
+	t.mu.Unlock()
+	if frozen {
+		return execenv.ErrFrozen
+	}
 	extra, err := encodeExtra(resizeArgs{Window: win, Stream: t.stream})
 	if err != nil {
 		return execenv.Error("resize", err)
@@ -533,9 +593,19 @@ func (o *remoteObservation) setInitialCursor(cursor, after execenv.Cursor) {
 const watchBufferRemote = 64
 
 func (o *remoteObservation) push(ev execenv.Event) {
+	o.mu.Lock()
+	if o.failed != nil {
+		o.mu.Unlock()
+		return
+	}
+	overflow := false
 	select {
 	case o.events <- ev:
 	default:
+		overflow = true
+	}
+	o.mu.Unlock()
+	if overflow {
 		o.abort(execenv.ErrLagged)
 	}
 }

@@ -17,6 +17,7 @@ const (
 )
 
 const (
+	methodHello   = "hello"
 	methodReplace = "replace"
 	methodApply   = "apply"
 	methodOpen    = "open"
@@ -74,3 +75,5 @@ type watchResult struct {
 func newSession(conn net.Conn) *mux.Session {
 	return mux.NewSession(conn)
 }
+
+const protocolVersion = 3

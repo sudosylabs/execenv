@@ -9,14 +9,25 @@ import (
 	"syscall"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/workload"
 	"golang.org/x/sys/unix"
 )
 
 // startShell is a login-style interactive shell whose cwd and HOME are
 // the projected tree. A login profile that honors HOME therefore cannot
 // walk out of the workspace.
-func startShell(home string, win execenv.Window) (*shell, error) {
+func startShell(home string, win execenv.Window, group *workload.Group) (*shell, error) {
 	cmd := exec.Command("/bin/sh", "-l")
+	if group != nil {
+		executable, err := os.Executable()
+		if err != nil {
+			return nil, err
+		}
+		cmd = exec.Command(executable, "workload-shell")
+		if err := group.Configure(cmd); err != nil {
+			return nil, err
+		}
+	}
 	cmd.Dir = home
 	cmd.Env = []string{
 		"HOME=" + home,
@@ -28,7 +39,9 @@ func startShell(home string, win execenv.Window) (*shell, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &shell{master: master, cmd: cmd}, nil
+	sh := &shell{master: master, cmd: cmd, exited: make(chan struct{})}
+	go func() { _ = cmd.Wait(); close(sh.exited) }()
+	return sh, nil
 }
 
 func startPTY(cmd *exec.Cmd, win execenv.Window) (*os.File, error) {
@@ -47,11 +60,12 @@ func startPTY(cmd *exec.Cmd, win execenv.Window) (*os.File, error) {
 	// stdin/stdout/stderr are already the slave. Darwin requires Ctty
 	// to be that inherited fd number in the child (0), not the parent's
 	// possibly-high descriptor.
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid:  true,
-		Setctty: true,
-		Ctty:    0,
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
+	cmd.SysProcAttr.Setsid = true
+	cmd.SysProcAttr.Setctty = true
+	cmd.SysProcAttr.Ctty = 0
 	if err := cmd.Start(); err != nil {
 		_ = pts.Close()
 		_ = master.Close()

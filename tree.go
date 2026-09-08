@@ -76,13 +76,16 @@ const (
 // unconditionally". A mismatch is ErrConflict. The whole batch is applied
 // atomically or not at all.
 type Mutation struct {
-	Op       Op
-	Path     string
-	From     string
-	Kind     NodeKind
-	Version  Version
-	Expected Version
-	Data     []byte
+	// Recursive is required to delete a nonempty directory. It is invalid
+	// for other operations or for file deletion.
+	Recursive bool
+	Op        Op
+	Path      string
+	From      string
+	Kind      NodeKind
+	Version   Version
+	Expected  Version
+	Data      []byte
 }
 
 // Batch is an atomic group of mutations.

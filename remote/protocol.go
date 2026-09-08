@@ -17,20 +17,29 @@ const (
 )
 
 const (
-	methodAuth    = "auth"
-	methodReady   = "ready"
-	methodEnsure  = "ensure"
-	methodRevoke  = "revoke"
-	methodAttach  = "attach"
-	methodDetach  = "detach"
-	methodResize  = "resize"
-	methodFreeze  = "freeze"
-	methodThaw    = "thaw"
-	methodReplace = "replace"
-	methodApply   = "apply"
-	methodWatch   = "watch"
-	methodUnwatch = "unwatch"
-	methodOpen    = "open"
+	methodProjectionInitialize   = "projection_initialize"
+	methodProjectionApply        = "projection_apply"
+	methodProjectionUploadBegin  = "projection_upload_begin"
+	methodProjectionUploadChunk  = "projection_upload_chunk"
+	methodProjectionUploadFinish = "projection_upload_finish"
+	methodProjectionUploadAbort  = "projection_upload_abort"
+	methodRevokeEpoch            = "revoke_epoch"
+	methodControl                = "control"
+	methodControlStatus          = "control_status"
+	methodAuth                   = "auth"
+	methodReady                  = "ready"
+	methodEnsure                 = "ensure"
+	methodRevoke                 = "revoke"
+	methodAttach                 = "attach"
+	methodDetach                 = "detach"
+	methodResize                 = "resize"
+	methodFreeze                 = "freeze"
+	methodThaw                   = "thaw"
+	methodReplace                = "replace"
+	methodApply                  = "apply"
+	methodWatch                  = "watch"
+	methodUnwatch                = "unwatch"
+	methodOpen                   = "open"
 )
 
 var (
@@ -40,9 +49,17 @@ var (
 	errorFromStatus = mux.ErrorFromStatus
 )
 
+const protocolVersion = 2
+
+type authResult struct {
+	Protocol     int
+	Capabilities execenv.Capabilities
+}
+
 type authArgs struct {
-	Token   []byte
-	Release string
+	Protocol int
+	Token    []byte
+	Release  string
 }
 
 type ensureArgs struct {
@@ -87,3 +104,5 @@ type watchResult struct {
 func newSession(conn net.Conn) *mux.Session {
 	return mux.NewSession(conn)
 }
+
+type ensureResult struct{ Epoch string }

@@ -6,13 +6,14 @@ import (
 	"os"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/workload"
 )
 
 func isPtyHangup(error) bool {
 	return false
 }
 
-func startShell(string, execenv.Window) (*shell, error) {
+func startShell(string, execenv.Window, *workload.Group) (*shell, error) {
 	return nil, execenv.ErrUnavailable
 }
 
