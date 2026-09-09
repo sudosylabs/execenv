@@ -9,9 +9,12 @@ import (
 )
 
 const (
-	MaxProjectionMutations            = 128
-	MaxProjectionMetadataBytes        = 256 << 10
-	MaxProjectionCursor        uint64 = 1<<53 - 1
+	// MaxProjectionInitializationBytes accommodates a complete bounded tree,
+	// including JSON escaping of every path. Incremental effects remain smaller.
+	MaxProjectionInitializationBytes        = 4 << 20
+	MaxProjectionMutations                  = 128
+	MaxProjectionMetadataBytes              = 256 << 10
+	MaxProjectionCursor              uint64 = 1<<53 - 1
 )
 
 // ContentReference names immutable bytes retained for one grant/epoch and
@@ -233,7 +236,7 @@ func ValidateProjectionInitialization(request ProjectionInitialization) error {
 	if err != nil {
 		return ErrInvalid
 	}
-	if len(raw) > MaxProjectionMetadataBytes {
+	if len(raw) > MaxProjectionInitializationBytes {
 		return ErrTooLarge
 	}
 	return nil

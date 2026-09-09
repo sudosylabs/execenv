@@ -5,11 +5,14 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sudosylabs/execenv"
@@ -20,22 +23,8 @@ import (
 // This exercises the real guest wire and disk engine with quiescent test files.
 // It deliberately does not claim to certify the kernel workload barrier.
 func TestNativeJournalWireStreamsContentAndRetainsGuestEvents(t *testing.T) {
-	home := t.TempDir()
-	hostConn, guestConn := net.Pipe()
-	ctx, cancel := context.WithCancel(t.Context())
-	server := &server{home: home, sess: newSession(guestConn), projected: make(tree.Snapshot), log: watchlog.New(watchlog.DefaultCapacity), journal: newDiskJournal(home, &testWriteBarrier{}, nil)}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		defer server.shutdown()
-		defer server.journal.close()
-		_ = server.serveFrames(ctx)
-	}()
-	client := NewClient(hostConn)
-	t.Cleanup(func() { cancel(); _ = client.Close(); _ = guestConn.Close(); <-done })
-	if err := client.Verify(ctx); err != nil || !client.JournalEnabled() {
-		t.Fatalf("guest capability handshake: %v", err)
-	}
+	client, home := journalWireFixture(t)
+	ctx := t.Context()
 	fence := execenv.ProjectionFence{ExecutionGrantID: "grant", EnvironmentEpoch: "epoch", FenceRevision: 1}
 	initialBody := bytes.Repeat([]byte("initial body\n"), 20000)
 	reference, err := client.UploadProjectionContent(ctx, fence, bytes.NewReader(initialBody))
@@ -117,5 +106,59 @@ func TestNativeJournalWireStreamsContentAndRetainsGuestEvents(t *testing.T) {
 	page, err = client.Observe(ctx, fence, 2, 128)
 	if err != nil || len(page.Observations) != 0 {
 		t.Fatalf("projection echo: %+v %v", page, err)
+	}
+}
+
+func journalWireFixture(t *testing.T) (*Client, string) {
+	t.Helper()
+	home := t.TempDir()
+	hostConn, guestConn := net.Pipe()
+	ctx, cancel := context.WithCancel(t.Context())
+	server := &server{home: home, sess: newSession(guestConn), projected: make(tree.Snapshot), log: watchlog.New(watchlog.DefaultCapacity), journal: newDiskJournal(home, &testWriteBarrier{}, nil)}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer server.shutdown()
+		defer server.journal.close()
+		_ = server.serveFrames(ctx)
+	}()
+	client := NewClient(hostConn)
+	t.Cleanup(func() { cancel(); _ = client.Close(); _ = guestConn.Close(); <-done })
+	if err := client.Verify(ctx); err != nil || !client.JournalEnabled() {
+		t.Fatalf("guest capability handshake: %v", err)
+	}
+	return client, home
+}
+func TestNativeJournalWireInitializesLargeSnapshot(t *testing.T) {
+	client, home := journalWireFixture(t)
+	request := execenv.ProjectionInitialization{Fence: execenv.ProjectionFence{ExecutionGrantID: "grant", EnvironmentEpoch: "epoch", FenceRevision: 1}, MutationID: "initial"}
+	path := ""
+	for i := 0; i < 3; i++ {
+		if path != "" {
+			path += "/"
+		}
+		path += strings.Repeat("&", execenv.MaxSegmentBytes)
+		request.Entries = append(request.Entries, execenv.ProjectionEntry{EntryID: fmt.Sprintf("parent-%d", i), Kind: execenv.ProjectionDirectory, Path: path})
+	}
+	for i := len(request.Entries); i < execenv.MaxTreeEntries; i++ {
+		request.Entries = append(request.Entries, execenv.ProjectionEntry{EntryID: fmt.Sprintf("entry-%d", i), Kind: execenv.ProjectionDirectory, Path: fmt.Sprintf("%s/%04d", path, i)})
+	}
+	raw, _ := json.Marshal(request)
+	if len(raw) <= execenv.MaxProjectionMetadataBytes {
+		t.Fatal("fixture did not exceed incremental limit")
+	}
+	receipt, err := client.InitializeProjection(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := client.InitializeProjection(t.Context(), request)
+	if err != nil || replay != receipt {
+		t.Fatalf("large initialization replay: %v", err)
+	}
+	if receipt.AppliedWorkspaceCursor != 0 {
+		t.Fatal("initialization invented a cursor")
+	}
+	if _, err := os.Stat(filepath.Join(home, request.Entries[len(request.Entries)-1].Path)); err != nil {
+		t.Fatal(err)
 	}
 }

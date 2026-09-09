@@ -45,7 +45,11 @@ type journalUpload struct {
 }
 
 func (s *server) journalCall(ctx context.Context, f frame) ([]byte, error) {
-	if len(f.Extra) > execenv.MaxProjectionMetadataBytes {
+	limit := execenv.MaxProjectionMetadataBytes
+	if f.Method == methodJournalInitialize {
+		limit = execenv.MaxProjectionInitializationBytes
+	}
+	if len(f.Extra) > limit {
 		return nil, execenv.ErrTooLarge
 	}
 	s.mu.Lock()

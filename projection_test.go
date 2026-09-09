@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -75,5 +76,34 @@ func TestProjectionConsecutiveAndBoundedMetadata(t *testing.T) {
 	}
 	if err := ValidateProjectionApply(request); !errors.Is(err, ErrTooLarge) {
 		t.Fatalf("oversized metadata accepted: %v", err)
+	}
+}
+
+func TestProjectionInitializationAcceptsMaximumEscapedTree(t *testing.T) {
+	request := ProjectionInitialization{Fence: ProjectionFence{ExecutionGrantID: "grant", EnvironmentEpoch: "epoch", FenceRevision: 1}, MutationID: "initial"}
+	path := ""
+	for i := 0; i < 3; i++ {
+		if path != "" {
+			path += "/"
+		}
+		path += strings.Repeat("&", MaxSegmentBytes)
+		request.Entries = append(request.Entries, ProjectionEntry{EntryID: fmt.Sprintf("parent-%d", i), Kind: ProjectionDirectory, Path: path})
+	}
+	for i := len(request.Entries); i < MaxTreeEntries; i++ {
+		request.Entries = append(request.Entries, ProjectionEntry{EntryID: fmt.Sprintf("entry-%d", i), Kind: ProjectionDirectory, Path: path + "/" + strings.Repeat("&", MaxSegmentBytes-4) + fmt.Sprintf("%04d", i)})
+	}
+	raw, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) <= 1<<20 {
+		t.Fatalf("fixture metadata too small: %d", len(raw))
+	}
+	if err := ValidateProjectionInitialization(request); err != nil {
+		t.Fatalf("valid maximum tree rejected (%d metadata bytes): %v", len(raw), err)
+	}
+	request.Entries = append(request.Entries, ProjectionEntry{EntryID: "excess", Kind: ProjectionDirectory, Path: "excess"})
+	if err := ValidateProjectionInitialization(request); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("tree entry limit changed: %v", err)
 	}
 }

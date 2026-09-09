@@ -2,8 +2,11 @@ package remote_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/sudosylabs/execenv"
@@ -102,5 +105,50 @@ func TestRemoteSemanticReplayAndImmutableStreamingContent(t *testing.T) {
 	}
 	if _, err := one.OpenObservationContent(t.Context(), fence, *page.Observations[0].Content); !errors.Is(err, execenv.ErrConflict) {
 		t.Fatalf("stale fence read: %v", err)
+	}
+}
+
+func TestRemoteInitialProjectionRetainsLargeSnapshot(t *testing.T) {
+	inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := serveInner(t, inner)
+	env, err := client.Ensure(t.Context(), execenv.Spec{ID: "large-initial", Image: "default"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer env.Revoke(t.Context())
+	projection := env.(execenv.SemanticEnv)
+	fence := execenv.ProjectionFence{ExecutionGrantID: env.ID(), EnvironmentEpoch: projection.Epoch(), FenceRevision: 1}
+	if _, err := projection.Control(t.Context(), execenv.ControlRequest{Fence: fence, State: execenv.ControlRunning}); err != nil {
+		t.Fatal(err)
+	}
+	request := execenv.ProjectionInitialization{Fence: fence, MutationID: "initial"}
+	path := ""
+	for i := 0; i < 3; i++ {
+		if path != "" {
+			path += "/"
+		}
+		path += strings.Repeat("&", execenv.MaxSegmentBytes)
+		request.Entries = append(request.Entries, execenv.ProjectionEntry{EntryID: fmt.Sprintf("parent-%d", i), Kind: execenv.ProjectionDirectory, Path: path})
+	}
+	for i := len(request.Entries); i < execenv.MaxTreeEntries; i++ {
+		request.Entries = append(request.Entries, execenv.ProjectionEntry{EntryID: fmt.Sprintf("entry-%d", i), Kind: execenv.ProjectionDirectory, Path: fmt.Sprintf("%s/%04d", path, i)})
+	}
+	raw, _ := json.Marshal(request)
+	if len(raw) <= execenv.MaxProjectionMetadataBytes {
+		t.Fatal("fixture did not exceed incremental limit")
+	}
+	receipt, err := projection.InitializeProjection(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := projection.InitializeProjection(t.Context(), request)
+	if err != nil || replay != receipt {
+		t.Fatalf("large initial replay: %v", err)
+	}
+	if receipt.AppliedWorkspaceCursor != 0 {
+		t.Fatal("initialization invented a Workspace cursor")
 	}
 }

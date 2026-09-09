@@ -49,7 +49,7 @@ var (
 	errorFromStatus = mux.ErrorFromStatus
 )
 
-const protocolVersion = 2
+const protocolVersion = 3
 
 type authResult struct {
 	Protocol     int

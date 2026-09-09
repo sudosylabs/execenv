@@ -76,4 +76,4 @@ func newSession(conn net.Conn) *mux.Session {
 	return mux.NewSession(conn)
 }
 
-const protocolVersion = 3
+const protocolVersion = 4

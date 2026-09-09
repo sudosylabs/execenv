@@ -201,7 +201,7 @@ func (sc *serverConn) projectionEnvironment(ctx context.Context, grant string, f
 	return projected, nil
 }
 func (sc *serverConn) initializeProjection(ctx context.Context, f frame) ([]byte, error) {
-	if len(f.Extra) > execenv.MaxProjectionMetadataBytes {
+	if len(f.Extra) > execenv.MaxProjectionInitializationBytes {
 		return nil, execenv.ErrTooLarge
 	}
 	var request execenv.ProjectionInitialization
