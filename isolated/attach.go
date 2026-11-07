@@ -14,3 +14,12 @@ type allowAttacher struct{}
 func (allowAttacher) Setup(id execenv.ID, dests []string) (*netAttach, error) {
 	return setupAllowlist(id, dests)
 }
+
+// sandboxAttacher builds the allowlist path for the user-kernel boundary:
+// a network namespace holding one end of a veth pair, with the same host
+// filter and NAT a microVM tap gets.
+type sandboxAttacher struct{}
+
+func (sandboxAttacher) Setup(id execenv.ID, dests []string) (*netAttach, error) {
+	return setupSandboxAllowlist(id, dests)
+}

@@ -60,6 +60,9 @@ type netAttach struct {
 	HostIP  string
 	Prefix  int
 	Allow   []net.IPNet
+	// NetNS is the network namespace path a sandbox joins. Empty for a
+	// microVM, whose NIC is the tap named by Dev.
+	NetNS   string
 	cleanup func()
 }
 
@@ -69,6 +72,13 @@ func (a *netAttach) close() {
 		a.cleanup = nil
 	}
 }
+
+// sandboxNetNSPrefix names grant network namespaces so stale cleanup can
+// find them without a record of the crashed daemon's grants.
+const sandboxNetNSPrefix = "execenv-"
+
+// sandboxPeer is the namespace end of a sandbox grant's veth pair.
+func sandboxPeer(dev string) string { return "p" + dev[1:] }
 
 func planAttach(id execenv.ID, allow []net.IPNet) netAttach {
 	sum := guestCID(id)

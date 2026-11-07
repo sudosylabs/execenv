@@ -41,3 +41,9 @@ type instance interface {
 type launcher interface {
 	Start(ctx context.Context, req startRequest) (instance, error)
 }
+
+// staleCleaner releases host resources a crashed daemon left behind. It
+// runs once at construction, holding the work directory lock.
+type staleCleaner interface {
+	cleanStale() error
+}

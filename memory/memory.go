@@ -100,11 +100,12 @@ func (h *Host) Ready(ctx context.Context) (execenv.Report, error) {
 		free = 0
 	}
 	return execenv.Report{
-		Usable:   !h.unusable,
-		Images:   append([]execenv.Image(nil), h.images...),
-		Networks: []execenv.Network{execenv.NetworkNone, execenv.NetworkAllowlist},
-		Slots:    free,
-		Release:  execenv.Release,
+		Usable:    !h.unusable,
+		Images:    append([]execenv.Image(nil), h.images...),
+		Networks:  []execenv.Network{execenv.NetworkNone, execenv.NetworkAllowlist},
+		Slots:     free,
+		Release:   execenv.Release,
+		Isolation: execenv.IsolationNone,
 	}, nil
 }
 

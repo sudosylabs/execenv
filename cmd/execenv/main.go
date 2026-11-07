@@ -65,7 +65,7 @@ func runAgent(args []string) int {
 	home := fs.String("home", "", "projected tree; the shell's working directory")
 	scratch := fs.String("scratch", "", "the shell's $HOME, outside the projected tree; empty uses -home")
 	contained := fs.Bool("contain-workload", false, "require a kernel-acknowledged unprivileged workload barrier")
-	listen := fs.String("listen", "", "unix socket the host dials; empty uses the guest link")
+	listen := fs.String("listen", "", "unix socket the host dials; \"stdio\" serves one link on standard input/output; empty uses the guest link")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -74,6 +74,17 @@ func runAgent(args []string) int {
 		return 2
 	}
 	cfg := agent.Config{Home: *home, Scratch: *scratch, ContainWorkload: *contained}
+	if *listen == "stdio" {
+		// One link for the life of the sandbox. Standard error stays free for
+		// diagnostics; nothing else may write to standard output.
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer stop()
+		if err := agent.Serve(ctx, agent.NewPipeConn(os.Stdin, os.Stdout), cfg); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		return 0
+	}
 	var ln net.Listener
 	var err error
 	if *listen != "" {

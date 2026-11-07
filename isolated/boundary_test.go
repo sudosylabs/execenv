@@ -5,10 +5,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/execenvtest"
 )
 
 func TestMachineConfigHasWorkspaceDriveAndBalloon(t *testing.T) {
@@ -144,16 +146,222 @@ func TestEnsurePassesWorkspaceDiskAndRevokeRemovesIt(t *testing.T) {
 	}
 }
 
-func TestNewValidatesDiskSize(t *testing.T) {
+func TestNewValidatesIsolationClass(t *testing.T) {
 	t.Parallel()
 	image := writeCatalogImage(t, t.TempDir(), "default", "root")
 	for name, cfg := range map[string]Config{
-		"undersized disk": {DiskBytes: minDiskBytes - 1},
+		"unknown class":            {Isolation: "container"},
+		"user-kernel with journal": {Isolation: execenv.IsolationUserKernel, RequireJournal: true},
+		"undersized disk":          {DiskBytes: minDiskBytes - 1},
 	} {
 		cfg.WorkDir = t.TempDir()
 		cfg.Images = []Image{image}
 		if _, err := New(cfg); !errors.Is(err, execenv.ErrInvalid) {
 			t.Errorf("%s: New() error = %v, want ErrInvalid", name, err)
 		}
+	}
+}
+
+func TestReadyReportsIsolationClass(t *testing.T) {
+	t.Parallel()
+	image := writeCatalogImage(t, t.TempDir(), "default", "root")
+	for _, class := range []execenv.Isolation{"", execenv.IsolationVM, execenv.IsolationUserKernel} {
+		host, err := New(Config{WorkDir: t.TempDir(), Images: []Image{image}, Isolation: class})
+		if err != nil {
+			t.Fatal(err)
+		}
+		report, err := host.Ready(t.Context())
+		_ = host.lock.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := class
+		if want == "" {
+			want = execenv.IsolationVM
+		}
+		if report.Isolation != want {
+			t.Fatalf("Ready().Isolation = %q, want %q", report.Isolation, want)
+		}
+		if !host.Capabilities().Isolated || execenv.RequireIsolated(host) != nil {
+			t.Fatalf("%s host is not isolated", want)
+		}
+		_, isSandbox := host.launch.(*sandboxLauncher)
+		if isSandbox != (want == execenv.IsolationUserKernel) {
+			t.Fatalf("%s host chose the wrong launcher %T", want, host.launch)
+		}
+	}
+}
+
+// The host logic above the launcher is shared, so a user-kernel host must
+// satisfy the same conformance suite. The live suite with the real sandbox
+// runtime is in isolation_test.go.
+func TestConformanceUserKernelHost(t *testing.T) {
+	execenvtest.Run(t, func(t *testing.T) execenv.Host {
+		t.Helper()
+		dir := t.TempDir()
+		h, err := New(Config{
+			Isolation: execenv.IsolationUserKernel,
+			WorkDir:   t.TempDir(),
+			Slots:     2,
+			Images: []Image{
+				writeCatalogImage(t, dir, "default", "root-default"),
+				writeCatalogImage(t, dir, "alt", "root-alt"),
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.probe = func() error { return nil }
+		h.launch = &recordingLauncher{}
+		h.attach = &recordingAttacher{}
+		t.Cleanup(func() { _ = h.lock.Close() })
+		return h
+	})
+}
+
+func TestSandboxSpecMatchesGuestContract(t *testing.T) {
+	t.Parallel()
+	req := startRequest{ID: "grant-1", Memory: 256 << 20, CPU: 1500}
+	spec := sandboxSpec(req, "/images/x/root", "/grants/g/disk")
+	raw, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Root struct {
+			Path     string `json:"path"`
+			Readonly bool   `json:"readonly"`
+		} `json:"root"`
+		Process struct {
+			User struct {
+				UID int `json:"uid"`
+				GID int `json:"gid"`
+			} `json:"user"`
+			Cwd          string              `json:"cwd"`
+			Args         []string            `json:"args"`
+			Env          []string            `json:"env"`
+			NoNewPrivs   bool                `json:"noNewPrivileges"`
+			Capabilities map[string][]string `json:"capabilities"`
+			Terminal     bool                `json:"terminal"`
+		} `json:"process"`
+		Mounts []struct {
+			Destination string `json:"destination"`
+			Type        string `json:"type"`
+			Source      string `json:"source"`
+		} `json:"mounts"`
+		Linux struct {
+			Namespaces []struct {
+				Type string `json:"type"`
+				Path string `json:"path"`
+			} `json:"namespaces"`
+			Resources struct {
+				Memory struct {
+					Limit int64 `json:"limit"`
+				} `json:"memory"`
+				CPU struct {
+					Quota  int64 `json:"quota"`
+					Period int64 `json:"period"`
+				} `json:"cpu"`
+			} `json:"resources"`
+		} `json:"linux"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Root.Path != "/images/x/root" || !doc.Root.Readonly {
+		t.Fatalf("root = %+v", doc.Root)
+	}
+	p := doc.Process
+	if p.User.UID != sandboxUID || p.User.GID != sandboxUID || !p.NoNewPrivs || p.Terminal || p.Cwd != execenv.GuestWorkspace {
+		t.Fatalf("process = %+v", p)
+	}
+	for set, caps := range p.Capabilities {
+		if len(caps) != 0 {
+			t.Fatalf("capability set %s = %v", set, caps)
+		}
+	}
+	wantArgs := []string{execenv.GuestBin, "guest-init", "-home", execenv.GuestWorkspace, "-scratch", execenv.GuestHome, "-listen", "stdio"}
+	if !slices.Equal(p.Args, wantArgs) {
+		t.Fatalf("args = %v", p.Args)
+	}
+	if !slices.Contains(p.Env, "HOME="+execenv.GuestHome) {
+		t.Fatalf("env = %v", p.Env)
+	}
+	mounts := map[string]string{}
+	for _, m := range doc.Mounts {
+		mounts[m.Destination] = m.Type + ":" + m.Source
+	}
+	if mounts[execenv.GuestWorkspace] != "bind:/grants/g/disk/"+diskWorkspace || mounts[execenv.GuestHome] != "bind:/grants/g/disk/"+diskHome {
+		t.Fatalf("mounts = %v", mounts)
+	}
+	if !strings.HasPrefix(mounts["/dev/pts"], "devpts") {
+		t.Fatalf("no pty filesystem: %v", mounts)
+	}
+	if doc.Linux.Resources.Memory.Limit != 256<<20 || doc.Linux.Resources.CPU.Quota != 150000 || doc.Linux.Resources.CPU.Period != 100000 {
+		t.Fatalf("resources = %+v", doc.Linux.Resources)
+	}
+	for _, ns := range doc.Linux.Namespaces {
+		if ns.Type == "network" && ns.Path != "" {
+			t.Fatalf("network none joined a namespace: %+v", ns)
+		}
+	}
+	allow := sandboxSpec(startRequest{ID: "grant-1", Attach: &netAttach{NetNS: "/var/run/netns/execenv-e1"}}, "/r", "/d")
+	found := false
+	for _, ns := range allow["linux"].(map[string]any)["namespaces"].([]map[string]any) {
+		if ns["type"] == "network" && ns["path"] == "/var/run/netns/execenv-e1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("allowlist sandbox does not join its network namespace")
+	}
+	defaults := sandboxSpec(startRequest{ID: "grant-1"}, "/r", "/d")
+	if got := defaults["linux"].(map[string]any)["resources"].(map[string]any)["memory"].(map[string]any)["limit"]; got != int64(sandboxMemory) {
+		t.Fatalf("default memory = %v", got)
+	}
+}
+
+func TestSandboxRuntimeArgs(t *testing.T) {
+	t.Parallel()
+	l := newSandboxLauncher(Config{WorkDir: "/w"})
+	none := strings.Join(l.runtimeArgs(false, "run", "x"), " ")
+	if none != "--root /w/"+sandboxState+" --network=none --overlay2=none run x" {
+		t.Fatalf("args = %q", none)
+	}
+	if !strings.Contains(strings.Join(l.runtimeArgs(true), " "), "--network=sandbox") {
+		t.Fatal("allowlist grant has no sandbox network")
+	}
+}
+
+func TestSandboxIDIsStableAndOpaque(t *testing.T) {
+	t.Parallel()
+	a, b := sandboxID("Grant With Spaces/../x"), sandboxID("Grant With Spaces/../x")
+	if a != b || strings.ContainsAny(a, " /.") || !strings.HasPrefix(a, "execenv-") || sandboxID("other") == a {
+		t.Fatalf("sandboxID = %q", a)
+	}
+}
+
+func TestSandboxStatus(t *testing.T) {
+	t.Parallel()
+	if s, err := sandboxStatus([]byte(`{"id":"x","status":"paused"}`)); err != nil || s != "paused" {
+		t.Fatalf("status = %q, %v", s, err)
+	}
+	if _, err := sandboxStatus([]byte(`not json`)); err == nil {
+		t.Fatal("garbage state accepted")
+	}
+}
+
+func TestSandboxConnectHandsOutOneLink(t *testing.T) {
+	t.Parallel()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst := &sandboxInstance{conn: pipeConnForTest(r, w)}
+	if _, err := inst.Connect(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inst.Connect(t.Context()); !errors.Is(err, execenv.ErrUnavailable) {
+		t.Fatalf("second Connect error = %v", err)
 	}
 }

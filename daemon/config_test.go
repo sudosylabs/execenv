@@ -370,17 +370,60 @@ func writeConfig(t *testing.T, body string) string {
 	return path
 }
 
-func TestLoadWorkspaceDiskSize(t *testing.T) {
+func TestLoadIsolationClass(t *testing.T) {
 	t.Parallel()
-	base := `"listen": "127.0.0.1:0", "token": "secret", "security": "insecure_local", "adapter": "isolated", "images": [], "slots": 1`
-	for body, ok := range map[string]bool{
-		``:                         true,
-		`, "disk_bytes": 1048576`:  false,
-		`, "disk_bytes": -1`:       false,
-		`, "disk_bytes": 67108864`: true,
-	} {
-		if _, err := Load(writeConfig(t, "{"+base+body+"}")); (err == nil) != ok {
-			t.Errorf("Load(%s) error = %v, want ok=%v", body, err, ok)
-		}
+	base := `"listen": "127.0.0.1:0", "token": "secret", "security": "insecure_local", "images": [], "slots": 1`
+	cases := []struct {
+		name string
+		body string
+		ok   bool
+		want string
+	}{
+		{"isolated defaults to vm", `"adapter": "isolated"`, true, "vm"},
+		{"explicit vm", `"adapter": "isolated", "isolation": "vm"`, true, "vm"},
+		{"explicit user-kernel", `"adapter": "isolated", "isolation": "USER-KERNEL"`, true, "user-kernel"},
+		{"unknown class", `"adapter": "isolated", "isolation": "container"`, false, ""},
+		{"memory names no class", `"adapter": "memory", "isolation": "vm"`, false, ""},
+		{"user-kernel refuses the journal", `"adapter": "isolated", "isolation": "user-kernel", "require_journal": true`, false, ""},
+		{"vm keeps the journal", `"adapter": "isolated", "require_journal": true`, true, "vm"},
+		{"disk below minimum", `"adapter": "isolated", "disk_bytes": 1048576`, false, ""},
+		{"disk at minimum", `"adapter": "isolated", "disk_bytes": 67108864`, true, "vm"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := Load(writeConfig(t, "{"+base+", "+tc.body+"}"))
+			if (err == nil) != tc.ok {
+				t.Fatalf("Load() error = %v, want ok=%v", err, tc.ok)
+			}
+			if tc.ok && cfg.isolation() != tc.want {
+				t.Fatalf("isolation = %q, want %q", cfg.isolation(), tc.want)
+			}
+		})
+	}
+}
+
+func TestAdapterPassesIsolationAndDisk(t *testing.T) {
+	t.Parallel()
+	cfg, err := Load(writeConfig(t, `{"listen": "127.0.0.1:0", "token": "secret", "security": "insecure_local",
+		"adapter": "isolated", "isolation": "user-kernel", "work_dir": "`+t.TempDir()+`", "images": [], "slots": 1, "disk_bytes": 134217728}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, err := newAdapter(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := host.Ready(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Isolation != execenv.IsolationUserKernel {
+		t.Fatalf("Ready().Isolation = %q", report.Isolation)
+	}
+	if !strings.Contains(cfg.redacted(), "isolation=user-kernel") {
+		t.Fatalf("redacted = %q", cfg.redacted())
+	}
+	if err := execenv.RequireIsolated(host); err != nil {
+		t.Fatalf("RequireIsolated(user-kernel) = %v", err)
 	}
 }

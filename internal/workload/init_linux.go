@@ -14,8 +14,12 @@ import (
 // RunInit keeps PID 1 separate from the agent and reaps adopted descendants.
 // The agent owns its direct shell's wait; detached workload descendants become
 // this init's children and cannot accumulate as unreaped zombies after teardown.
+//
+// Reaping needs PID 1, not root. A sandbox runtime may start this init
+// already unprivileged; a contained workload still requires root, which the
+// agent checks when it opens the workload hierarchy.
 func RunInit(args []string) error {
-	if os.Getpid() != 1 || os.Geteuid() != 0 {
+	if os.Getpid() != 1 {
 		return execenv.ErrUnavailable
 	}
 	executable, err := os.Executable()

@@ -40,6 +40,65 @@ func setupAllowlist(id execenv.ID, dests []string) (*netAttach, error) {
 	if err := runIP("link", "set", "dev", att.Dev, "up"); err != nil {
 		return fail(err)
 	}
+	return guardAttach(att, allow, cleanup)
+}
+
+// setupSandboxAllowlist gives a sandbox grant a network namespace whose
+// only interface is the inner end of a veth pair. The host end gets the
+// same filter and NAT as a microVM tap. The sandbox runtime takes the
+// namespace's interface and routes at start.
+func setupSandboxAllowlist(id execenv.ID, dests []string) (*netAttach, error) {
+	allow, err := parseAllow(dests)
+	if err != nil {
+		return nil, err
+	}
+	if len(allow) == 0 {
+		return nil, execenv.ErrNetwork
+	}
+	att := planAttach(id, allow)
+	ns := sandboxNetNSPrefix + att.Dev
+	peer := sandboxPeer(att.Dev)
+	if err := runIP("netns", "add", ns); err != nil {
+		return nil, err
+	}
+	cleanup := []func(){func() { _ = runIP("netns", "delete", ns) }}
+	fail := func(err error) (*netAttach, error) {
+		for i := len(cleanup) - 1; i >= 0; i-- {
+			cleanup[i]()
+		}
+		return nil, err
+	}
+	if err := runIP("link", "add", att.Dev, "type", "veth", "peer", "name", peer); err != nil {
+		return fail(err)
+	}
+	cleanup = append(cleanup, func() { _ = runIP("link", "delete", att.Dev) })
+	steps := [][]string{
+		{"link", "set", peer, "netns", ns},
+		{"addr", "add", fmt.Sprintf("%s/%d", att.HostIP, att.Prefix), "dev", att.Dev},
+		{"link", "set", "dev", att.Dev, "up"},
+		{"-n", ns, "addr", "add", fmt.Sprintf("%s/%d", att.GuestIP, att.Prefix), "dev", peer},
+		{"-n", ns, "link", "set", "dev", peer, "up"},
+		{"-n", ns, "link", "set", "dev", "lo", "up"},
+		{"-n", ns, "route", "add", "default", "via", att.HostIP},
+	}
+	for _, step := range steps {
+		if err := runIP(step...); err != nil {
+			return fail(err)
+		}
+	}
+	att.NetNS = "/var/run/netns/" + ns
+	return guardAttach(att, allow, cleanup)
+}
+
+// guardAttach installs the per-grant filter and NAT on the host end of a
+// grant's link. Failure unwinds everything, including cleanup's steps.
+func guardAttach(att netAttach, allow []net.IPNet, cleanup []func()) (*netAttach, error) {
+	fail := func(err error) (*netAttach, error) {
+		for i := len(cleanup) - 1; i >= 0; i-- {
+			cleanup[i]()
+		}
+		return nil, err
+	}
 	_ = os.WriteFile("/proc/sys/net/ipv6/conf/"+att.Dev+"/disable_ipv6", []byte("1"), 0o644)
 	chain := filterChain(att.Dev)
 	if err := installFilter(att.Dev, chain, allow); err != nil {
@@ -58,6 +117,32 @@ func setupAllowlist(id execenv.ID, dests []string) (*netAttach, error) {
 		}
 	}
 	return &att, nil
+}
+
+// cleanSandboxNetworks removes grant namespaces, their veth pairs and
+// filters left by a crashed daemon. NAT rules depend on the operator
+// allowlist and are removed for the current one.
+func cleanSandboxNetworks(allowList []string) {
+	entries, err := os.ReadDir("/var/run/netns")
+	if err != nil {
+		return
+	}
+	allow, _ := parseAllow(allowList)
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, sandboxNetNSPrefix) {
+			continue
+		}
+		dev := strings.TrimPrefix(name, sandboxNetNSPrefix)
+		var cid uint32
+		if _, err := fmt.Sscanf(dev, "e%08x", &cid); err == nil && len(dev) == 9 {
+			_ = removeFilter(dev, filterChain(dev))
+			host := fmt.Sprintf("169.254.%d.1/30", byte(cid%200+20))
+			_ = removeNAT(host, allow)
+			_ = runIP("link", "delete", dev)
+		}
+		_ = runIP("netns", "delete", name)
+	}
 }
 
 func filterChain(dev string) string {

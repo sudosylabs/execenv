@@ -161,3 +161,5 @@ func (a *recordingAttacher) Setup(id execenv.ID, dests []string) (*netAttach, er
 	a.last = &att
 	return &att, nil
 }
+
+func pipeConnForTest(r, w *os.File) net.Conn { return agent.NewPipeConn(r, w) }

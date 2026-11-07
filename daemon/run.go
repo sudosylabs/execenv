@@ -113,6 +113,7 @@ func newAdapter(cfg Config) (execenv.Host, error) {
 			})
 		}
 		return isolated.New(isolated.Config{
+			Isolation:      execenv.Isolation(cfg.isolation()),
 			RequireJournal: cfg.RequireJournal,
 			Images:         images,
 			Slots:          cfg.Slots,

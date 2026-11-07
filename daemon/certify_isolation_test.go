@@ -157,6 +157,15 @@ func startCertifyHost(t *testing.T, requireJournal bool) *remote.Client {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// EXECENV_ISOLATION_CLASS selects the boundary under certification:
+	// vm (default) or user-kernel. The journal is certified only for vm.
+	class := os.Getenv("EXECENV_ISOLATION_CLASS")
+	if class == "" {
+		class = string(execenv.IsolationVM)
+	}
+	if requireJournal && class != string(execenv.IsolationVM) {
+		t.Skip("the native journal is certified only for vm isolation")
+	}
 
 	root := t.TempDir()
 	stub := filepath.Join(root, "execenv")
@@ -165,14 +174,15 @@ func startCertifyHost(t *testing.T, requireJournal bool) *remote.Client {
 		t.Fatalf("build execenv: %v\n%s", err, out)
 	}
 	opts := ctl.Options{
-		Prefix:  filepath.Join(root, "usr", "local"),
-		Sysconf: filepath.Join(root, "etc", "execenv"),
-		State:   filepath.Join(root, "var", "lib", "execenv"),
-		Listen:  "127.0.0.1:0",
-		Slots:   1,
-		Execenv: stub,
-		NoStart: true,
-		NoFetch: true,
+		Prefix:    filepath.Join(root, "usr", "local"),
+		Sysconf:   filepath.Join(root, "etc", "execenv"),
+		State:     filepath.Join(root, "var", "lib", "execenv"),
+		Listen:    "127.0.0.1:0",
+		Slots:     1,
+		Execenv:   stub,
+		NoStart:   true,
+		NoFetch:   true,
+		Isolation: class,
 	}
 	if err := ctl.Bootstrap(opts, io.Discard); err != nil {
 		t.Fatalf("bootstrap: %v", err)
@@ -210,6 +220,9 @@ func startCertifyHost(t *testing.T, requireJournal bool) *remote.Client {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = client.Close() })
+	if report, err := client.Ready(t.Context()); err != nil || string(report.Isolation) != class {
+		t.Fatalf("Ready() isolation = %q, %v; want %q", report.Isolation, err, class)
+	}
 
 	return client
 }

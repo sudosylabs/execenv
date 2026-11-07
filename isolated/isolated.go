@@ -30,10 +30,19 @@ type Image struct {
 
 // Config constructs an isolated host.
 //
+// Isolation selects the boundary. IsolationVM (the default) runs each grant
+// in a microVM and fails closed without usable virtualization hardware.
+// IsolationUserKernel runs each grant in a user-space-kernel sandbox; it is
+// an explicit operator choice and never a fallback for a VM host.
+//
 // Device, Runtime, and Supervisor are operator paths to the isolation
-// device and the two processes that supervise a microVM. Empty values use
-// platform defaults. Those defaults live in the probe, not in this type.
+// device and the processes that supervise a grant. For IsolationVM these
+// are the virtualization device, the machine monitor, and its jail
+// supervisor. For IsolationUserKernel only Runtime is used: the sandbox
+// runtime. Empty values use platform defaults. Those defaults live in the
+// probe, not in this type.
 type Config struct {
+	Isolation execenv.Isolation
 	// RequireJournal refuses guests that cannot prove native journal support.
 	// Leave disabled until the installed guest artifacts have been certified.
 	RequireJournal bool
@@ -93,6 +102,19 @@ func New(cfg Config) (*Host, error) {
 	if _, err := parseAllow(cfg.Allow); err != nil {
 		return nil, execenv.Error("isolated", execenv.ErrInvalid)
 	}
+	switch cfg.Isolation {
+	case "":
+		cfg.Isolation = execenv.IsolationVM
+	case execenv.IsolationVM:
+	case execenv.IsolationUserKernel:
+		// The native journal relies on the guest's own kernel workload
+		// barrier, which this boundary does not certify.
+		if cfg.RequireJournal {
+			return nil, execenv.Error("isolated", execenv.ErrInvalid)
+		}
+	default:
+		return nil, execenv.Error("isolated", execenv.ErrInvalid)
+	}
 	if cfg.DiskBytes != 0 && cfg.DiskBytes < minDiskBytes {
 		return nil, execenv.Error("isolated", execenv.ErrInvalid)
 	}
@@ -106,7 +128,19 @@ func New(cfg Config) (*Host, error) {
 		}
 		images[image.ID] = newImageRecord(image)
 	}
-	lock, err := prepareWorkDir(cfg.WorkDir)
+	probe, launch, attach := func() error { return probePlatform(cfg) }, newProcessLauncher(cfg), attacher(allowAttacher{})
+	if cfg.Isolation == execenv.IsolationUserKernel {
+		sandbox := newSandboxLauncher(cfg)
+		probe, launch, attach = func() error { return probeSandbox(cfg) }, sandbox, sandboxAttacher{}
+	}
+	// Stale cleanup runs under the work directory lock, before the grants
+	// directory is cleared, so leftovers of a crashed daemon are released
+	// (sandboxes, mounts, namespaces) rather than merely unlinked.
+	var stale func() error
+	if cleaner, ok := launch.(staleCleaner); ok {
+		stale = cleaner.cleanStale
+	}
+	lock, err := prepareWorkDir(cfg.WorkDir, stale)
 	if err != nil {
 		return nil, execenv.Error("isolated", err)
 	}
@@ -114,9 +148,9 @@ func New(cfg Config) (*Host, error) {
 		cfg:     cfg,
 		images:  images,
 		slots:   slots,
-		probe:   func() error { return probePlatform(cfg) },
-		launch:  newProcessLauncher(cfg),
-		attach:  allowAttacher{},
+		probe:   probe,
+		launch:  launch,
+		attach:  attach,
 		grants:  make(map[execenv.ID]*environment),
 		pending: make(map[execenv.ID]*ensureCall),
 		lock:    lock,
@@ -150,7 +184,7 @@ func (h *Host) Ready(ctx context.Context) (execenv.Report, error) {
 	if len(h.cfg.Allow) > 0 {
 		networks = append(networks, execenv.NetworkAllowlist)
 	}
-	return execenv.Report{Usable: usable, Images: verifiedIDs(images), Networks: networks, Slots: free, Release: execenv.Release}, nil
+	return execenv.Report{Usable: usable, Images: verifiedIDs(images), Networks: networks, Slots: free, Release: execenv.Release, Isolation: h.cfg.Isolation}, nil
 }
 
 // Ensure starts a microVM for a new grant or returns the existing occupancy.
