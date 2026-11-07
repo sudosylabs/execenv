@@ -8,12 +8,17 @@ import (
 // Image is a caller-facing name for an operator-preloaded guest runtime.
 type Image string
 
-// Paths the baked guest and the isolated adapter share. The image root
-// is read-only; GuestHome is a tmpfs the agent owns.
+// Paths the baked guest and the isolated adapter share. The image root is
+// read-only. GuestWorkspace is the projected tree and the shell's working
+// directory. GuestHome is the shell's $HOME: guest-local scratch for tool
+// caches, virtual environments and dotfiles. It is never projected or
+// watched, and nothing in it is harvested. Both live on the grant's
+// writable workspace disk, not in guest memory.
 const (
-	GuestHome = "/workspace"
-	GuestInit = "/usr/local/libexec/execenv-guest"
-	GuestBin  = "/usr/local/bin/execenv"
+	GuestWorkspace = "/workspace"
+	GuestHome      = "/run/execenv/home"
+	GuestInit      = "/usr/local/libexec/execenv-guest"
+	GuestBin       = "/usr/local/bin/execenv"
 )
 
 // ID is a caller-chosen occupancy identity on one host.
@@ -40,6 +45,25 @@ type Capabilities struct {
 	SemanticObservations bool
 }
 
+// Isolation names the class of boundary a host puts between a grant and
+// the machine. It describes a property, not a product. Callers apply their
+// own policy, for example refusing high-stakes grants on a weaker class.
+type Isolation string
+
+const (
+	// IsolationNone shares the host kernel and process space (tests and
+	// local development).
+	IsolationNone Isolation = "none"
+	// IsolationVM runs each grant in a hardware-virtualized machine with
+	// its own guest kernel.
+	IsolationVM Isolation = "vm"
+	// IsolationUserKernel runs each grant against a user-space kernel that
+	// intercepts its system calls, inside host namespaces and seccomp. It
+	// needs no virtualization hardware and is weaker than IsolationVM: the
+	// boundary is a host process, not a hypervisor.
+	IsolationUserKernel Isolation = "user-kernel"
+)
+
 // Report is a point-in-time readiness snapshot.
 type Report struct {
 	Usable   bool
@@ -47,6 +71,9 @@ type Report struct {
 	Networks []Network
 	Slots    int
 	Release  string
+	// Isolation is the boundary class this host provides. Empty means an
+	// older host that did not report it.
+	Isolation Isolation `json:",omitempty"`
 }
 
 // Spec asks a host to occupy a grant.

@@ -98,7 +98,9 @@ NAME=execenv-bake-export
 tar -xf "$OUT/root.tar" -C "$STAGING"
 rm -f "$OUT/root.tar"
 
-mkdir -p "$STAGING/usr/local/bin" "$STAGING/usr/local/libexec" "$STAGING/workspace"
+# /workspace and /run are mount points: the guest init (microVM) or the
+# sandbox runtime mounts the per-grant writable disk there.
+mkdir -p "$STAGING/usr/local/bin" "$STAGING/usr/local/libexec" "$STAGING/workspace" "$STAGING/run"
 cp "$AGENT" "$STAGING/usr/local/bin/execenv"
 chmod 755 "$STAGING/usr/local/bin/execenv"
 here=$(CDPATH= cd -- "$(dirname "$0")" && pwd)

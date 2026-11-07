@@ -250,7 +250,7 @@ func testOpts(t *testing.T, root string) Options {
 		t.Fatal(err)
 	}
 	execenvBin := filepath.Join(bindir, "execenv")
-	for _, name := range []string{"execenv", runtimeName, supervisorName} {
+	for _, name := range []string{"execenv", runtimeName, supervisorName, mkfsName} {
 		if err := os.WriteFile(filepath.Join(bindir, name), []byte("#!/bin/sh\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -267,6 +267,7 @@ func testOpts(t *testing.T, root string) Options {
 		Listen:   "127.0.0.1:8443",
 		Slots:    8,
 		Execenv:  execenvBin,
+		Mkfs:     filepath.Join(bindir, mkfsName),
 		NoStart:  true,
 		NoFetch:  true,
 		Insecure: true,
@@ -291,5 +292,95 @@ func TestBootstrapCorruptConfigDoesNotLeakToken(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), secret) {
 		t.Fatalf("error leaked token: %v", err)
+	}
+}
+
+func TestBootstrapUserKernelIsExplicitAndNeedsNoDevice(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	opts := testOpts(t, root)
+	opts.Device = filepath.Join(root, "no-kvm")
+	runsc := filepath.Join(root, "runsc")
+	if err := os.WriteFile(runsc, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	opts.Isolation = isolationUserKernel
+	opts.SandboxRuntime = runsc
+	var out bytes.Buffer
+	if err := Bootstrap(opts, &out); err != nil {
+		t.Fatalf("Bootstrap(user-kernel) error = %v", err)
+	}
+	cfg, err := daemon.Load(filepath.Join(opts.Sysconf, "host.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Isolation != isolationUserKernel || cfg.Device != "" || cfg.Supervisor != "" {
+		t.Fatalf("config = %+v", cfg)
+	}
+	if cfg.Runtime != filepath.Join(opts.Prefix, "bin", sandboxRuntimeName) || !executable(cfg.Runtime) {
+		t.Fatalf("sandbox runtime not installed: %q", cfg.Runtime)
+	}
+	if cfg.Mkfs != opts.Mkfs {
+		t.Fatalf("mkfs = %q", cfg.Mkfs)
+	}
+	if !strings.Contains(out.String(), "isolation=user-kernel") || !strings.Contains(out.String(), "device=not-required") {
+		t.Fatalf("stdout = %q", out.String())
+	}
+	var status bytes.Buffer
+	if err := Status(opts, &status); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"isolation=user-kernel", "device=not-required", "sandbox-runtime=ok", "mkfs=ok"} {
+		if !strings.Contains(status.String(), want) {
+			t.Fatalf("status missing %q: %q", want, status.String())
+		}
+	}
+}
+
+func TestBootstrapUserKernelRequiresRuntime(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	opts := testOpts(t, root)
+	opts.Isolation = isolationUserKernel
+	opts.SandboxRuntime = filepath.Join(root, "missing-runsc")
+	err := Bootstrap(opts, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "runsc") {
+		t.Fatalf("Bootstrap() error = %v, want missing runtime", err)
+	}
+}
+
+func TestBootstrapVMWithoutDeviceNeverBecomesUserKernel(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	opts := testOpts(t, root)
+	opts.Device = filepath.Join(root, "no-kvm")
+	// A sandbox runtime being present must not change a vm host's outcome.
+	if err := os.WriteFile(filepath.Join(opts.Prefix, "bin", sandboxRuntimeName), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := Bootstrap(opts, io.Discard); err == nil || !strings.Contains(err.Error(), "isolation device") {
+		t.Fatalf("Bootstrap() error = %v, want fail closed", err)
+	}
+	if _, err := os.Stat(filepath.Join(opts.Sysconf, "host.json")); !os.IsNotExist(err) {
+		t.Fatal("wrote config for a vm host without a device")
+	}
+}
+
+func TestBootstrapRequiresMkfs(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	opts := testOpts(t, root)
+	opts.Mkfs = filepath.Join(root, "no-mkfs")
+	if err := Bootstrap(opts, io.Discard); err == nil || !strings.Contains(err.Error(), "mkfs.ext4") {
+		t.Fatalf("Bootstrap() error = %v, want missing mkfs", err)
+	}
+}
+
+func TestBootstrapRejectsUnknownIsolation(t *testing.T) {
+	t.Parallel()
+	opts := testOpts(t, t.TempDir())
+	opts.Isolation = "container"
+	if err := Bootstrap(opts, io.Discard); err == nil {
+		t.Fatal("Bootstrap() accepted an unknown isolation class")
 	}
 }

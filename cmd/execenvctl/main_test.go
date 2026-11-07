@@ -68,7 +68,7 @@ func TestBootstrapCommandDoesNotPrintSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	execenvBin := filepath.Join(bindir, "execenv")
-	for _, name := range []string{"execenv", "firecracker", "jailer"} {
+	for _, name := range []string{"execenv", "firecracker", "jailer", "mkfs.ext4"} {
 		if err := os.WriteFile(filepath.Join(bindir, name), []byte("#!/bin/sh\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -86,6 +86,7 @@ func TestBootstrapCommandDoesNotPrintSecrets(t *testing.T) {
 		"--sysconf", sysconf,
 		"--state", filepath.Join(root, "var", "lib", "execenv"),
 		"--execenv", execenvBin,
+		"--mkfs", filepath.Join(bindir, "mkfs.ext4"),
 		"--listen", "127.0.0.1:8443",
 		"--slots", "4",
 		"--no-start",

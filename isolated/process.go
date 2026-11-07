@@ -24,25 +24,33 @@ import (
 // never mention the concrete binaries; this file is the only place that
 // builds their command lines.
 type processLauncher struct {
-	cfg Config
+	cfg  Config
+	uids *jailUIDs
 }
 
 func newProcessLauncher(cfg Config) launcher {
-	return &processLauncher{cfg: cfg}
+	return &processLauncher{cfg: cfg, uids: newJailUIDs(cfg.JailUIDBase)}
 }
 
+// jailBase is the supervisor's chroot base. Only jails live under it, so a
+// restarted host can reclaim it wholesale.
+func (l *processLauncher) jailBase() string { return filepath.Join(l.cfg.WorkDir, jailsDir) }
+
 type processInstance struct {
-	cmd     *exec.Cmd
-	dir     string
-	done    <-chan struct{}
-	cleanup func()
+	cmd  *exec.Cmd
+	sock string
+	done <-chan struct{}
+	// release runs in reverse order once the monitor has been reaped. A
+	// failed step is retried by the next Stop.
+	release []func() error
 }
 
 func (p *processInstance) Connect(ctx context.Context) (net.Conn, error) {
 	// The supervisor exposes the guest link as a Unix socket next to the
-	// machine config. CONNECT is the host-side handshake. Retry until
-	// ctx ends: the guest helper is not listening the instant Start returns.
-	sock := filepath.Join(p.dir, "guest.sock")
+	// machine config, inside the jail. CONNECT is the host-side handshake.
+	// Retry until ctx ends: the guest helper is not listening the instant
+	// Start returns.
+	sock := p.sock
 	var last error
 	for {
 		conn, err := dialGuest(ctx, sock)
@@ -103,49 +111,100 @@ func (l *processLauncher) Start(ctx context.Context, req startRequest) (instance
 	if _, err := os.Stat(req.Rootfs); err != nil {
 		return nil, execenv.ErrUnknownImage
 	}
+	mkfs, err := lookBinary(l.cfg.Mkfs, defaultMkfs)
+	if err != nil {
+		return nil, execenv.ErrUnavailable
+	}
 	if err := os.MkdirAll(req.TreeDir, 0o700); err != nil {
 		return nil, err
 	}
-	// Attach is already prepared by occupancy. None means no NIC.
-	vm, err := writeMachineConfig(req)
+	var release []func() error
+	fail := func(err error) (instance, error) {
+		for i := len(release) - 1; i >= 0; i-- {
+			_ = release[i]()
+		}
+		return nil, err
+	}
+	uid, err := l.uids.acquire()
 	if err != nil {
 		return nil, err
 	}
-	// jailer --id <grant> --exec-file <runtime> --chroot-base-dir <parent>
-	// --uid --gid -- --config-file <vm.json>
-	// The supervisor chroots the runtime so a breakout from the guest
-	// still cannot see other grants.
-	grantDir := filepath.Dir(req.TreeDir)
-	// workDir/grants/<id>/workspace → chroot base is workDir so one
-	// grant cannot see another grant's directory.
-	base := l.cfg.WorkDir
-	if base == "" {
-		base = filepath.Dir(grantDir)
+	release = append(release, func() error { l.uids.release(uid); return nil })
+	// The guest formats nothing: the host creates the empty writable disk
+	// and the guest mounts it. The host never mounts this disk, because its
+	// blocks are written by the guest kernel.
+	if err := createWorkspaceDisk(ctx, mkfs, req.Disk, req.DiskBytes); err != nil {
+		return fail(err)
 	}
-	cmd := exec.Command(supervisor,
-		"--id", string(req.ID),
+	jail := newJailLayout(l.jailBase(), runtimeBin, req.ID, uid, uid)
+	release = append(release, jail.remove)
+	if err := jail.populate(req); err != nil {
+		return fail(err)
+	}
+	// Attach is already prepared by occupancy. None means no NIC. The tap
+	// was created by root; the jailed monitor must be allowed to open it.
+	if req.Attach != nil {
+		if err := setTapOwner(req.Attach.Dev, uid); err != nil {
+			return fail(execenv.ErrNetwork)
+		}
+	}
+	vm, err := writeMachineConfig(req, jail)
+	if err != nil {
+		return fail(err)
+	}
+	// jailer --id <jail-id> --exec-file <runtime> --uid --gid
+	// --chroot-base-dir <work>/jails -- --config-file /machine.json
+	// The supervisor copies the runtime into the jail, chroots it, and drops
+	// it to this grant's own identity before the config is read, so a
+	// breakout from the guest lands in an empty root as an unprivileged
+	// user that owns no other grant.
+	args := []string{
+		"--id", jail.id,
 		"--exec-file", runtimeBin,
-		"--uid", strconv.Itoa(os.Getuid()),
-		"--gid", strconv.Itoa(os.Getgid()),
-		"--chroot-base-dir", base,
-		"--",
-		"--config-file", vm,
-	)
-	cmd.Dir = grantDir
+		"--uid", strconv.Itoa(uid),
+		"--gid", strconv.Itoa(uid),
+		"--chroot-base-dir", l.jailBase(),
+	}
+	if cgroupV2() {
+		args = append(args, "--cgroup-version", "2")
+	}
+	args = append(args, "--", "--config-file", vm)
+	cmd := exec.Command(supervisor, args...)
+	cmd.Dir = filepath.Dir(req.TreeDir)
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	configureChild(cmd)
 	if err := cmd.Start(); err != nil {
-		return nil, execenv.ErrUnavailable
+		return fail(execenv.ErrUnavailable)
 	}
-	cleanup := func() {}
+	release = append(release, func() error { removeJailCgroups(filepath.Base(runtimeBin)); return nil })
 	if req.Attach != nil {
-		cleanup = req.Attach.close
+		attach := req.Attach
+		release = append(release, func() error { attach.close(); return nil })
 	}
 	done := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(done) }()
-	return &processInstance{cmd: cmd, dir: grantDir, cleanup: cleanup, done: done}, nil
+	return &processInstance{cmd: cmd, sock: jail.host(jailLinkSoc), release: release, done: done}, nil
+}
+
+// cleanStale reclaims what a crashed daemon left: jailed monitors (which
+// the parent-death signal no longer reaches once the supervisor dropped
+// privileges), their taps, filters and NAT, then their jails.
+func (l *processLauncher) cleanStale() error {
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+	killJailed(l.uids)
+	// The monitors are gone, so their taps can be deleted.
+	cleanStaleLinks()
+	if err := unmountUnder(l.jailBase()); err != nil {
+		return err
+	}
+	if runtimeBin, err := lookBinary(l.cfg.Runtime, defaultRuntime); err == nil {
+		removeJailCgroups(filepath.Base(runtimeBin))
+	}
+	return os.RemoveAll(l.jailBase())
 }
 
 func (p *processInstance) Pause(ctx context.Context) error {
@@ -170,11 +229,16 @@ func (p *processInstance) Stop(ctx context.Context) error {
 		return ctx.Err()
 	case <-p.done:
 	}
-	if p.cleanup != nil {
-		p.cleanup()
-		p.cleanup = nil
+	var errs []error
+	for len(p.release) > 0 {
+		last := len(p.release) - 1
+		if err := p.release[last](); err != nil {
+			errs = append(errs, err)
+			break
+		}
+		p.release = p.release[:last]
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func guestCID(id execenv.ID) uint32 {
@@ -186,7 +250,10 @@ func guestCID(id execenv.ID) uint32 {
 	return cid
 }
 
-func writeMachineConfig(req startRequest) (string, error) {
+// writeMachineConfig writes the monitor's config into the jail. Every path
+// in it is the monitor's view from inside the jail root; the returned path
+// is the one to pass after the supervisor's "--".
+func writeMachineConfig(req startRequest, jail jailLayout) (string, error) {
 	mem := req.Memory / (1024 * 1024)
 	if mem <= 0 {
 		mem = 128
@@ -195,22 +262,42 @@ func writeMachineConfig(req startRequest) (string, error) {
 	if vcpus <= 0 {
 		vcpus = 1
 	}
-	// Machine JSON follows the supervisor's config-file schema. Rootfs
-	// is read-only. The agent writes Home inside the guest; the image
-	// must make that directory writable. TreeDir is the stub Home, not
-	// a second host drive.
+	// Machine JSON follows the supervisor's config-file schema. Rootfs is
+	// read-only and shared by every grant of the image. The second drive is
+	// this grant's sparse writable disk; the guest init mounts it and
+	// places the projected tree and the scratch home on it, so neither
+	// consumes guest RAM.
+	//
+	// The balloon starts deflated. Free page reporting lets the guest hand
+	// freed pages back to the host continuously, so a grant's resident
+	// memory tracks what it uses rather than its peak. deflate_on_oom lets
+	// the guest reclaim balloon pages before invoking its OOM killer. Both
+	// need the guest kernel's virtio balloon driver with page reporting;
+	// without it the device is inert and the grant behaves as before.
 	doc := map[string]any{
 		"boot-source": map[string]any{
-			"kernel_image_path": req.Kernel,
+			"kernel_image_path": inside(jailKernel),
 			"boot_args":         bootArgs(req.Attach),
 		},
 		"drives": []map[string]any{
 			{
 				"drive_id":       "rootfs",
-				"path_on_host":   req.Rootfs,
+				"path_on_host":   inside(jailRootfs),
 				"is_root_device": true,
 				"is_read_only":   true,
 			},
+			{
+				"drive_id":       "workspace",
+				"path_on_host":   inside(jailDisk),
+				"is_root_device": false,
+				"is_read_only":   false,
+			},
+		},
+		"balloon": map[string]any{
+			"amount_mib":               0,
+			"deflate_on_oom":           true,
+			"stats_polling_interval_s": 0,
+			"free_page_reporting":      true,
 		},
 		"machine-config": map[string]any{
 			"vcpu_count":   vcpus,
@@ -218,7 +305,7 @@ func writeMachineConfig(req startRequest) (string, error) {
 		},
 		"vsock": map[string]any{
 			"guest_cid": guestCID(req.ID),
-			"uds_path":  filepath.Join(filepath.Dir(req.TreeDir), "guest.sock"),
+			"uds_path":  inside(jailLinkSoc),
 		},
 	}
 	if req.Attach != nil {
@@ -232,15 +319,19 @@ func writeMachineConfig(req startRequest) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	path := filepath.Join(filepath.Dir(req.TreeDir), "machine.json")
+	path := jail.host(jailConfig)
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		return "", err
 	}
-	return path, nil
+	// The monitor reads its config after dropping to the jail identity.
+	if err := os.Chown(path, jail.uid, jail.gid); err != nil {
+		return "", err
+	}
+	return inside(jailConfig), nil
 }
 
 func bootArgs(attach *netAttach) string {
-	args := "console=ttyS0 reboot=k panic=1 pci=off home=" + execenv.GuestHome + " init=" + execenv.GuestInit
+	args := "console=ttyS0 reboot=k panic=1 pci=off init=" + execenv.GuestInit
 	if attach == nil {
 		return args
 	}

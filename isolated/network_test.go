@@ -163,16 +163,17 @@ func TestEnsureNetworkChangeConflicts(t *testing.T) {
 func TestMachineConfigOmitsNICWhenNone(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	path, err := writeMachineConfig(startRequest{
+	jail := testJail(t, dir)
+	_, err := writeMachineConfig(startRequest{
 		ID:      "g1",
 		Kernel:  filepath.Join(dir, "k"),
 		Rootfs:  filepath.Join(dir, "r"),
 		TreeDir: filepath.Join(dir, "workspace"),
-	})
+	}, jail)
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc := readMachine(t, path)
+	doc := readMachine(t, jail.host(jailConfig))
 	if _, ok := doc["network-interfaces"]; ok {
 		t.Fatalf("none must not configure a NIC: %v", doc)
 	}
@@ -186,17 +187,18 @@ func TestMachineConfigAddsNICWhenAllowlist(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	att := planAttach("g1", nil)
-	path, err := writeMachineConfig(startRequest{
+	jail := testJail(t, dir)
+	_, err := writeMachineConfig(startRequest{
 		ID:      "g1",
 		Kernel:  filepath.Join(dir, "k"),
 		Rootfs:  filepath.Join(dir, "r"),
 		TreeDir: filepath.Join(dir, "workspace"),
 		Attach:  &att,
-	})
+	}, jail)
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc := readMachine(t, path)
+	doc := readMachine(t, jail.host(jailConfig))
 	ifaces, ok := doc["network-interfaces"].([]any)
 	if !ok || len(ifaces) != 1 {
 		t.Fatalf("allowlist NIC = %v", doc["network-interfaces"])

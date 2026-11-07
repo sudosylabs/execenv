@@ -23,26 +23,44 @@ const (
 	securityLocal   = "insecure_local"
 	networkNone     = "none"
 	networkAllow    = "allowlist"
+	// Isolation classes for the isolated adapter. vm is the default and
+	// fails closed without virtualization hardware. user-kernel is an
+	// explicit operator choice for hosts without it; it is never chosen
+	// automatically.
+	isolationVM         = string(execenv.IsolationVM)
+	isolationUserKernel = string(execenv.IsolationUserKernel)
+	minDiskBytes        = 64 << 20
 )
 
 // Config is the operator document that turns a machine into a host.
 // Token, file bodies, and PTY octets must never be logged.
 type Config struct {
-	RequireJournal bool    `json:"require_journal,omitempty"`
-	Listen         string  `json:"listen"`
-	Token          string  `json:"token"`
-	Security       string  `json:"security"`
-	Adapter        string  `json:"adapter"`
-	TLSCert        string  `json:"tls_cert,omitempty"`
-	TLSKey         string  `json:"tls_key,omitempty"`
-	TLSClientCA    string  `json:"tls_client_ca,omitempty"`
-	WorkDir        string  `json:"work_dir,omitempty"`
-	Device         string  `json:"device,omitempty"`
-	Runtime        string  `json:"runtime,omitempty"`
-	Supervisor     string  `json:"supervisor,omitempty"`
-	Images         []Image `json:"images"`
-	Slots          int     `json:"slots"`
+	RequireJournal bool   `json:"require_journal,omitempty"`
+	Listen         string `json:"listen"`
+	Token          string `json:"token"`
+	Security       string `json:"security"`
+	Adapter        string `json:"adapter"`
+	// Isolation selects the isolated adapter's boundary: "vm" (default)
+	// or "user-kernel". Memory hosts must leave it empty.
+	Isolation   string `json:"isolation,omitempty"`
+	TLSCert     string `json:"tls_cert,omitempty"`
+	TLSKey      string `json:"tls_key,omitempty"`
+	TLSClientCA string `json:"tls_client_ca,omitempty"`
+	WorkDir     string `json:"work_dir,omitempty"`
+	Device      string `json:"device,omitempty"`
+	Runtime     string `json:"runtime,omitempty"`
+	Supervisor  string `json:"supervisor,omitempty"`
+	// Mkfs is the ext4 formatter for per-grant workspace disks. Empty
+	// uses mkfs.ext4 from PATH.
+	Mkfs string `json:"mkfs,omitempty"`
+	// JailUIDBase is the first of 65536 host uids reserved for jailed
+	// microVM monitors (default 2000000000). Nothing else may use them.
+	JailUIDBase int     `json:"jail_uid_base,omitempty"`
+	Images      []Image `json:"images"`
+	Slots       int     `json:"slots"`
 	// Isolated grants use these as machine defaults. Memory ignores them.
+	// DiskBytes sizes each grant's sparse workspace disk (default 2 GiB,
+	// minimum 64 MiB); only written blocks use host storage.
 	CPUMillis   int           `json:"cpu_millis,omitempty"`
 	MemoryBytes int64         `json:"memory_bytes,omitempty"`
 	DiskBytes   int64         `json:"disk_bytes,omitempty"`
@@ -153,6 +171,7 @@ func (cfg *Config) validate() error {
 	}
 	cfg.Security = strings.ToLower(cfg.Security)
 	cfg.Adapter = strings.ToLower(cfg.Adapter)
+	cfg.Isolation = strings.ToLower(cfg.Isolation)
 	if cfg.Network == "" {
 		cfg.Network = networkNone
 	}
@@ -175,10 +194,27 @@ func (cfg *Config) validate() error {
 	switch cfg.Adapter {
 	case adapterMemory:
 		// Production isolation cannot be the in-memory adapter.
-		if cfg.Security == securityTLS {
+		if cfg.Security == securityTLS || cfg.Isolation != "" {
 			return execenv.Error("config", execenv.ErrInvalid)
 		}
 	case adapterIsolated:
+		switch cfg.Isolation {
+		case "", isolationVM:
+		case isolationUserKernel:
+			// The native journal is certified only against a guest kernel's
+			// own workload barrier.
+			if cfg.RequireJournal {
+				return execenv.Error("config", execenv.ErrInvalid)
+			}
+		default:
+			return execenv.Error("config", execenv.ErrInvalid)
+		}
+		if cfg.JailUIDBase < 0 || cfg.JailUIDBase > 1<<31-1-65536 {
+			return execenv.Error("config", execenv.ErrInvalid)
+		}
+		if cfg.DiskBytes < 0 || (cfg.DiskBytes > 0 && cfg.DiskBytes < minDiskBytes) {
+			return execenv.Error("config", execenv.ErrInvalid)
+		}
 	default:
 		return execenv.Error("config", execenv.ErrInvalid)
 	}
@@ -221,6 +257,18 @@ func (cfg *Config) validate() error {
 	return nil
 }
 
+// isolation is the effective boundary class, for logs and the adapter.
+func (cfg Config) isolation() string {
+	switch {
+	case cfg.Adapter == adapterMemory:
+		return string(execenv.IsolationNone)
+	case cfg.Isolation == "":
+		return isolationVM
+	default:
+		return cfg.Isolation
+	}
+}
+
 func (cfg Config) security() remote.Security {
 	if cfg.Security == securityLocal {
 		return remote.SecurityInsecureLocal
@@ -238,6 +286,6 @@ func (cfg Config) imageIDs() []execenv.Image {
 
 // redacted is safe for operator logs. It never includes Token.
 func (cfg Config) redacted() string {
-	return fmt.Sprintf("listen=%s adapter=%s security=%s slots=%d images=%d",
-		cfg.Listen, cfg.Adapter, cfg.Security, cfg.Slots, len(cfg.Images))
+	return fmt.Sprintf("listen=%s adapter=%s isolation=%s security=%s slots=%d images=%d",
+		cfg.Listen, cfg.Adapter, cfg.isolation(), cfg.Security, cfg.Slots, len(cfg.Images))
 }

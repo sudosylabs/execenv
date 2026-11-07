@@ -48,6 +48,7 @@ jobs:
       source: mcr.microsoft.com/devcontainers/universal:linux
     secrets:
       KERNEL_URL: ${{ secrets.KERNEL_URL }}
+      KERNEL_CONFIG_URL: ${{ secrets.KERNEL_CONFIG_URL }}
 
   pin:
     needs: bake

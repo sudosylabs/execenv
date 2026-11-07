@@ -16,11 +16,15 @@ import (
 	"github.com/sudosylabs/execenv/internal/workload"
 )
 
-// Config is one agent's occupancy of a home directory.
+// Config is one agent's occupancy of a projected tree.
 type Config struct {
-	// Home is the projected tree. It is cwd and $HOME for the login
-	// shell. The image root is not this directory and stays read-only.
+	// Home is the projected tree and the login shell's working directory.
+	// The image root is not this directory and stays read-only.
 	Home string
+	// Scratch is the login shell's $HOME, outside the projected tree, so
+	// tool caches and virtual environments are neither watched nor
+	// harvested. Empty uses Home (local development only).
+	Scratch string
 	// ContainWorkload requires a dedicated guest with a usable kernel write
 	// barrier and launches every workload process unprivileged. Unsupported
 	// configurations fail before serving or accepting a terminal.
@@ -38,6 +42,13 @@ func Serve(ctx context.Context, conn net.Conn, cfg Config) error {
 	if err := os.MkdirAll(cfg.Home, 0o700); err != nil {
 		return execenv.Error("agent", err)
 	}
+	scratch := cfg.Scratch
+	if scratch == "" {
+		scratch = cfg.Home
+	}
+	if err := os.MkdirAll(scratch, 0o700); err != nil {
+		return execenv.Error("agent", err)
+	}
 	var group *workload.Group
 	if cfg.ContainWorkload {
 		var err error
@@ -49,10 +60,14 @@ func Serve(ctx context.Context, conn net.Conn, cfg Config) error {
 		if err := group.OwnHome(cfg.Home); err != nil {
 			return execenv.Error("workload", err)
 		}
+		if err := group.OwnHome(scratch); err != nil {
+			return execenv.Error("workload", err)
+		}
 	}
 	s := &server{
 		workload:  group,
 		home:      cfg.Home,
+		scratch:   scratch,
 		projected: make(tree.Snapshot),
 		sess:      newSession(conn),
 		log:       watchlog.New(watchlog.DefaultCapacity),
@@ -86,6 +101,7 @@ func (s *server) serveFrames(ctx context.Context) error {
 
 type server struct {
 	home          string
+	scratch       string
 	workload      *workload.Group
 	workloadErr   error
 	journal       *diskJournal
@@ -104,6 +120,8 @@ type server struct {
 	watchErr    error
 	snap        map[string]fileMeta
 	pollStop    chan struct{}
+	notify      notifier
+	kick        chan struct{}
 	log         *watchlog.Log
 }
 
@@ -297,23 +315,20 @@ func (s *server) watch(ctx context.Context, f frame) ([]byte, error) {
 	if s.watching {
 		return nil, execenv.ErrBusy
 	}
-	if s.pollStop == nil {
-		s.resetSnap()
-	}
+	s.preparePoll()
 	if !validScan(s.snap) {
+		s.discardPoll()
 		return nil, execenv.ErrLagged
 	}
 	cursor, replay, err := s.log.Since(args.After)
 	if err != nil {
+		s.discardPoll()
 		return nil, err
 	}
 	s.watching = true
 	s.watchStream = args.Stream
 	s.watchErr = nil
-	if s.pollStop == nil {
-		s.pollStop = make(chan struct{})
-		go s.poll(s.pollStop)
-	}
+	s.startPoll()
 	for _, event := range replay {
 		raw, err := encodeExtra(event)
 		if err != nil {
@@ -365,7 +380,7 @@ func (s *server) attach(ctx context.Context, f frame) error {
 			return err
 		}
 	}
-	sh, err := startShell(s.home, args.Window, s.workload)
+	sh, err := startShell(s.home, s.scratch, args.Window, s.workload)
 	if err != nil {
 		return execenv.ErrUnavailable
 	}
@@ -481,6 +496,7 @@ func (s *server) thaw(ctx context.Context) error {
 		}
 	}
 	s.frozen = false
+	s.kickPoll()
 	return nil
 }
 

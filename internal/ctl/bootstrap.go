@@ -18,23 +18,29 @@ import (
 // Isolation device and supervisor process names as the probe looks them up.
 // Public execenv types stay hypervisor-neutral; this operator tool cannot.
 const (
-	defaultDevice     = "/dev/kvm"
-	runtimeName       = "firecracker"
-	supervisorName    = "jailer"
-	runtimeVersion    = "v1.16.1"
-	defaultListen     = "0.0.0.0:8443"
-	defaultSlots      = 8
-	defaultPrefix     = "/usr/local"
-	defaultSysconf    = "/etc/execenv"
-	defaultState      = "/var/lib/execenv"
-	hostConfigName    = "host.json"
-	unitName          = "execenv.service"
-	execenvName       = "execenv"
-	networkNone       = "none"
-	securityTLS       = "tls"
-	securityLocal     = "insecure_local"
-	adapterIsolated   = "isolated"
-	defaultGrace      = "30s"
+	defaultDevice   = "/dev/kvm"
+	runtimeName     = "firecracker"
+	supervisorName  = "jailer"
+	runtimeVersion  = "v1.16.1"
+	defaultListen   = "0.0.0.0:8443"
+	defaultSlots    = 8
+	defaultPrefix   = "/usr/local"
+	defaultSysconf  = "/etc/execenv"
+	defaultState    = "/var/lib/execenv"
+	hostConfigName  = "host.json"
+	unitName        = "execenv.service"
+	execenvName     = "execenv"
+	networkNone     = "none"
+	securityTLS     = "tls"
+	securityLocal   = "insecure_local"
+	adapterIsolated = "isolated"
+	defaultGrace    = "30s"
+	// Isolation classes an operator may choose. vm is the default; the
+	// user-kernel sandbox is only ever used when explicitly selected.
+	isolationVM         = "vm"
+	isolationUserKernel = "user-kernel"
+	sandboxRuntimeName  = "runsc"
+	mkfsName            = "mkfs.ext4"
 )
 
 // runtimeArchiveBase is the operator-time download for missing supervisor
@@ -44,13 +50,22 @@ var runtimeArchiveBase = "https://github.com/firecracker-microvm/firecracker/rel
 // Options is a headless bootstrap. Empty path fields use system defaults
 // and typically need root. Prefix is for tests and non-root labs.
 type Options struct {
-	Prefix   string
-	Sysconf  string
-	State    string
-	Device   string
-	Listen   string
-	Slots    int
-	Execenv    string
+	Prefix  string
+	Sysconf string
+	State   string
+	Device  string
+	Listen  string
+	Slots   int
+	Execenv string
+	// Isolation is "vm" (default) or "user-kernel". It is written to host
+	// config; a vm host without a usable device never becomes user-kernel.
+	Isolation string
+	// SandboxRuntime is the user-kernel runtime binary to install. Empty
+	// looks up runsc on PATH. It is never downloaded.
+	SandboxRuntime string
+	// Mkfs is the ext4 formatter for workspace disks. Empty looks it up on
+	// PATH.
+	Mkfs       string
 	NoStart    bool
 	NoFetch    bool
 	Insecure   bool
@@ -91,10 +106,13 @@ func (o Options) resolved() Options {
 	if out.Slots <= 0 {
 		out.Slots = defaultSlots
 	}
+	if out.Isolation == "" {
+		out.Isolation = isolationVM
+	}
 	return out
 }
 
-func (o Options) binDir() string    { return filepath.Join(o.Prefix, "bin") }
+func (o Options) binDir() string     { return filepath.Join(o.Prefix, "bin") }
 func (o Options) configPath() string { return filepath.Join(o.Sysconf, hostConfigName) }
 func (o Options) workDir() string    { return filepath.Join(o.State, "work") }
 func (o Options) unitDir() string    { return filepath.Join(filepath.Dir(o.Sysconf), "systemd", "system") }
@@ -105,16 +123,30 @@ func (o Options) runtimePath() string {
 func (o Options) supervisorPath() string {
 	return filepath.Join(o.binDir(), supervisorName)
 }
+func (o Options) sandboxRuntimePath() string {
+	return filepath.Join(o.binDir(), sandboxRuntimeName)
+}
 func (o Options) execenvPath() string {
 	return filepath.Join(o.binDir(), execenvName)
 }
 
 // Bootstrap turns an empty isolation host into a configured execenv daemon.
-// It does not occupy grants and does not fetch catalog disks. A missing
-// isolation device fails closed; there is no container fallback.
+// It does not occupy grants and does not fetch catalog disks. A vm host
+// with a missing isolation device fails closed; it never falls back to the
+// user-kernel sandbox, which the operator must select explicitly.
 func Bootstrap(opts Options, stdout io.Writer) error {
 	opts = opts.resolved()
-	if err := checkDevice(opts.Device); err != nil {
+	switch opts.Isolation {
+	case isolationVM:
+		if err := checkDevice(opts.Device); err != nil {
+			return err
+		}
+	case isolationUserKernel:
+	default:
+		return fmt.Errorf("isolation must be %s or %s", isolationVM, isolationUserKernel)
+	}
+	mkfs, err := findMkfs(opts)
+	if err != nil {
 		return err
 	}
 	if err := os.MkdirAll(opts.binDir(), 0o755); err != nil {
@@ -132,10 +164,14 @@ func Bootstrap(opts Options, stdout io.Writer) error {
 	if err := installExecenv(opts); err != nil {
 		return err
 	}
-	if err := installSupervisors(opts); err != nil {
+	if opts.Isolation == isolationVM {
+		if err := installSupervisors(opts); err != nil {
+			return err
+		}
+	} else if err := installSandboxRuntime(opts); err != nil {
 		return err
 	}
-	if err := writeHostConfig(opts); err != nil {
+	if err := writeHostConfig(opts, mkfs); err != nil {
 		return err
 	}
 	if err := writeUnit(opts); err != nil {
@@ -148,12 +184,57 @@ func Bootstrap(opts Options, stdout io.Writer) error {
 		fmt.Fprintln(stdout, "execenv installed")
 		fmt.Fprintf(stdout, "config=%s\n", opts.configPath())
 		fmt.Fprintf(stdout, "image=%s\n", imageSummary(opts))
-		fmt.Fprintln(stdout, "device=ok")
+		fmt.Fprintf(stdout, "isolation=%s\n", opts.Isolation)
+		if opts.Isolation == isolationVM {
+			fmt.Fprintln(stdout, "device=ok")
+		} else {
+			fmt.Fprintln(stdout, "device=not-required")
+		}
 		fmt.Fprintln(stdout, "token=written to config")
 		fmt.Fprintf(stdout, "hash=%s\n", hashSummary(opts))
-		fmt.Fprintln(stdout, "ready=device+runtime+supervisor")
+		if opts.Isolation == isolationVM {
+			fmt.Fprintln(stdout, "ready=device+runtime+supervisor+mkfs")
+		} else {
+			fmt.Fprintln(stdout, "ready=sandbox-runtime+mkfs")
+		}
 	}
 	return nil
+}
+
+// findMkfs locates the ext4 formatter every grant's workspace disk needs.
+func findMkfs(opts Options) (string, error) {
+	if opts.Mkfs != "" {
+		if executable(opts.Mkfs) {
+			return opts.Mkfs, nil
+		}
+		return "", fmt.Errorf("%s is not executable; workspace disks need %s (e2fsprogs)", opts.Mkfs, mkfsName)
+	}
+	found, err := exec.LookPath(mkfsName)
+	if err != nil {
+		return "", fmt.Errorf("%s is missing; workspace disks need it (install e2fsprogs)", mkfsName)
+	}
+	return found, nil
+}
+
+// installSandboxRuntime copies the operator's runtime binary into the
+// prefix. Unlike the microVM binaries it is never downloaded: the operator
+// chooses and verifies the sandbox runtime build.
+func installSandboxRuntime(opts Options) error {
+	if executable(opts.sandboxRuntimePath()) && opts.SandboxRuntime == "" {
+		return nil
+	}
+	src := opts.SandboxRuntime
+	if src == "" {
+		found, err := exec.LookPath(sandboxRuntimeName)
+		if err != nil {
+			return fmt.Errorf("user-kernel isolation needs the %s runtime; install it and pass --sandbox-runtime", sandboxRuntimeName)
+		}
+		src = found
+	}
+	if !executable(src) {
+		return fmt.Errorf("user-kernel isolation needs the %s runtime; %s is not executable", sandboxRuntimeName, src)
+	}
+	return installFile(src, opts.sandboxRuntimePath(), 0o755)
 }
 
 func checkDevice(path string) error {
@@ -277,7 +358,7 @@ func extractNamed(tgz, dir, name, dest string) error {
 	return installFile(found, dest, 0o755)
 }
 
-func writeHostConfig(opts Options) error {
+func writeHostConfig(opts Options, mkfs string) error {
 	existing, err := loadHost(opts.configPath())
 	first := errors.Is(err, os.ErrNotExist)
 	if err != nil && !first {
@@ -317,9 +398,20 @@ func writeHostConfig(opts Options) error {
 	doc.TLSCert = certPath
 	doc.TLSKey = keyPath
 	doc.WorkDir = opts.workDir()
-	doc.Device = opts.Device
-	doc.Runtime = opts.runtimePath()
-	doc.Supervisor = opts.supervisorPath()
+	doc.Isolation = opts.Isolation
+	doc.Mkfs = mkfs
+	if opts.Isolation == isolationVM {
+		doc.Device = opts.Device
+		doc.Runtime = opts.runtimePath()
+		doc.Supervisor = opts.supervisorPath()
+	} else {
+		// The sandbox needs no device or jail supervisor. The native journal
+		// is not certified for this boundary.
+		doc.Device = ""
+		doc.Runtime = opts.sandboxRuntimePath()
+		doc.Supervisor = ""
+		doc.RequireJournal = false
+	}
 	doc.Slots = opts.Slots
 	if doc.Adapter == "" {
 		doc.Adapter = adapterIsolated

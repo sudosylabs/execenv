@@ -13,10 +13,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// startShell is a login-style interactive shell whose cwd and HOME are
-// the projected tree. A login profile that honors HOME therefore cannot
-// walk out of the workspace.
-func startShell(home string, win execenv.Window, group *workload.Group) (*shell, error) {
+// startShell is a login-style interactive shell whose cwd is the projected
+// tree and whose HOME is guest-local scratch outside it, so caches and
+// dotfiles written through HOME are not watched or harvested.
+func startShell(home, scratch string, win execenv.Window, group *workload.Group) (*shell, error) {
 	cmd := exec.Command("/bin/sh", "-l")
 	if group != nil {
 		executable, err := os.Executable()
@@ -30,7 +30,7 @@ func startShell(home string, win execenv.Window, group *workload.Group) (*shell,
 	}
 	cmd.Dir = home
 	cmd.Env = []string{
-		"HOME=" + home,
+		"HOME=" + scratch,
 		"PWD=" + home,
 		"TERM=xterm-256color",
 		"PATH=" + os.Getenv("PATH"),

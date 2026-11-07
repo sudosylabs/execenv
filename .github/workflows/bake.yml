@@ -30,6 +30,9 @@ on:
     secrets:
       KERNEL_URL:
         required: false
+      KERNEL_CONFIG_URL:
+        description: The .config the pinned vmlinux was built from (optional)
+        required: false
 
 permissions:
   contents: read
@@ -52,10 +55,11 @@ jobs:
           fi
           docker info
           command -v mkfs.ext4
-          chmod +x execenv scripts/bake
+          chmod +x execenv scripts/bake scripts/check-kernel-config
       - name: Kernel
         env:
           KERNEL_URL: ${{ secrets.KERNEL_URL }}
+          KERNEL_CONFIG_URL: ${{ secrets.KERNEL_CONFIG_URL }}
           KERNEL_MODE: ${{ inputs.kernel }}
         run: |
           mkdir -p bake-out
@@ -64,6 +68,14 @@ jobs:
             test -n "$KERNEL_URL" || { echo "set secret KERNEL_URL to a versioned vmlinux URL" >&2; exit 1; }
             curl -fsSL "$KERNEL_URL" -o bake-out/vmlinux
             test -s bake-out/vmlinux
+            # Fail the bake when the guest kernel lacks a required option;
+            # balloon and page reporting gaps only warn.
+            if [ -n "$KERNEL_CONFIG_URL" ]; then
+              curl -fsSL "$KERNEL_CONFIG_URL" -o bake-out/kernel.config
+              scripts/check-kernel-config bake-out/kernel.config
+            else
+              echo "KERNEL_CONFIG_URL not set; guest kernel options unchecked" >&2
+            fi
             ;;
           dummy)
             dd if=/dev/zero of=bake-out/vmlinux bs=1k count=64

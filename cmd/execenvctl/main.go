@@ -55,13 +55,16 @@ func newBootstrap(opts *ctl.Options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "bootstrap",
 		Short: "Install the execenv daemon on this isolation host",
-		Long:  "Verify the isolation device, install runtime and supervisor binaries, write host config and a systemd unit. Does not fetch catalog disks. A missing device fails closed; there is no container fallback.",
+		Long:  "Verify the isolation device, install runtime and supervisor binaries, write host config and a systemd unit. Does not fetch catalog disks. A missing device fails closed (no container fallback). Hosts without virtualization hardware may instead be bootstrapped with --isolation user-kernel, an explicit choice of the weaker user-space-kernel sandbox.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return ctl.Bootstrap(*opts, cmd.OutOrStdout())
 		},
 	}
-	cmd.Flags().StringVar(&opts.Device, "device", opts.Device, "isolation device path")
+	cmd.Flags().StringVar(&opts.Device, "device", opts.Device, "isolation device path (vm only)")
+	cmd.Flags().StringVar(&opts.Isolation, "isolation", "vm", "isolation class: vm (microVM, needs the device) or user-kernel (sandbox, weaker, no device)")
+	cmd.Flags().StringVar(&opts.SandboxRuntime, "sandbox-runtime", "", "runsc binary to install for user-kernel isolation (default: PATH)")
+	cmd.Flags().StringVar(&opts.Mkfs, "mkfs", "", "mkfs.ext4 used for per-grant workspace disks (default: PATH)")
 	cmd.Flags().StringVar(&opts.Listen, "listen", opts.Listen, "daemon listen address")
 	cmd.Flags().IntVar(&opts.Slots, "slots", opts.Slots, "maximum concurrent grants")
 	cmd.Flags().StringVar(&opts.Execenv, "execenv", opts.Execenv, "linux execenv binary to install")

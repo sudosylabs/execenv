@@ -1,0 +1,67 @@
+#!/bin/sh
+# Check a guest kernel .config against what the baked guest needs. Run in
+# CI next to scripts/bake with the config the pinned vmlinux was built from
+# (KERNEL_URL's companion .config). Not run on the grant host.
+#
+#   scripts/check-kernel-config path/to/.config
+#
+# Exit 1 if a required option is missing. Recommended options print a
+# warning: the guest still boots, but the named feature is inert.
+set -eu
+
+[ $# -eq 1 ] && [ -f "$1" ] || {
+	echo "usage: scripts/check-kernel-config KERNEL_CONFIG" >&2
+	exit 2
+}
+CONFIG=$1
+missing=0
+
+enabled() {
+	grep -Eq "^CONFIG_$1=(y|m)$" "$CONFIG"
+}
+
+# Built in: the guest has no initramfs or module loader.
+builtin() {
+	grep -Eq "^CONFIG_$1=y$" "$CONFIG"
+}
+
+require() {
+	if builtin "$1"; then
+		printf 'ok       %s\n' "$1"
+	else
+		printf 'MISSING  %s (%s)\n' "$1" "$2"
+		missing=1
+	fi
+}
+
+recommend() {
+	if builtin "$1"; then
+		printf 'ok       %s\n' "$1"
+	elif enabled "$1"; then
+		printf 'warning  %s is a module; the guest loads none (%s)\n' "$1" "$2"
+	else
+		printf 'warning  %s is not set (%s)\n' "$1" "$2"
+	fi
+}
+
+# Boot, root disk and the per-grant writable workspace disk.
+require VIRTIO_BLK "root and workspace drives"
+require EXT4_FS "root and workspace filesystems"
+require DEVTMPFS "guest init mounts /dev"
+require TMPFS "guest init mounts /run"
+# Host link and contained workload.
+require VSOCKETS "host link"
+require VIRTIO_VSOCKETS "host link"
+require CGROUPS "workload hierarchy for freeze and containment"
+require UNIX98_PTYS "one terminal per grant"
+# Event-driven watcher; without it the agent falls back to a 1s rescan.
+recommend INOTIFY_USER "event-driven Watch"
+# Memory reclamation through the balloon with free page reporting.
+recommend MEMORY_BALLOON "balloon device"
+recommend VIRTIO_BALLOON "balloon device"
+recommend PAGE_REPORTING "free page reporting returns freed guest memory to the host"
+recommend BALLOON_COMPACTION "balloon pages stay migratable"
+# Only relevant to a future snapshot restore path; kernel >= 5.18 with ACPI.
+recommend VMGENID "reseeds guest entropy after snapshot restore"
+
+exit $missing

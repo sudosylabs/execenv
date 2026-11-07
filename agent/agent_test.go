@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -437,5 +438,44 @@ func TestFrozenObservationClosesWithoutRPCAndResumesItsCursor(t *testing.T) {
 	event, err := resumed.Next(ctx)
 	if err != nil || event.Path != "file" || event.Op != execenv.OpReplace {
 		t.Fatalf("resumed observation: %+v %v", event, err)
+	}
+}
+
+func TestShellHomeIsScratchOutsideWatchedTree(t *testing.T) {
+	home, scratch := t.TempDir(), t.TempDir()
+	host, guest := net.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = agent.Serve(ctx, guest, agent.Config{Home: home, Scratch: scratch}) }()
+	t.Cleanup(func() { _ = host.Close() })
+	cli := agent.NewClient(host)
+	obs, err := cli.Watch(t.Context(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = obs.Close() })
+	term, err := cli.Attach(t.Context(), execenv.Window{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = term.Close() })
+	if _, err := term.Write([]byte("mkdir -p \"$HOME/.cache\" && echo cached > \"$HOME/.cache/x\" && printf '%s\\n%s\\n' \"$HOME\" \"$(pwd -P)\" > where.txt\n")); err != nil {
+		t.Fatal(err)
+	}
+	ctxWait, cancelWait := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancelWait()
+	if !waitEvent(t, ctxWait, obs, execenv.OpCreate, "where.txt") {
+		t.Fatal("where.txt not observed")
+	}
+	body := strings.Split(strings.TrimSpace(string(waitFile(t, filepath.Join(home, "where.txt")))), "\n")
+	realHome, _ := filepath.EvalSymlinks(home)
+	if len(body) != 2 || body[0] != scratch || body[1] != realHome {
+		t.Fatalf("HOME/cwd = %q, want %q and %q", body, scratch, realHome)
+	}
+	if _, err := os.Stat(filepath.Join(scratch, ".cache", "x")); err != nil {
+		t.Fatalf("cache not written to scratch HOME: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".cache")); !os.IsNotExist(err) {
+		t.Fatalf("cache leaked into projected tree: %v", err)
 	}
 }

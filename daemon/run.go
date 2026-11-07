@@ -113,6 +113,7 @@ func newAdapter(cfg Config) (execenv.Host, error) {
 			})
 		}
 		return isolated.New(isolated.Config{
+			Isolation:      execenv.Isolation(cfg.isolation()),
 			RequireJournal: cfg.RequireJournal,
 			Images:         images,
 			Slots:          cfg.Slots,
@@ -122,6 +123,9 @@ func newAdapter(cfg Config) (execenv.Host, error) {
 			Supervisor:     cfg.Supervisor,
 			CPUMillis:      cfg.CPUMillis,
 			MemoryBytes:    cfg.MemoryBytes,
+			DiskBytes:      cfg.DiskBytes,
+			Mkfs:           cfg.Mkfs,
+			JailUIDBase:    cfg.JailUIDBase,
 			Allow:          append([]string(nil), cfg.Allow...),
 		})
 	default:
