@@ -52,9 +52,12 @@ type Config struct {
 	Supervisor  string `json:"supervisor,omitempty"`
 	// Mkfs is the ext4 formatter for per-grant workspace disks. Empty
 	// uses mkfs.ext4 from PATH.
-	Mkfs   string  `json:"mkfs,omitempty"`
-	Images []Image `json:"images"`
-	Slots  int     `json:"slots"`
+	Mkfs string `json:"mkfs,omitempty"`
+	// JailUIDBase is the first of 65536 host uids reserved for jailed
+	// microVM monitors (default 2000000000). Nothing else may use them.
+	JailUIDBase int     `json:"jail_uid_base,omitempty"`
+	Images      []Image `json:"images"`
+	Slots       int     `json:"slots"`
 	// Isolated grants use these as machine defaults. Memory ignores them.
 	// DiskBytes sizes each grant's sparse workspace disk (default 2 GiB,
 	// minimum 64 MiB); only written blocks use host storage.
@@ -204,6 +207,9 @@ func (cfg *Config) validate() error {
 				return execenv.Error("config", execenv.ErrInvalid)
 			}
 		default:
+			return execenv.Error("config", execenv.ErrInvalid)
+		}
+		if cfg.JailUIDBase < 0 || cfg.JailUIDBase > 1<<31-1-65536 {
 			return execenv.Error("config", execenv.ErrInvalid)
 		}
 		if cfg.DiskBytes < 0 || (cfg.DiskBytes > 0 && cfg.DiskBytes < minDiskBytes) {

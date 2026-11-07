@@ -125,6 +125,7 @@ func newAdapter(cfg Config) (execenv.Host, error) {
 			MemoryBytes:    cfg.MemoryBytes,
 			DiskBytes:      cfg.DiskBytes,
 			Mkfs:           cfg.Mkfs,
+			JailUIDBase:    cfg.JailUIDBase,
 			Allow:          append([]string(nil), cfg.Allow...),
 		})
 	default:

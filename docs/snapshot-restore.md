@@ -36,9 +36,11 @@ repository's launcher.
    relative paths for the restoring process as for the snapshotting one, and
    there is no drive-path override in the documented load API. The per-grant
    workspace disk therefore has to sit at one fixed path inside each grant's
-   jail. The current launcher passes absolute host paths and does not place
-   the kernel, rootfs, machine config, disk or vsock socket inside the jail's
-   chroot. That has to be fixed first, independently of snapshots.
+   jail. The launcher already places the kernel, rootfs, workspace disk,
+   machine config and guest-link socket at fixed jail-relative paths
+   (`/vmlinux`, `/rootfs.ext4`, `/workspace.ext4`, `/machine.json`,
+   `/guest.sock`), so this requirement is met; the template's memory and
+   state files would be linked in the same way.
 4. **Network.** Guest connectivity is not guaranteed after resume, and the TAP
    devices the snapshot used must exist for the new process. Per-grant TAP
    names differ, so each restored grant would need its own network namespace
@@ -57,10 +59,9 @@ repository's launcher.
 
 ## Design, when the prerequisites hold
 
-1. **Jail layout.** Populate each grant's chroot with hard links (or bind
-   mounts) of the kernel, rootfs and snapshot files, plus the grant's own
-   workspace disk, all at fixed relative paths. Run the monitor as an
-   unprivileged per-grant uid instead of the daemon's.
+1. **Jail layout.** Link the template's snapshot and memory files into each
+   grant's jail beside the kernel, rootfs and workspace disk the launcher
+   already places there, readable by the grant's jail uid.
 2. **Template per image.** After `execenvctl install`, boot the image once
    with a placeholder workspace disk and no NIC. Guest init mounts `/proc`,
    `/sys`, `/dev`, `/run` and the cgroup hierarchy, then blocks on the guest

@@ -26,11 +26,19 @@ func TestMachineConfigHasWorkspaceDriveAndBalloon(t *testing.T) {
 	if err := os.MkdirAll(req.TreeDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	path, err := writeMachineConfig(req)
+	jail := newJailLayout(filepath.Join(grant, "jails"), "/opt/bin/firecracker", req.ID, os.Getuid(), os.Getgid())
+	if err := os.MkdirAll(jail.root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path, err := writeMachineConfig(req, jail)
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err := os.ReadFile(path)
+	// The supervisor is handed the monitor's view of the config path.
+	if path != "/"+jailConfig {
+		t.Fatalf("config path = %q", path)
+	}
+	raw, err := os.ReadFile(jail.host(jailConfig))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,8 +55,12 @@ func TestMachineConfigHasWorkspaceDriveAndBalloon(t *testing.T) {
 			Reporting bool `json:"free_page_reporting"`
 		} `json:"balloon"`
 		Boot struct {
-			Args string `json:"boot_args"`
+			Kernel string `json:"kernel_image_path"`
+			Args   string `json:"boot_args"`
 		} `json:"boot-source"`
+		Vsock struct {
+			UDS string `json:"uds_path"`
+		} `json:"vsock"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatal(err)
@@ -58,10 +70,14 @@ func TestMachineConfigHasWorkspaceDriveAndBalloon(t *testing.T) {
 	}
 	// Order matters: the root device is first, so the workspace disk is the
 	// guest's second block device, which the guest init mounts.
-	if !doc.Drives[0].Root || !doc.Drives[0].ReadOnly || doc.Drives[0].Path != "/r" {
+	// Every path is resolved by the monitor inside its jail root.
+	if doc.Boot.Kernel != "/"+jailKernel || doc.Vsock.UDS != "/"+jailLinkSoc {
+		t.Fatalf("kernel = %q, vsock = %q", doc.Boot.Kernel, doc.Vsock.UDS)
+	}
+	if !doc.Drives[0].Root || !doc.Drives[0].ReadOnly || doc.Drives[0].Path != "/"+jailRootfs {
 		t.Fatalf("root drive = %+v", doc.Drives[0])
 	}
-	if doc.Drives[1].Root || doc.Drives[1].ReadOnly || doc.Drives[1].Path != req.Disk {
+	if doc.Drives[1].Root || doc.Drives[1].ReadOnly || doc.Drives[1].Path != "/"+jailDisk {
 		t.Fatalf("workspace drive = %+v", doc.Drives[1])
 	}
 	if doc.Balloon == nil || doc.Balloon.Amount != 0 || !doc.Balloon.Deflate || !doc.Balloon.Reporting {

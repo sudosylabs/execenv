@@ -61,6 +61,11 @@ type Config struct {
 	// Mkfs is the ext4 formatter used for workspace disks. Empty uses
 	// mkfs.ext4 from PATH.
 	Mkfs string
+	// JailUIDBase is the first of 65536 host uids (and gids) handed to
+	// jailed microVM monitors, one per live grant. Zero uses 2000000000.
+	// Nothing else on the host may use the range: a restarted host kills
+	// every process running under it. Unused by IsolationUserKernel.
+	JailUIDBase int
 	// Allow is the host's IPv4 dests. Grants cannot add dests. Empty
 	// means this host does not offer NetworkAllowlist.
 	Allow []string

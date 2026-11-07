@@ -427,3 +427,17 @@ func TestAdapterPassesIsolationAndDisk(t *testing.T) {
 		t.Fatalf("RequireIsolated(user-kernel) = %v", err)
 	}
 }
+
+func TestLoadJailUIDBase(t *testing.T) {
+	t.Parallel()
+	base := `"listen": "127.0.0.1:0", "token": "secret", "security": "insecure_local", "adapter": "isolated", "images": [], "slots": 1`
+	for body, ok := range map[string]bool{
+		`, "jail_uid_base": 3000000`:    true,
+		`, "jail_uid_base": -1`:         false,
+		`, "jail_uid_base": 2147483647`: false,
+	} {
+		if _, err := Load(writeConfig(t, "{"+base+body+"}")); (err == nil) != ok {
+			t.Errorf("Load(%s) error = %v, want ok=%v", body, err, ok)
+		}
+	}
+}

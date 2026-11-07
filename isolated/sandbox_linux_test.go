@@ -2,7 +2,10 @@
 
 package isolated
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 func TestUnescapeMount(t *testing.T) {
 	t.Parallel()
@@ -15,5 +18,13 @@ func TestUnescapeMount(t *testing.T) {
 		if got := unescapeMount(in); got != want {
 			t.Errorf("unescapeMount(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestProcUIDReadsRealUID(t *testing.T) {
+	t.Parallel()
+	uid, ok := procUID("/proc/self/status")
+	if !ok || uid != os.Getuid() {
+		t.Fatalf("procUID = %d, %v", uid, ok)
 	}
 }
