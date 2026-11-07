@@ -1,4 +1,4 @@
-//go:build isolation
+//go:build isolation && linux
 
 package isolated
 
@@ -170,10 +170,12 @@ func TestLiveScratchHomeAndDiskWorkspace(t *testing.T) {
 
 // TestLiveStaleCleanupAfterCrash abandons a running grant without revoke,
 // as a crashed daemon would, then constructs a new host on the same work
-// directory. The new host must release the sandbox and mounts.
+// directory. The new host must release the grant's processes, mounts,
+// jails and grant links.
 func TestLiveStaleCleanupAfterCrash(t *testing.T) {
 	for _, class := range liveClasses(t) {
-		if class != execenv.IsolationUserKernel {
+		if class == execenv.IsolationVM {
+			t.Run(string(class), liveVMStaleCleanup)
 			continue
 		}
 		t.Run(string(class), func(t *testing.T) {
@@ -270,5 +272,38 @@ func openEventually(t *testing.T, env execenv.Env, path string) []byte {
 			t.Fatalf("Open(%s) never returned content: %v", path, err)
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func liveVMStaleCleanup(t *testing.T) {
+	workDir := t.TempDir()
+	first := liveHost(t, execenv.IsolationVM, 1, workDir)
+	if _, err := first.Ensure(t.Context(), execenv.Spec{ID: "grant-1", Image: "default"}); err != nil {
+		t.Fatal(err)
+	}
+	// A crash: the jailed monitor keeps running, the lock is released.
+	_ = first.lock.Close()
+	second := liveHost(t, execenv.IsolationVM, 1, workDir)
+	t.Cleanup(func() { revokeAll(second) })
+	pool := newJailUIDs(0)
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if uid, ok := procUID(filepath.Join("/proc", entry.Name(), "status")); ok && pool.contains(uid) {
+			t.Fatalf("jailed process %s survived restart", entry.Name())
+		}
+	}
+	if _, err := os.Stat(filepath.Join(workDir, jailsDir)); err == nil {
+		if left, _ := os.ReadDir(filepath.Join(workDir, jailsDir)); len(left) != 0 {
+			t.Fatalf("stale jails survived: %v", left)
+		}
+	}
+	links, _ := os.ReadDir("/sys/class/net")
+	for _, link := range links {
+		if _, err := os.Stat("/sys/class/net/" + link.Name() + "/tun_flags"); err == nil && staleGrantDev(link.Name()) {
+			t.Fatalf("stale grant tap %s survived restart", link.Name())
+		}
 	}
 }

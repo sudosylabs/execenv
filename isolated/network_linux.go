@@ -119,38 +119,63 @@ func guardAttach(att netAttach, allow []net.IPNet, cleanup []func()) (*netAttach
 	return &att, nil
 }
 
-// cleanSandboxNetworks removes grant namespaces, their veth pairs and
-// filters left by a crashed daemon. NAT rules depend on the operator
-// allowlist and are removed for the current one.
-func cleanSandboxNetworks(allowList []string) {
+// cleanSandboxNetworks removes grant network namespaces (and with them
+// the namespace end of each veth pair) and the host ends left by a crashed
+// daemon. Filters and NAT are swept by cleanStaleLinks.
+func cleanSandboxNetworks() {
 	entries, err := os.ReadDir("/var/run/netns")
 	if err != nil {
 		return
 	}
-	allow, _ := parseAllow(allowList)
 	for _, entry := range entries {
 		name := entry.Name()
 		if !strings.HasPrefix(name, sandboxNetNSPrefix) {
 			continue
 		}
-		dev := strings.TrimPrefix(name, sandboxNetNSPrefix)
-		var cid uint32
-		if _, err := fmt.Sscanf(dev, "e%08x", &cid); err == nil && len(dev) == 9 {
-			_ = removeFilter(dev, filterChain(dev))
-			host := fmt.Sprintf("169.254.%d.1/30", byte(cid%200+20))
-			_ = removeNAT(host, allow)
+		if dev := strings.TrimPrefix(name, sandboxNetNSPrefix); staleGrantDev(dev) {
 			_ = runIP("link", "delete", dev)
 		}
 		_ = runIP("netns", "delete", name)
 	}
 }
 
-func filterChain(dev string) string {
-	name := "E" + strings.TrimPrefix(dev, "e")
-	if len(name) > 28 {
-		return name[:28]
+// cleanStaleLinks removes what a crashed daemon's allowlist grants left on
+// the host: grant taps, per-grant filter chains with their FORWARD and
+// INPUT jumps, and grant MASQUERADE rules. NAT rules are found by listing,
+// not rebuilt from configuration, so they are removed even if the operator
+// allowlist changed across the restart. Only names and rules in exactly the
+// shape this package creates are touched. Failures are ignored: a missing
+// tool or rule leaves nothing to clean.
+func cleanStaleLinks() {
+	devs := map[string]bool{}
+	if entries, err := os.ReadDir("/sys/class/net"); err == nil {
+		for _, entry := range entries {
+			name := entry.Name()
+			// tun_flags marks a tun/tap device; a sandbox's host veth end is
+			// removed with its namespace instead.
+			if _, err := os.Stat("/sys/class/net/" + name + "/tun_flags"); err == nil && staleGrantDev(name) {
+				devs[name] = true
+			}
+		}
 	}
-	return name
+	if out, err := exec.Command("iptables", "-S").Output(); err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			if dev, ok := staleGrantChain(line); ok {
+				_ = removeFilter(dev, filterChain(dev))
+			}
+		}
+	}
+	if out, err := exec.Command("iptables", "-t", "nat", "-S", "POSTROUTING").Output(); err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			if args, ok := staleGrantNAT(line); ok {
+				_ = runIPTables(args...)
+			}
+		}
+	}
+	for dev := range devs {
+		_ = removeFilter(dev, filterChain(dev))
+		_ = runIP("link", "delete", dev)
+	}
 }
 
 func installFilter(iface, chain string, allow []net.IPNet) error {

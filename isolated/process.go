@@ -190,12 +190,14 @@ func (l *processLauncher) Start(ctx context.Context, req startRequest) (instance
 
 // cleanStale reclaims what a crashed daemon left: jailed monitors (which
 // the parent-death signal no longer reaches once the supervisor dropped
-// privileges), then their jails.
+// privileges), their taps, filters and NAT, then their jails.
 func (l *processLauncher) cleanStale() error {
 	if runtime.GOOS != "linux" {
 		return nil
 	}
 	killJailed(l.uids)
+	// The monitors are gone, so their taps can be deleted.
+	cleanStaleLinks()
 	if err := unmountUnder(l.jailBase()); err != nil {
 		return err
 	}

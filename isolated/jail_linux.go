@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -59,11 +60,25 @@ func cgroupV2() bool {
 // supervisor changes credentials before exec, which clears the parent-death
 // signal, so a monitor can outlive a crashed daemon; this is how a restarted
 // host reclaims it.
+//
+// It waits (bounded) for them to exit so their taps and jail files are no
+// longer held open when cleanup continues.
 func killJailed(pool *jailUIDs) {
+	deadline := time.Now().Add(3 * time.Second)
+	for signalJailed(pool) > 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// signalJailed SIGKILLs every live process in the jail range and returns
+// how many it found. Zombies are skipped: they hold no resources and are
+// reaped by their parent.
+func signalJailed(pool *jailUIDs) int {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
-		return
+		return 0
 	}
+	found := 0
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())
 		if err != nil {
@@ -71,9 +86,11 @@ func killJailed(pool *jailUIDs) {
 		}
 		uid, ok := procUID(filepath.Join("/proc", entry.Name(), "status"))
 		if ok && pool.contains(uid) {
+			found++
 			_ = syscall.Kill(pid, syscall.SIGKILL)
 		}
 	}
+	return found
 }
 
 func procUID(status string) (int, bool) {
@@ -85,6 +102,9 @@ func procUID(status string) (int, bool) {
 	scan := bufio.NewScanner(f)
 	for scan.Scan() {
 		line := scan.Text()
+		if strings.HasPrefix(line, "State:") && strings.Contains(line, "Z (zombie)") {
+			return 0, false
+		}
 		if !strings.HasPrefix(line, "Uid:") {
 			continue
 		}

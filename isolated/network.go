@@ -3,6 +3,9 @@ package isolated
 import (
 	"fmt"
 	"net"
+	"regexp"
+	"strconv"
+	"strings"
 
 	"github.com/sudosylabs/execenv"
 )
@@ -91,4 +94,53 @@ func planAttach(id execenv.ID, allow []net.IPNet) netAttach {
 		Prefix:  30,
 		Allow:   allow,
 	}
+}
+
+// Stale network state left by a crashed daemon is recognised only by the
+// exact names and rules planAttach and guardAttach produce, so cleanup never
+// touches an interface, chain or NAT rule it did not create.
+var (
+	grantDevPattern   = regexp.MustCompile(`^e[0-9a-f]{8}$`)
+	grantChainPattern = regexp.MustCompile(`^-N (E[0-9a-f]{8})$`)
+	grantNATPattern   = regexp.MustCompile(`^-A POSTROUTING -s 169\.254\.(\d{1,3})\.0/30 -d \S+ -j MASQUERADE$`)
+)
+
+// filterChain names the per-grant filter chain for a grant device.
+func filterChain(dev string) string {
+	name := "E" + strings.TrimPrefix(dev, "e")
+	if len(name) > 28 {
+		return name[:28]
+	}
+	return name
+}
+
+// staleGrantDev reports whether an interface name is one planAttach makes.
+func staleGrantDev(name string) bool { return grantDevPattern.MatchString(name) }
+
+// staleGrantChain extracts the grant device of a filter chain declared in
+// `iptables -S` output.
+func staleGrantChain(line string) (string, bool) {
+	m := grantChainPattern.FindStringSubmatch(strings.TrimSpace(line))
+	if m == nil {
+		return "", false
+	}
+	return "e" + m[1][1:], true
+}
+
+// staleGrantNAT turns one `iptables -t nat -S POSTROUTING` line for a grant
+// link into the arguments that delete it. Grant links use 169.254.N.0/30
+// with N in planAttach's 20..219 range.
+func staleGrantNAT(line string) ([]string, bool) {
+	line = strings.TrimSpace(line)
+	m := grantNATPattern.FindStringSubmatch(line)
+	if m == nil {
+		return nil, false
+	}
+	octet, err := strconv.Atoi(m[1])
+	if err != nil || octet < 20 || octet > 219 {
+		return nil, false
+	}
+	args := strings.Fields(line)
+	args[0] = "-D"
+	return append([]string{"-t", "nat"}, args...), true
 }

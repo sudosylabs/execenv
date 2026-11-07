@@ -218,7 +218,7 @@ func (l *sandboxLauncher) releaseRoot(rootfs string) error {
 
 // cleanStale releases what a crashed daemon left: sandboxes under this
 // host's private state root, then host mounts under the work directory,
-// then grant network namespaces.
+// then grant network namespaces, filters and NAT.
 func (l *sandboxLauncher) cleanStale() error {
 	if runtime.GOOS != "linux" {
 		return nil
@@ -236,7 +236,8 @@ func (l *sandboxLauncher) cleanStale() error {
 	if err := unmountUnder(l.cfg.WorkDir); err != nil {
 		return err
 	}
-	cleanSandboxNetworks(l.cfg.Allow)
+	cleanSandboxNetworks()
+	cleanStaleLinks()
 	return os.RemoveAll(filepath.Join(l.cfg.WorkDir, sandboxImages))
 }
 

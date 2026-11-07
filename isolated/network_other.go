@@ -12,4 +12,6 @@ func setupSandboxAllowlist(execenv.ID, []string) (*netAttach, error) {
 	return nil, execenv.ErrUnavailable
 }
 
-func cleanSandboxNetworks([]string) {}
+func cleanSandboxNetworks() {}
+
+func cleanStaleLinks() {}
