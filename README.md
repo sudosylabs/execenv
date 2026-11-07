@@ -10,7 +10,7 @@
 
 <p align="center">
   Check readiness, ensure a grant, project a workspace tree, attach one
-  PTY, freeze and thaw I/O, and revoke. Isolation stays behind that
+  PTY, freeze and thaw execution, and revoke. Isolation stays behind that
   contract.
 </p>
 
@@ -45,7 +45,10 @@ and attach a shell.
 go get github.com/sudosylabs/execenv@v1.2.3
 ```
 
-Pin the same tag the host binaries were built from. A `v1.2.3` client
+Pin the same tag the host binaries were built from. The remote protocol also
+requires its exact wire revision, and the host verifies the guest-helper protocol
+before admitting an environment. Older helpers cannot advertise the new
+reversible control semantics. A `v1.2.3` client
 refuses to occupy a host stamped `v1.4.0`.
 
 Import the occupancy API and, in production, the remote dialer:
@@ -158,7 +161,8 @@ A non-loopback insecure address is rejected.
 
 `execenv.RequireIsolated(host)` fails closed when the adapter is not
 isolated. Use it in production composition so the in-memory host cannot
-be selected by accident.
+be selected by accident. Both isolation classes (below) pass it; read
+`Report.Isolation` if your policy needs a particular one.
 
 ### Ready
 
@@ -177,6 +181,18 @@ the host offers. `Slots` is how many more grants it will take. `Release` is
 the process stamp (display only; a mismatch already failed at dial). One
 client talks to one host. If you have several machines, you choose among
 them.
+
+`Isolation` is the boundary class the host provides:
+
+| Value | Boundary |
+| --- | --- |
+| `execenv.IsolationVM` (`"vm"`) | each grant is a hardware-virtualized microVM with its own guest kernel |
+| `execenv.IsolationUserKernel` (`"user-kernel"`) | each grant runs against a user-space kernel that intercepts its system calls; no virtualization hardware, weaker than `vm` |
+| `execenv.IsolationNone` (`"none"`) | in-memory adapter; tests only |
+
+An empty value is an older host that did not report it. execenv does not
+rank classes for you; apply your own policy (for example, refuse
+high-stakes grants on `user-kernel` hosts).
 
 ### Ensure
 
@@ -238,8 +254,9 @@ equality and never parses it.
 - `Data: []byte{}` is an empty file.
 - Directories ignore `Data` and require an empty `Version`.
 
-After reconnect or thaw, replace from **your** last acknowledged
-snapshot, not from unacked guest bytes.
+After reconstruction, replace from **your** last acknowledged snapshot.
+Freeze/thaw preserves the existing projection and terminal; neither requires
+a replacement snapshot or a new attachment.
 
 A successful `ReplaceTree` starts a new Watch generation. Any live
 observation fails with `ErrLagged`, and cursors from the replaced projection
@@ -268,7 +285,71 @@ err := env.Apply(ctx, execenv.Batch{Mutations: []execenv.Mutation{
 ```
 
 Empty `Expected` means apply unconditionally. `OpMove` uses `From` (old
-path) and `Path` (new path). `OpDelete` removes a path.
+path) and `Path` (new path), preserving every descendant and its version. `OpDelete`
+removes a path; deleting a nonempty directory requires `Recursive: true`.
+Incremental projection advances observation baselines only for its own changed
+paths, preserving unrelated guest changes for Watch.
+
+### Fenced journal projection and semantic observations
+
+`ProjectionEnv` extends `ControlledEnv` with `UploadProjectionContent`,
+`InitializeProjection`, and `ApplyProjection`. Check `Capabilities.JournalProjection`
+before using it. The memory adapter and its remote transport currently advertise
+this capability. The isolated adapter advertises it only when `RequireJournal` is selected
+(`require_journal` in the daemon configuration). Ensure then refuses a guest
+whose actual protocol handshake lacks the native workload implementation. Leave
+this option disabled until the installed guest artifacts have been certified. Older guest helpers fail the version handshake.
+
+Initialize once before opening the first terminal. Every subsequent Apply binds
+an exact grant/epoch/revision fence, mutation ID, from/through journal cursors,
+expected host cursor, stable entry IDs, kinds, and opaque content versions.
+Batches contain 1–128 consecutive mutations and at most 256 KiB of metadata.
+File contents travel separately as immutable, scoped SHA-256 references.
+Directory moves preserve all descendant identities and versions. Exact retries
+return their original receipt; changing a used mutation ID conflicts. The epoch
+retains at most 65,536 receipts and refuses additional mutations rather than
+forgetting retry bindings. Legacy Apply, ReplaceTree and Watch cannot bypass an
+initialized journal.
+
+Uploads use existing 10-MiB file and 50-MiB tree limits. Unconsumed content expires
+after five minutes, with at most 512 handles per environment. The remote wire
+uses 64-KiB chunks and four active upload slots per listener; incomplete uploads
+expire after 30 idle seconds and are released on disconnect. References cannot
+name paths, URLs, credentials, another environment or observation content.
+
+`SemanticEnv` adds `Observe`, `OpenObservationContent`, and
+`AcknowledgeObservations`; discover it through `Capabilities.SemanticObservations`.
+Memory, its remote transport, and isolated hosts configured with the required
+native journal support it. Each ordered event binds its
+original projected cursor/version, epoch-stable node identity and immutable bytes.
+Directory moves are single subtree operations; parent creates precede children,
+and recursive directory deletion is explicit. Download streams use 64-KiB chunks,
+four active listener-wide slots, immutable-reference verification, and idle expiry.
+
+After accepting a guest event durably, call `ConfirmObservationProjection`
+with its host sequence and exact resulting journal mutation before acknowledging
+it. The host binds the original identity/topology/content digest to that outcome.
+A later consecutive Apply advances the baseline while suppressing only that known
+echo, preserving any later guest writes. A confirmation retry tolerates a new
+upload handle for the same immutable content; changing the outcome conflicts.
+Rejected/ignored outcomes need no projection confirmation. Acknowledge only after
+recording the outcome durably. Acknowledgement releases retained content; it does
+not itself imply acceptance or advance projection versions. Unacknowledged retention is bounded to 4096 events and 50 MiB. Overflow
+reports `ErrLagged` without discarding the retained prefix. A cursor before the
+acknowledged prefix also returns `ErrLagged`.
+
+The native guest work uses a kernel-acknowledged workload barrier and pinned
+filesystem identities, not content hashes, for semantic observations. The agent's
+`-contain-workload` option requires a dedicated Linux guest with a usable unified
+workload hierarchy. It launches unprivileged processes inside that hierarchy before
+execution and prevents privilege escalation. Uncertain filesystem commits remain
+contained. Rebaked images start a PID-1 child reaper, require the kernel workload hierarchy,
+and run the contained agent. Existing catalog images are not upgraded by changing
+the host configuration. Run `make certify` with the intended kernel/rootfs on real
+isolation hardware before enabling `require_journal`; this includes TLS remote
+journal projection, immutable guest events, accepted-outcome echoes, semantic
+directory moves and preservation of the same shell/PTY through save and containment.
+Portable unit tests and Linux build containers are not that certification.
 
 ### Watch and Open
 
@@ -322,6 +403,14 @@ for {
 }
 ```
 
+The guest watches `/workspace` with kernel file notifications, coalesces
+bursts, and rescans only metadata (size, times, inode) before hashing a
+changed file; a slow safety rescan catches anything a notification missed.
+Tool caches, virtual environments and dotfiles written through `$HOME` are
+not in `/workspace` (see Attach) and never appear here. A project-local
+`venv` or `node_modules` inside `/workspace` is still observed and can
+exceed the 500-entry cap, which reports `ErrLagged`.
+
 The host retains the most recent 64 guest events. A non-empty cursor resumes
 strictly after its event. An unknown, replaced, or evicted cursor returns
 `ErrLagged`; resynchronize with `ReplaceTree`. After a non-nil `Next` error
@@ -349,21 +438,82 @@ _ = term.Resize(ctx, execenv.Window{Cols: 80, Rows: 24})
 Zero Cols or Rows means 80×24. A second `Attach` returns `ErrBusy` until
 `Close`. Close is hangup (`ErrClosed`); the grant stays.
 
+The shell starts in `/workspace` (`execenv.GuestWorkspace`), the projected
+tree. Its `$HOME` is `/run/execenv/home` (`execenv.GuestHome`), guest-local
+scratch outside the tree: it is not projected, watched, or harvested, and
+it is discarded with the grant. Both live on the grant's writable disk,
+not in guest memory.
+
 ### Freeze and thaw
 
 ```go
 if err := env.Freeze(ctx); err != nil {
-	return err
+    return err
 }
-// tree and PTY calls fail with ErrFrozen; the occupancy remains
+// New I/O is blocked. The existing PTY, process, and tree are preserved.
 if err := env.Thaw(ctx); err != nil {
-	return err
+    return err
 }
-if err := env.ReplaceTree(ctx, lastAcknowledged); err != nil {
-	return err
-}
-term, err := env.Attach(ctx, execenv.Window{})
+// Continue using the same terminal. Another Attach returns ErrBusy.
 ```
+
+The isolated host acknowledges Freeze only after every execution-process thread
+is confirmed stopped (a `vm` host checks every monitor thread; a `user-kernel`
+host waits until the sandbox runtime reports the sandbox paused). A sent
+signal or request alone is insufficient. Agent I/O gating is
+separate from host execution suspension. A failed Thaw keeps the local gate
+closed and attempts to pause the instance again. Any error requires reconciliation;
+it is never evidence that the requested state was reached.
+
+### Ordered control
+
+Adapters also implement `execenv.ControlledEnv`. `Epoch()` identifies this exact
+occupancy and survives reconnect/re-Ensure. Reconstruction generates a fresh
+epoch; the host never recovers an old epoch without its highest fence. Production
+host process death kills its execution children; restart does not adopt them.
+
+```go
+controlled, ok := env.(execenv.ControlledEnv)
+if !ok {
+    return execenv.ErrUnavailable
+}
+request := execenv.ControlRequest{
+    Fence: execenv.ProjectionFence{
+        ExecutionGrantID: env.ID(),
+        EnvironmentEpoch: controlled.Epoch(),
+        FenceRevision: 7,
+    },
+    State: execenv.ControlFrozen,
+}
+receipt, err := controlled.Control(ctx, request)
+if err != nil {
+    return err
+}
+// Match receipt.Fence to the caller's current durable authorization before
+// acknowledging the effect or opening any caller-side gate.
+_ = receipt
+```
+
+The fence contains only the opaque grant ID, epoch, and positive revision
+(maximum 2^53−1). Its meaning belongs to the caller. The host records the highest
+intent before attempting an effect. Older requests and reuse of a revision with
+a different state conflict. Exact successful retries return the same receipt;
+exact failed retries attempt the effect again. `ControlStatus` reports the highest
+intent and whether its effect was confirmed, including after a lost response.
+Before the first fenced command its revision is zero.
+
+Control accepts `running`, `frozen`, and `revoked`. Revocation is terminal even
+if destruction initially fails. Failed destruction retains the occupancy's slot
+until a successful retry. Once a fenced command is accepted, unfenced Freeze and
+Thaw conflict. Administrative `Host.Revoke(id)` still destroys the current grant;
+`Env.Revoke` targets only the captured epoch and cannot destroy a replacement.
+Remote environment requests bind their captured epoch, while PTY frames bind
+one connection's unique stream identity.
+
+This control extension does not certify the stronger incremental projection or
+semantic observation protocol. The existing Apply and Watch APIs still
+have their documented limits; callers must not infer new projection capabilities
+from support for ordered control.
 
 ### Revoke
 
@@ -430,7 +580,9 @@ Do not log tokens, tree bodies, or PTY octets.
 | Watch cursor | 128 bytes |
 | Terminals per environment | 1 |
 
-The workspace inside the guest is `/workspace`.
+The workspace inside the guest is `/workspace`; `$HOME` is
+`/run/execenv/home`. Both share the grant's workspace disk (`disk_bytes`,
+default 2 GiB).
 
 ---
 
@@ -440,17 +592,71 @@ This section is for the Linux machine that will occupy grants. It does
 not use Go. You install binaries and catalog disks, then give the
 application the listen address, token, and certificate.
 
+### Choose an isolation class
+
+The operator chooses the boundary in Host configuration (`isolation`) or
+with `execenvctl bootstrap --isolation`. execenv never picks one for you
+and never falls back from one to the other.
+
+- **`vm` (default, recommended).** Each grant is a microVM run by the
+  runtime and supervisor pair bootstrap installs. Use it whenever the
+  machine has usable KVM. A `vm`
+  host without a usable `/dev/kvm` fails closed: bootstrap writes nothing
+  and `Ready` reports unusable. It does not become a `user-kernel` host.
+- **`user-kernel`.** Each grant is a gVisor sandbox run directly with
+  `runsc` and an OCI bundle. Docker and containerd are not used. It needs
+  no virtualization hardware, so institutions can self-host on any Linux
+  machine, including cloud VMs without nested virtualization.
+
+Be honest with yourself about the difference. In `vm`, a guest that fully
+compromises its own kernel still has to escape a hypervisor. In
+`user-kernel`, the guest talks to gVisor's Sentry, a user-space kernel
+written in Go, which runs on the host kernel inside namespaces and seccomp
+filters. That is a much stronger boundary than an ordinary container, but
+a bug in the Sentry, the gofer, or the host kernel's reduced syscall
+surface is one step from the host instead of two. Applications can read
+`Report.Isolation` and apply their own policy.
+
+What stays the same: the one catalog (the same baked `rootfs.ext4`), the
+`/workspace` projection, one PTY, freeze/thaw, revoke, `none` and
+allowlist networks, CPU and memory limits, slots, and stale cleanup after
+a daemon crash. What differs:
+
+| | `vm` | `user-kernel` |
+| --- | --- | --- |
+| Boundary | hypervisor + guest kernel | user-space kernel + namespaces + seccomp |
+| Freeze | monitor threads stopped, confirmed in `/proc` | `runsc pause`, confirmed by `runsc state` |
+| Workspace disk | guest mounts it; the host never parses it | host loop-mounts it and binds it in |
+| Catalog rootfs | read-only drive | host loop-mounts it read-only once per image |
+| Journal (`require_journal`) | supported once certified | refused by configuration |
+
 ### What the machine needs
 
+Both classes:
+
 - Linux on **amd64**
-- A usable isolation device at `/dev/kvm` (readable and writable by the
-  host process, typically the `kvm` group)
 - Root, or equivalent, for the default layout
+- `mkfs.ext4` (e2fsprogs): every grant gets a sparse ext4 workspace disk
+- `ip` and `iptables` if you configure an allowlist
 - Network reachability from the application on port **8443** (or the
   listen address you choose)
 
-Missing isolation hardware fails closed. There is **no container
-fallback**. Docker is not used on this machine and is not a substitute.
+`vm` additionally:
+
+- A usable isolation device at `/dev/kvm` (readable and writable by the
+  host process, typically the `kvm` group)
+- The microVM runtime and supervisor pair (bootstrap installs them)
+
+`user-kernel` additionally:
+
+- `runsc`, installed and verified by you. Bootstrap copies it into the
+  prefix but never downloads it.
+- The host kernel's loop device and ext4 support, and `mount` from
+  util-linux (`mount -o loop`)
+- cgroup v2 at `/sys/fs/cgroup`, so per-grant CPU and memory limits apply
+
+Missing prerequisites fail closed for either class. Docker is not used on
+this machine and is not a substitute.
 
 **Use a dedicated Linux machine, not a nested VM, when you can.** The
 isolation device is itself a virtual machine monitor. Running that inside
@@ -464,7 +670,42 @@ WSL2, Docker Desktop’s Linux VM, many CI runners) often means:
 Bare metal, or a provider that exposes KVM to the guest as a first-class
 device, is the production path. A “nested Linux” lab can work for
 exploration if `/dev/kvm` opens, but it is the first thing to blame when
-Ready is unusable or grants fail to start.
+Ready is unusable or grants fail to start. If you cannot get KVM, choose
+`user-kernel` deliberately rather than running `vm` on unreliable nested
+virtualization.
+
+### Grant resources
+
+These Host configuration keys apply to every grant:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `cpu_millis` | 1000 | vCPUs (`vm`, rounded down to whole CPUs) or CPU quota (`user-kernel`) |
+| `memory_bytes` | 128 MiB | guest memory (`vm`) or cgroup memory limit (`user-kernel`) |
+| `disk_bytes` | 2 GiB | sparse workspace disk; minimum 64 MiB |
+| `mkfs` | `mkfs.ext4` on `PATH` | formatter for workspace disks |
+| `jail_uid_base` | 2000000000 | `vm` only: first of 65536 host uids reserved for jailed microVM monitors |
+
+On `vm` hosts each grant's monitor runs in its own jail under
+`<state>/work/jails`, as its own unprivileged uid from the
+`jail_uid_base` range, never as root. The kernel and rootfs are hard-linked
+into the jail (read-only bind mounts when they sit on another filesystem),
+so catalog files must stay readable by other users (the installed mode is
+`0644`). Reserve the uid range for execenv: a restarted host kills every
+process running under it.
+
+The workspace disk is a sparse file in the grant's directory, so only
+written blocks use host storage. It is created when the grant starts and
+removed on revoke and when a restarted daemon clears stale grants. The
+guest does not reclaim space from deleted files during a grant.
+
+On `vm` hosts each microVM also gets a balloon device with free page
+reporting and `deflate_on_oom`, so pages the guest frees go back to the
+host and a grant's resident memory follows what it actually uses. This
+needs the guest kernel to have `CONFIG_VIRTIO_BALLOON`,
+`CONFIG_MEMORY_BALLOON` and `CONFIG_PAGE_REPORTING` built in; without
+them the device is inert and grants behave as before. CI checks a guest
+kernel's `.config` with `scripts/check-kernel-config`.
 
 ### Install the operator tool
 
@@ -496,27 +737,40 @@ Defaults:
 | `--state` | `/var/lib/execenv` |
 | `--listen` | `0.0.0.0:8443` |
 | `--slots` | `8` |
-| `--device` | `/dev/kvm` |
+| `--isolation` | `vm` |
+| `--device` | `/dev/kvm` (`vm` only) |
+| `--sandbox-runtime` | `runsc` on `PATH` (`user-kernel` only) |
+| `--mkfs` | `mkfs.ext4` on `PATH` |
 
 What bootstrap does, in order:
 
-1. Opens the isolation device. If that fails, it stops and writes
-   nothing. The error says the device is missing or not usable, and that
-   there is no container fallback.
-2. Creates the bin, state, and config directories.
-3. Installs the `execenv` daemon binary (from this tag, or `--execenv`
+1. For `vm`, opens the isolation device. If that fails, it stops and
+   writes nothing. The error says the device is missing or not usable,
+   and that there is no container fallback. `user-kernel` skips this
+   step; it is only used when you pass `--isolation user-kernel`.
+2. Finds `mkfs.ext4`, or stops and writes nothing.
+3. Creates the bin, state, and config directories.
+4. Installs the `execenv` daemon binary (from this tag, or `--execenv`
    for an air-gapped file).
-4. Installs the runtime and supervisor pair, fetching them if they are
-   not already on `PATH` (unless `--no-fetch`).
-5. Writes Host configuration and TLS files (see below).
-6. Writes `execenv.service` and enables it (unless `--no-start`).
+5. For `vm`, installs the runtime and supervisor pair, fetching them if
+   they are not already on `PATH` (unless `--no-fetch`). For
+   `user-kernel`, installs your `runsc`.
+6. Writes Host configuration and TLS files (see below).
+7. Writes `execenv.service` and enables it (unless `--no-start`).
+
+```sh
+# A machine without KVM, chosen deliberately:
+sudo execenvctl bootstrap --isolation user-kernel --sandbox-runtime /usr/local/bin/runsc
+```
 
 The catalog is still empty. The host cannot occupy grants until you
 install at least one Image.
 
 ```sh
 sudo execenvctl status
+# isolation=vm
 # device=ok
+# mkfs=ok
 # unit=active
 # installed=
 # release=v1.2.3
@@ -587,7 +841,17 @@ reloads the daemon.
 Ids you can install when the release includes them: `python`, `node`,
 `go`, `java`. `default` is a large universal-class disk, often published
 onto the same tag later. `fixture` is a tiny disk for live isolation
-tests.
+tests. The same disks serve `vm` and `user-kernel` hosts.
+
+Prefer the slim per-language ids for exams and other high-concurrency use.
+Every grant reads its image from the host page cache, and a slim image
+keeps that cache, boot time and install size small. `default` is several
+gigabytes of toolchains most grants never touch; install it only for
+grants that genuinely need a multi-language environment.
+
+Disks baked before the per-grant workspace disk keep the old guest init:
+their `/workspace` stays in guest memory and doubles as `$HOME`. Reinstall
+(or `execenvctl upgrade`) to get the current guest init.
 
 ```sh
 sudo execenvctl remove python   # does not touch the token
@@ -631,7 +895,9 @@ make build    # stamps Release, Build, and Tag when HEAD is an exact git tag
 Pull requests run `make check`. Catalog-related pull requests smoke-bake
 `fixture`. Pushing `v*` publishes linux/amd64 binaries and language
 disks. Isolation hardware tests are opt-in (`make isolation`,
-`make certify`).
+`make certify`). They default to `vm`; set
+`EXECENV_ISOLATION_CLASSES=vm,user-kernel` (isolation) or
+`EXECENV_ISOLATION_CLASS=user-kernel` (certify) to cover the sandbox.
 
 Bake (`scripts/bake`) is CI-only. It is not an `execenv` command and is
 not installed on the grant host.
