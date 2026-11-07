@@ -18,23 +18,24 @@ import (
 // Isolation device and supervisor process names as the probe looks them up.
 // Public execenv types stay hypervisor-neutral; this operator tool cannot.
 const (
-	defaultDevice     = "/dev/kvm"
-	runtimeName       = "firecracker"
-	supervisorName    = "jailer"
-	runtimeVersion    = "v1.16.1"
-	defaultListen     = "0.0.0.0:8443"
-	defaultSlots      = 8
-	defaultPrefix     = "/usr/local"
-	defaultSysconf    = "/etc/execenv"
-	defaultState      = "/var/lib/execenv"
-	hostConfigName    = "host.json"
-	unitName          = "execenv.service"
-	execenvName       = "execenv"
-	networkNone       = "none"
-	securityTLS       = "tls"
-	securityLocal     = "insecure_local"
-	adapterIsolated   = "isolated"
-	defaultGrace      = "30s"
+	defaultDevice   = "/dev/kvm"
+	runtimeName     = "firecracker"
+	supervisorName  = "jailer"
+	runtimeVersion  = "v1.16.1"
+	defaultListen   = "0.0.0.0:8443"
+	defaultSlots    = 8
+	defaultPrefix   = "/usr/local"
+	defaultSysconf  = "/etc/execenv"
+	defaultState    = "/var/lib/execenv"
+	hostConfigName  = "host.json"
+	unitName        = "execenv.service"
+	execenvName     = "execenv"
+	networkNone     = "none"
+	securityTLS     = "tls"
+	securityLocal   = "insecure_local"
+	adapterIsolated = "isolated"
+	defaultGrace    = "30s"
+	mkfsName        = "mkfs.ext4"
 )
 
 // runtimeArchiveBase is the operator-time download for missing supervisor
@@ -44,13 +45,16 @@ var runtimeArchiveBase = "https://github.com/firecracker-microvm/firecracker/rel
 // Options is a headless bootstrap. Empty path fields use system defaults
 // and typically need root. Prefix is for tests and non-root labs.
 type Options struct {
-	Prefix   string
-	Sysconf  string
-	State    string
-	Device   string
-	Listen   string
-	Slots    int
-	Execenv    string
+	Prefix  string
+	Sysconf string
+	State   string
+	Device  string
+	Listen  string
+	Slots   int
+	Execenv string
+	// Mkfs is the ext4 formatter for workspace disks. Empty looks it up on
+	// PATH.
+	Mkfs       string
 	NoStart    bool
 	NoFetch    bool
 	Insecure   bool
@@ -94,7 +98,7 @@ func (o Options) resolved() Options {
 	return out
 }
 
-func (o Options) binDir() string    { return filepath.Join(o.Prefix, "bin") }
+func (o Options) binDir() string     { return filepath.Join(o.Prefix, "bin") }
 func (o Options) configPath() string { return filepath.Join(o.Sysconf, hostConfigName) }
 func (o Options) workDir() string    { return filepath.Join(o.State, "work") }
 func (o Options) unitDir() string    { return filepath.Join(filepath.Dir(o.Sysconf), "systemd", "system") }
@@ -117,6 +121,10 @@ func Bootstrap(opts Options, stdout io.Writer) error {
 	if err := checkDevice(opts.Device); err != nil {
 		return err
 	}
+	mkfs, err := findMkfs(opts)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(opts.binDir(), 0o755); err != nil {
 		return wrap("bootstrap", err)
 	}
@@ -135,7 +143,7 @@ func Bootstrap(opts Options, stdout io.Writer) error {
 	if err := installSupervisors(opts); err != nil {
 		return err
 	}
-	if err := writeHostConfig(opts); err != nil {
+	if err := writeHostConfig(opts, mkfs); err != nil {
 		return err
 	}
 	if err := writeUnit(opts); err != nil {
@@ -151,9 +159,24 @@ func Bootstrap(opts Options, stdout io.Writer) error {
 		fmt.Fprintln(stdout, "device=ok")
 		fmt.Fprintln(stdout, "token=written to config")
 		fmt.Fprintf(stdout, "hash=%s\n", hashSummary(opts))
-		fmt.Fprintln(stdout, "ready=device+runtime+supervisor")
+		fmt.Fprintln(stdout, "ready=device+runtime+supervisor+mkfs")
 	}
 	return nil
+}
+
+// findMkfs locates the ext4 formatter every grant's workspace disk needs.
+func findMkfs(opts Options) (string, error) {
+	if opts.Mkfs != "" {
+		if executable(opts.Mkfs) {
+			return opts.Mkfs, nil
+		}
+		return "", fmt.Errorf("%s is not executable; workspace disks need %s (e2fsprogs)", opts.Mkfs, mkfsName)
+	}
+	found, err := exec.LookPath(mkfsName)
+	if err != nil {
+		return "", fmt.Errorf("%s is missing; workspace disks need it (install e2fsprogs)", mkfsName)
+	}
+	return found, nil
 }
 
 func checkDevice(path string) error {
@@ -277,7 +300,7 @@ func extractNamed(tgz, dir, name, dest string) error {
 	return installFile(found, dest, 0o755)
 }
 
-func writeHostConfig(opts Options) error {
+func writeHostConfig(opts Options, mkfs string) error {
 	existing, err := loadHost(opts.configPath())
 	first := errors.Is(err, os.ErrNotExist)
 	if err != nil && !first {
@@ -318,6 +341,7 @@ func writeHostConfig(opts Options) error {
 	doc.TLSKey = keyPath
 	doc.WorkDir = opts.workDir()
 	doc.Device = opts.Device
+	doc.Mkfs = mkfs
 	doc.Runtime = opts.runtimePath()
 	doc.Supervisor = opts.supervisorPath()
 	doc.Slots = opts.Slots

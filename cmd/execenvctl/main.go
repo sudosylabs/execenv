@@ -62,6 +62,7 @@ func newBootstrap(opts *ctl.Options) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&opts.Device, "device", opts.Device, "isolation device path")
+	cmd.Flags().StringVar(&opts.Mkfs, "mkfs", "", "mkfs.ext4 used for per-grant workspace disks (default: PATH)")
 	cmd.Flags().StringVar(&opts.Listen, "listen", opts.Listen, "daemon listen address")
 	cmd.Flags().IntVar(&opts.Slots, "slots", opts.Slots, "maximum concurrent grants")
 	cmd.Flags().StringVar(&opts.Execenv, "execenv", opts.Execenv, "linux execenv binary to install")

@@ -45,6 +45,13 @@ type Config struct {
 	Supervisor     string
 	CPUMillis      int
 	MemoryBytes    int64
+	// DiskBytes sizes each grant's sparse writable workspace disk. Zero
+	// uses 2 GiB. The disk holds the projected tree and the shell's scratch
+	// home; it is removed on revoke and on stale-grant cleanup.
+	DiskBytes int64
+	// Mkfs is the ext4 formatter used for workspace disks. Empty uses
+	// mkfs.ext4 from PATH.
+	Mkfs string
 	// Allow is the host's IPv4 dests. Grants cannot add dests. Empty
 	// means this host does not offer NetworkAllowlist.
 	Allow []string
@@ -84,6 +91,9 @@ func New(cfg Config) (*Host, error) {
 		slots = 1
 	}
 	if _, err := parseAllow(cfg.Allow); err != nil {
+		return nil, execenv.Error("isolated", execenv.ErrInvalid)
+	}
+	if cfg.DiskBytes != 0 && cfg.DiskBytes < minDiskBytes {
 		return nil, execenv.Error("isolated", execenv.ErrInvalid)
 	}
 	images := make(map[execenv.Image]*imageRecord, len(cfg.Images))
@@ -230,13 +240,15 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		}
 	}
 	inst, err := h.launch.Start(launchCtx, startRequest{
-		ID:      spec.ID,
-		Kernel:  image.Kernel,
-		Rootfs:  image.Rootfs,
-		TreeDir: treeDir,
-		Attach:  att,
-		Memory:  h.cfg.MemoryBytes,
-		CPU:     h.cfg.CPUMillis,
+		ID:        spec.ID,
+		Kernel:    image.Kernel,
+		Rootfs:    image.Rootfs,
+		TreeDir:   treeDir,
+		Disk:      filepath.Join(filepath.Dir(treeDir), diskName),
+		DiskBytes: diskBytes(h.cfg),
+		Attach:    att,
+		Memory:    h.cfg.MemoryBytes,
+		CPU:       h.cfg.CPUMillis,
 	})
 	if err != nil {
 		if att != nil {

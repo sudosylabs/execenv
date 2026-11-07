@@ -47,6 +47,7 @@ jobs:
       agent_artifact: linux-binaries
     secrets:
       KERNEL_URL: ${{ secrets.KERNEL_URL }}
+      KERNEL_CONFIG_URL: ${{ secrets.KERNEL_CONFIG_URL }}
 
   assemble:
     needs: bake

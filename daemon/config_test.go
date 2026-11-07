@@ -369,3 +369,18 @@ func writeConfig(t *testing.T, body string) string {
 	}
 	return path
 }
+
+func TestLoadWorkspaceDiskSize(t *testing.T) {
+	t.Parallel()
+	base := `"listen": "127.0.0.1:0", "token": "secret", "security": "insecure_local", "adapter": "isolated", "images": [], "slots": 1`
+	for body, ok := range map[string]bool{
+		``:                         true,
+		`, "disk_bytes": 1048576`:  false,
+		`, "disk_bytes": -1`:       false,
+		`, "disk_bytes": 67108864`: true,
+	} {
+		if _, err := Load(writeConfig(t, "{"+base+body+"}")); (err == nil) != ok {
+			t.Errorf("Load(%s) error = %v, want ok=%v", body, err, ok)
+		}
+	}
+}

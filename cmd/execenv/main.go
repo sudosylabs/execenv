@@ -3,7 +3,7 @@
 // starts it as `agent`; the host machine starts it as the daemon.
 //
 //	execenv -config /etc/execenv/host.json
-//	execenv agent -home /workspace
+//	execenv agent -home /workspace -scratch /run/execenv/home
 //
 // Catalog disks are produced by scripts/bake in CI. A Linux host is
 // installed by execenvctl. Neither is this command.
@@ -49,7 +49,7 @@ func main() {
 	}
 	if *configPath == "" {
 		fmt.Fprintln(os.Stderr, "usage: execenv -config <path>")
-		fmt.Fprintln(os.Stderr, "       execenv agent -home <dir> [-listen <unix-socket>]")
+		fmt.Fprintln(os.Stderr, "       execenv agent -home <dir> [-scratch <dir>] [-listen <unix-socket>]")
 		os.Exit(2)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -62,16 +62,18 @@ func main() {
 
 func runAgent(args []string) int {
 	fs := flag.NewFlagSet("agent", flag.ContinueOnError)
-	home := fs.String("home", "", "projected home directory")
+	home := fs.String("home", "", "projected tree; the shell's working directory")
+	scratch := fs.String("scratch", "", "the shell's $HOME, outside the projected tree; empty uses -home")
 	contained := fs.Bool("contain-workload", false, "require a kernel-acknowledged unprivileged workload barrier")
 	listen := fs.String("listen", "", "unix socket the host dials; empty uses the guest link")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if *home == "" {
-		fmt.Fprintln(os.Stderr, "usage: execenv agent -home <dir> [-listen <unix-socket>]")
+		fmt.Fprintln(os.Stderr, "usage: execenv agent -home <dir> [-scratch <dir>] [-listen <unix-socket>]")
 		return 2
 	}
+	cfg := agent.Config{Home: *home, Scratch: *scratch, ContainWorkload: *contained}
 	var ln net.Listener
 	var err error
 	if *listen != "" {
@@ -86,7 +88,7 @@ func runAgent(args []string) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	if err := agent.ListenAndServe(ctx, ln, agent.Config{Home: *home, ContainWorkload: *contained}); err != nil {
+	if err := agent.ListenAndServe(ctx, ln, cfg); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}

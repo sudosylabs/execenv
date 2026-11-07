@@ -250,7 +250,7 @@ func testOpts(t *testing.T, root string) Options {
 		t.Fatal(err)
 	}
 	execenvBin := filepath.Join(bindir, "execenv")
-	for _, name := range []string{"execenv", runtimeName, supervisorName} {
+	for _, name := range []string{"execenv", runtimeName, supervisorName, mkfsName} {
 		if err := os.WriteFile(filepath.Join(bindir, name), []byte("#!/bin/sh\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -267,6 +267,7 @@ func testOpts(t *testing.T, root string) Options {
 		Listen:   "127.0.0.1:8443",
 		Slots:    8,
 		Execenv:  execenvBin,
+		Mkfs:     filepath.Join(bindir, mkfsName),
 		NoStart:  true,
 		NoFetch:  true,
 		Insecure: true,
@@ -291,5 +292,15 @@ func TestBootstrapCorruptConfigDoesNotLeakToken(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), secret) {
 		t.Fatalf("error leaked token: %v", err)
+	}
+}
+
+func TestBootstrapRequiresMkfs(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	opts := testOpts(t, root)
+	opts.Mkfs = filepath.Join(root, "no-mkfs")
+	if err := Bootstrap(opts, io.Discard); err == nil || !strings.Contains(err.Error(), "mkfs.ext4") {
+		t.Fatalf("Bootstrap() error = %v, want missing mkfs", err)
 	}
 }

@@ -13,7 +13,7 @@ func isPtyHangup(error) bool {
 	return false
 }
 
-func startShell(string, execenv.Window, *workload.Group) (*shell, error) {
+func startShell(string, string, execenv.Window, *workload.Group) (*shell, error) {
 	return nil, execenv.ErrUnavailable
 }
 

@@ -39,6 +39,9 @@ func probePlatform(cfg Config) error {
 	if _, err := lookBinary(cfg.Supervisor, defaultSupervisor); err != nil {
 		return execenv.ErrUnavailable
 	}
+	if _, err := lookBinary(cfg.Mkfs, defaultMkfs); err != nil {
+		return execenv.ErrUnavailable
+	}
 	return nil
 }
 

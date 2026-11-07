@@ -23,26 +23,32 @@ const (
 	securityLocal   = "insecure_local"
 	networkNone     = "none"
 	networkAllow    = "allowlist"
+	minDiskBytes    = 64 << 20
 )
 
 // Config is the operator document that turns a machine into a host.
 // Token, file bodies, and PTY octets must never be logged.
 type Config struct {
-	RequireJournal bool    `json:"require_journal,omitempty"`
-	Listen         string  `json:"listen"`
-	Token          string  `json:"token"`
-	Security       string  `json:"security"`
-	Adapter        string  `json:"adapter"`
-	TLSCert        string  `json:"tls_cert,omitempty"`
-	TLSKey         string  `json:"tls_key,omitempty"`
-	TLSClientCA    string  `json:"tls_client_ca,omitempty"`
-	WorkDir        string  `json:"work_dir,omitempty"`
-	Device         string  `json:"device,omitempty"`
-	Runtime        string  `json:"runtime,omitempty"`
-	Supervisor     string  `json:"supervisor,omitempty"`
-	Images         []Image `json:"images"`
-	Slots          int     `json:"slots"`
+	RequireJournal bool   `json:"require_journal,omitempty"`
+	Listen         string `json:"listen"`
+	Token          string `json:"token"`
+	Security       string `json:"security"`
+	Adapter        string `json:"adapter"`
+	TLSCert        string `json:"tls_cert,omitempty"`
+	TLSKey         string `json:"tls_key,omitempty"`
+	TLSClientCA    string `json:"tls_client_ca,omitempty"`
+	WorkDir        string `json:"work_dir,omitempty"`
+	Device         string `json:"device,omitempty"`
+	Runtime        string `json:"runtime,omitempty"`
+	Supervisor     string `json:"supervisor,omitempty"`
+	// Mkfs is the ext4 formatter for per-grant workspace disks. Empty
+	// uses mkfs.ext4 from PATH.
+	Mkfs   string  `json:"mkfs,omitempty"`
+	Images []Image `json:"images"`
+	Slots  int     `json:"slots"`
 	// Isolated grants use these as machine defaults. Memory ignores them.
+	// DiskBytes sizes each grant's sparse workspace disk (default 2 GiB,
+	// minimum 64 MiB); only written blocks use host storage.
 	CPUMillis   int           `json:"cpu_millis,omitempty"`
 	MemoryBytes int64         `json:"memory_bytes,omitempty"`
 	DiskBytes   int64         `json:"disk_bytes,omitempty"`
@@ -179,6 +185,9 @@ func (cfg *Config) validate() error {
 			return execenv.Error("config", execenv.ErrInvalid)
 		}
 	case adapterIsolated:
+		if cfg.DiskBytes < 0 || (cfg.DiskBytes > 0 && cfg.DiskBytes < minDiskBytes) {
+			return execenv.Error("config", execenv.ErrInvalid)
+		}
 	default:
 		return execenv.Error("config", execenv.ErrInvalid)
 	}

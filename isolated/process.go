@@ -103,7 +103,17 @@ func (l *processLauncher) Start(ctx context.Context, req startRequest) (instance
 	if _, err := os.Stat(req.Rootfs); err != nil {
 		return nil, execenv.ErrUnknownImage
 	}
+	mkfs, err := lookBinary(l.cfg.Mkfs, defaultMkfs)
+	if err != nil {
+		return nil, execenv.ErrUnavailable
+	}
 	if err := os.MkdirAll(req.TreeDir, 0o700); err != nil {
+		return nil, err
+	}
+	// The guest formats nothing: the host creates the empty writable disk
+	// and the guest mounts it. The host never mounts this disk, because its
+	// blocks are written by the guest kernel.
+	if err := createWorkspaceDisk(ctx, mkfs, req.Disk, req.DiskBytes); err != nil {
 		return nil, err
 	}
 	// Attach is already prepared by occupancy. None means no NIC.
@@ -195,10 +205,18 @@ func writeMachineConfig(req startRequest) (string, error) {
 	if vcpus <= 0 {
 		vcpus = 1
 	}
-	// Machine JSON follows the supervisor's config-file schema. Rootfs
-	// is read-only. The agent writes Home inside the guest; the image
-	// must make that directory writable. TreeDir is the stub Home, not
-	// a second host drive.
+	// Machine JSON follows the supervisor's config-file schema. Rootfs is
+	// read-only and shared by every grant of the image. The second drive is
+	// this grant's sparse writable disk; the guest init mounts it and
+	// places the projected tree and the scratch home on it, so neither
+	// consumes guest RAM.
+	//
+	// The balloon starts deflated. Free page reporting lets the guest hand
+	// freed pages back to the host continuously, so a grant's resident
+	// memory tracks what it uses rather than its peak. deflate_on_oom lets
+	// the guest reclaim balloon pages before invoking its OOM killer. Both
+	// need the guest kernel's virtio balloon driver with page reporting;
+	// without it the device is inert and the grant behaves as before.
 	doc := map[string]any{
 		"boot-source": map[string]any{
 			"kernel_image_path": req.Kernel,
@@ -211,6 +229,18 @@ func writeMachineConfig(req startRequest) (string, error) {
 				"is_root_device": true,
 				"is_read_only":   true,
 			},
+			{
+				"drive_id":       "workspace",
+				"path_on_host":   req.Disk,
+				"is_root_device": false,
+				"is_read_only":   false,
+			},
+		},
+		"balloon": map[string]any{
+			"amount_mib":               0,
+			"deflate_on_oom":           true,
+			"stats_polling_interval_s": 0,
+			"free_page_reporting":      true,
 		},
 		"machine-config": map[string]any{
 			"vcpu_count":   vcpus,
@@ -240,7 +270,7 @@ func writeMachineConfig(req startRequest) (string, error) {
 }
 
 func bootArgs(attach *netAttach) string {
-	args := "console=ttyS0 reboot=k panic=1 pci=off home=" + execenv.GuestHome + " init=" + execenv.GuestInit
+	args := "console=ttyS0 reboot=k panic=1 pci=off init=" + execenv.GuestInit
 	if attach == nil {
 		return args
 	}

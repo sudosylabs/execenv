@@ -122,6 +122,8 @@ func newAdapter(cfg Config) (execenv.Host, error) {
 			Supervisor:     cfg.Supervisor,
 			CPUMillis:      cfg.CPUMillis,
 			MemoryBytes:    cfg.MemoryBytes,
+			DiskBytes:      cfg.DiskBytes,
+			Mkfs:           cfg.Mkfs,
 			Allow:          append([]string(nil), cfg.Allow...),
 		})
 	default:

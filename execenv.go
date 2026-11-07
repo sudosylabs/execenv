@@ -8,12 +8,17 @@ import (
 // Image is a caller-facing name for an operator-preloaded guest runtime.
 type Image string
 
-// Paths the baked guest and the isolated adapter share. The image root
-// is read-only; GuestHome is a tmpfs the agent owns.
+// Paths the baked guest and the isolated adapter share. The image root is
+// read-only. GuestWorkspace is the projected tree and the shell's working
+// directory. GuestHome is the shell's $HOME: guest-local scratch for tool
+// caches, virtual environments and dotfiles. It is never projected or
+// watched, and nothing in it is harvested. Both live on the grant's
+// writable workspace disk, not in guest memory.
 const (
-	GuestHome = "/workspace"
-	GuestInit = "/usr/local/libexec/execenv-guest"
-	GuestBin  = "/usr/local/bin/execenv"
+	GuestWorkspace = "/workspace"
+	GuestHome      = "/run/execenv/home"
+	GuestInit      = "/usr/local/libexec/execenv-guest"
+	GuestBin       = "/usr/local/bin/execenv"
 )
 
 // ID is a caller-chosen occupancy identity on one host.

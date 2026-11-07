@@ -7,9 +7,11 @@ import (
 	"github.com/sudosylabs/execenv"
 )
 
-// workspaceName is the grant-relative directory that holds the projected
-// tree. The isolated environment treats this path as home and cwd; the
-// root filesystem of the image stays read-only.
+// workspaceName is the grant-relative directory beside the grant's other
+// host-side files. The guest sees the projected tree at
+// execenv.GuestWorkspace (its working directory) and its scratch $HOME at
+// execenv.GuestHome; both live on the grant's writable disk (Disk), and
+// the image root filesystem stays read-only.
 const workspaceName = "workspace"
 
 type startRequest struct {
@@ -17,9 +19,13 @@ type startRequest struct {
 	Kernel  string
 	Rootfs  string
 	TreeDir string
-	Attach  *netAttach
-	Memory  int64
-	CPU     int
+	// Disk is the host path of the grant's sparse writable workspace disk,
+	// created by the launcher and removed with the grant directory.
+	Disk      string
+	DiskBytes int64
+	Attach    *netAttach
+	Memory    int64
+	CPU       int
 }
 
 // instance is one running isolated environment. Pause must not destroy it.

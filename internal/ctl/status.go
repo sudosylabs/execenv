@@ -23,6 +23,13 @@ func Status(opts Options, stdout io.Writer) error {
 	unit := unitState(opts)
 	if stdout != nil {
 		fmt.Fprintf(stdout, "device=%s\n", device)
+		mkfs := "missing"
+		if doc, err := loadHost(opts.configPath()); err == nil && doc.Mkfs != "" && executable(doc.Mkfs) {
+			mkfs = "ok"
+		} else if _, err := exec.LookPath(mkfsName); err == nil {
+			mkfs = "ok"
+		}
+		fmt.Fprintf(stdout, "mkfs=%s\n", mkfs)
 		fmt.Fprintf(stdout, "unit=%s\n", unit)
 		fmt.Fprintf(stdout, "installed=%s\n", joinIDs(installedIDs(opts)))
 		fmt.Fprintf(stdout, "release=%s\n", stampRelease())
