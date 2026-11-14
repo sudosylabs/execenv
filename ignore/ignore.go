@@ -1,6 +1,8 @@
 // Package ignore decides which guest paths an environment leaves out of its
-// observation stream. It is shared by every adapter so the gitignore
-// matcher and the held-path rule cannot diverge.
+// observation stream. Every adapter uses it, so the gitignore matcher and the
+// held-path rule cannot diverge. It is public so a caller can apply exactly
+// the rules the guest applies, for example to check a change it is about to
+// store against the same ignore file.
 //
 // A Policy is evaluated top down: an entry is observed when its parent is
 // observed and Observed reports true for it. A directory that is not

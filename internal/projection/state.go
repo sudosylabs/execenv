@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/sudosylabs/execenv"
-	"github.com/sudosylabs/execenv/internal/ignore"
+	"github.com/sudosylabs/execenv/ignore"
 )
 
 const retainedReceipts = 65536
