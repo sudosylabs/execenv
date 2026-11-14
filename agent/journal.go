@@ -60,7 +60,7 @@ func (j *diskJournal) initialize(ctx context.Context, request execenv.Projection
 	err := j.barrier.Stopped(ctx, func() error {
 		touched := false
 		receipt, resultErr = j.state.Initialize(request, func(snapshot execenv.Tree) error {
-			current, err := guesttree.Capture(j.home, nil)
+			current, err := guesttree.Capture(j.home, nil, nil)
 			if err != nil {
 				return err
 			}
@@ -76,7 +76,7 @@ func (j *diskJournal) initialize(ctx context.Context, request execenv.Projection
 			if err := rewriteHome(j.home, next); err != nil {
 				return err
 			}
-			return j.ownTree()
+			return j.ownTree(nil)
 		})
 		if resultErr != nil {
 			if touched {
@@ -123,7 +123,11 @@ func (j *diskJournal) apply(ctx context.Context, request execenv.ProjectionApply
 			if err := applyHome(j.home, disk); err != nil {
 				return err
 			}
-			return j.ownTree()
+			roots := make([]string, 0, len(disk.Mutations))
+			for _, m := range disk.Mutations {
+				roots = append(roots, m.Path)
+			}
+			return j.ownTree(roots)
 		})
 		if resultErr != nil {
 			if touched {
@@ -156,7 +160,7 @@ func (j *diskJournal) observe(ctx context.Context, fence execenv.ProjectionFence
 	return j.log.Page(after, limit)
 }
 func (j *diskJournal) observeCaptured() error {
-	next, err := guesttree.Capture(j.home, j.snapshot)
+	next, err := guesttree.Capture(j.home, j.snapshot, j.observePolicy())
 	if err != nil {
 		j.log.Lagged()
 		return err
@@ -202,7 +206,15 @@ func (j *diskJournal) observeCaptured() error {
 	return nil
 }
 func (j *diskJournal) captureProjection(mutations []execenv.Mutation) error {
-	next, err := guesttree.Capture(j.home, j.snapshot)
+	// The guest is stopped, so the workspace is the previous capture plus this
+	// commit's effects. With ignore rules, admit exactly that: a path a
+	// projected ignore-file edit has just made visible must reach the stream
+	// through the next observation, not slip silently into the baseline.
+	var observe guesttree.Observe
+	if j.state.Ignore() != nil {
+		observe = func(name string, _, held bool) bool { return held || j.state.Holds(name) }
+	}
+	next, err := guesttree.Capture(j.home, j.snapshot, observe)
 	if err != nil {
 		return err
 	}
@@ -230,16 +242,80 @@ func (j *diskJournal) captureProjection(mutations []execenv.Mutation) error {
 	j.snapshot = next
 	return nil
 }
-func (j *diskJournal) ownTree() error {
+
+// observePolicy returns the capture filter for the ignore file as the guest
+// left it, or nil when nothing is ignored. Projected paths are held.
+func (j *diskJournal) observePolicy() guesttree.Observe {
+	rules := j.state.Ignore()
+	if rules == nil {
+		return nil
+	}
+	body, present := readIgnoreFile(j.home, rules.File())
+	policy := rules.Policy(body, present)
+	if !policy.Active() {
+		return nil
+	}
+	return func(name string, dir, held bool) bool {
+		return policy.Observed(name, dir, held || j.state.Holds(name))
+	}
+}
+
+// readIgnoreFile reads at most one byte past the limit, so an oversized file
+// reaches the policy as not parsing. A missing, unreadable or non-regular
+// file is absent.
+func readIgnoreFile(home, name string) ([]byte, bool) {
+	root, err := os.OpenRoot(home)
+	if err != nil {
+		return nil, false
+	}
+	defer root.Close()
+	info, err := root.Lstat(name)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, false
+	}
+	file, err := root.Open(name)
+	if err != nil {
+		return nil, false
+	}
+	defer file.Close()
+	body, err := io.ReadAll(io.LimitReader(file, execenv.MaxIgnoreFileBytes+1))
+	if err != nil {
+		return nil, false
+	}
+	return body, true
+}
+
+// ownTree hands projected paths to the guest user. roots nil means the whole
+// workspace (initialization); otherwise only the subtrees this commit wrote,
+// so ignored guest trees elsewhere are never walked.
+func (j *diskJournal) ownTree(roots []string) error {
 	if j.own == nil {
 		return nil
 	}
-	return filepath.WalkDir(j.home, func(name string, entry os.DirEntry, err error) error {
+	walk := func(start string) error {
+		return filepath.WalkDir(start, func(name string, entry os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			return j.own(name)
+		})
+	}
+	if roots == nil {
+		return walk(j.home)
+	}
+	for _, root := range roots {
+		full, err := execenv.ResolvePath(j.home, root)
 		if err != nil {
 			return err
 		}
-		return j.own(name)
-	})
+		if _, err := os.Lstat(full); os.IsNotExist(err) {
+			continue
+		}
+		if err := walk(full); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 func (j *diskJournal) content(fence execenv.ProjectionFence, reference execenv.ContentReference) (io.ReadCloser, error) {
 	if err := j.bind(fence); err != nil {

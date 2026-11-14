@@ -33,10 +33,69 @@ func (s *Snapshot) Close() {
 	}
 }
 
+// Observe decides whether a directory entry enters the capture. held is true
+// when previous already captured that path or, after a move, its physical
+// node. A directory left out is never descended into. A nil Observe admits
+// everything.
+type Observe func(name string, dir, held bool) bool
+
+// admitted reads every entry of one directory and keeps only those observe
+// admits. A left-out entry costs its name, plus one Lstat when its path is
+// new, and it can never lag the capture: it may be a link, a hard-linked
+// file or a vanished path, and none of that is reported.
+func admitted(root *os.Root, parent *os.File, directory string, previous *Snapshot, identities map[physicalKey]string, observe Observe) ([]os.DirEntry, error) {
+	var entries []os.DirEntry
+	for {
+		batch, err := parent.ReadDir(256)
+		for _, entry := range batch {
+			if observe != nil {
+				name := path.Join(directory, entry.Name())
+				_, held := previous.node(name)
+				if !observe(name, entry.IsDir(), held) && !moved(root, name, identities, observe) {
+					continue
+				}
+			}
+			entries = append(entries, entry)
+			if len(entries) > execenv.MaxTreeEntries {
+				return nil, execenv.ErrLagged
+			}
+		}
+		if err == io.EOF || err == nil && len(batch) == 0 {
+			return entries, nil
+		}
+		if err != nil {
+			return nil, execenv.ErrLagged
+		}
+	}
+}
+
+// moved reports whether a left-out path is a physical node previous already
+// captured elsewhere, so a held entry stays observed across a move.
+func moved(root *os.Root, name string, identities map[physicalKey]string, observe Observe) bool {
+	info, err := root.Lstat(name)
+	if err != nil || !info.IsDir() && !info.Mode().IsRegular() {
+		return false
+	}
+	key, err := physicalIdentity(info)
+	if err != nil || identities[key] == "" {
+		return false
+	}
+	return observe(name, info.IsDir(), true)
+}
+
+func (s *Snapshot) node(name string) (Node, bool) {
+	if s == nil {
+		return Node{}, false
+	}
+	node, ok := s.Nodes[name]
+	return node, ok
+}
+
 // Capture neither closes nor mutates previous. Keep previous's descriptors
 // open until this call succeeds and the observation transaction is retained.
 // Failure is a typed resynchronization error, never a plausible empty tree.
-func Capture(home string, previous *Snapshot) (result *Snapshot, err error) {
+// observe leaves ignored paths out; see Observe.
+func Capture(home string, previous *Snapshot, observe Observe) (result *Snapshot, err error) {
 	root, err := os.OpenRoot(home)
 	if err != nil {
 		return nil, execenv.ErrLagged
@@ -63,13 +122,10 @@ func Capture(home string, previous *Snapshot) (result *Snapshot, err error) {
 		if err != nil {
 			return execenv.ErrLagged
 		}
-		entries, err := parent.ReadDir(execenv.MaxTreeEntries + 1)
+		entries, err := admitted(root, parent, directory, previous, identities, observe)
 		_ = parent.Close()
-		if err != nil && err != io.EOF {
-			return execenv.ErrLagged
-		}
-		if len(entries) > execenv.MaxTreeEntries {
-			return execenv.ErrLagged
+		if err != nil {
+			return err
 		}
 		for _, entry := range entries {
 			name := path.Join(directory, entry.Name())

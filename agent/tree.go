@@ -110,6 +110,12 @@ func applyDisk(home string, mut execenv.Mutation) (undo func() error, stashPath 
 	nop := func() error { return nil }
 	switch mut.Op {
 	case execenv.OpCreate, execenv.OpReplace:
+		// The snapshot proves nothing observed is here, so anything present
+		// is an ignored guest path. A projected directory adopts an ignored
+		// directory; a file replaces what was there, as a checkout does.
+		if info, err := os.Lstat(full); err == nil && info.IsDir() && mut.Kind == execenv.KindDirectory {
+			return nop, "", nil
+		}
 		prev, side, err := stash(full)
 		if err != nil {
 			return nil, "", err
@@ -148,10 +154,21 @@ func applyDisk(home string, mut execenv.Mutation) (undo func() error, stashPath 
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 			return nil, "", err
 		}
-		if err := os.Rename(from, full); err != nil {
+		// An ignored guest path at the destination is replaced.
+		prev, side, err := stash(full)
+		if err != nil {
 			return nil, "", err
 		}
-		return func() error { return os.Rename(full, from) }, "", nil
+		if err := os.Rename(from, full); err != nil {
+			_ = prev()
+			return nil, "", err
+		}
+		return func() error {
+			if err := os.Rename(full, from); err != nil {
+				return err
+			}
+			return prev()
+		}, side, nil
 	default:
 		return nop, "", execenv.ErrInvalid
 	}

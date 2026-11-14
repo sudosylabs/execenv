@@ -102,8 +102,40 @@ func TestProjectionInitializationAcceptsMaximumEscapedTree(t *testing.T) {
 	if err := ValidateProjectionInitialization(request); err != nil {
 		t.Fatalf("valid maximum tree rejected (%d metadata bytes): %v", len(raw), err)
 	}
+	// The maximum fallback still fits beside the maximum tree.
+	fallback := make([]string, MaxIgnoreFallbackPatterns)
+	for i := range fallback {
+		fallback[i] = strings.Repeat("&", MaxIgnoreFallbackBytes/MaxIgnoreFallbackPatterns)
+	}
+	request.Ignore = &IgnoreRules{File: "rules", Fallback: fallback}
+	if err := ValidateProjectionInitialization(request); err != nil {
+		t.Fatalf("maximum tree with maximum fallback rejected: %v", err)
+	}
 	request.Entries = append(request.Entries, ProjectionEntry{EntryID: "excess", Kind: ProjectionDirectory, Path: "excess"})
 	if err := ValidateProjectionInitialization(request); !errors.Is(err, ErrTooLarge) {
 		t.Fatalf("tree entry limit changed: %v", err)
+	}
+}
+
+func TestProjectionInitializationValidatesIgnoreRules(t *testing.T) {
+	request := ProjectionInitialization{Fence: ProjectionFence{ExecutionGrantID: "grant", EnvironmentEpoch: "epoch", FenceRevision: 1}, MutationID: "initial"}
+	for _, c := range []struct {
+		rules IgnoreRules
+		want  error
+	}{
+		{IgnoreRules{File: "rules", Fallback: []string{"*.o", "!keep.o", "build/"}}, nil},
+		{IgnoreRules{File: "nested/rules"}, nil},
+		{IgnoreRules{}, ErrInvalid},
+		{IgnoreRules{File: "../rules"}, ErrInvalid},
+		{IgnoreRules{File: "/rules"}, ErrInvalid},
+		{IgnoreRules{File: "rules", Fallback: []string{"[x"}}, ErrInvalid},
+		{IgnoreRules{File: "rules", Fallback: []string{"a\nb"}}, ErrInvalid},
+		{IgnoreRules{File: "rules", Fallback: make([]string, MaxIgnoreFallbackPatterns+1)}, ErrTooLarge},
+		{IgnoreRules{File: "rules", Fallback: []string{strings.Repeat("a", MaxIgnoreFallbackBytes+1)}}, ErrTooLarge},
+	} {
+		request.Ignore = &c.rules
+		if err := ValidateProjectionInitialization(request); !errors.Is(err, c.want) {
+			t.Errorf("%+v: %v, want %v", c.rules, err, c.want)
+		}
 	}
 }

@@ -52,4 +52,4 @@ func newSession(conn net.Conn) *mux.Session {
 // protocolVersion is the guest helper revision. The host and the helper
 // refuse each other unless both speak exactly this revision. Bump it
 // whenever a method, its arguments or its meaning changes.
-const protocolVersion = 5
+const protocolVersion = 6

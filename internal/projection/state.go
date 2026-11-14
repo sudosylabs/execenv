@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/ignore"
 )
 
 const retainedReceipts = 65536
@@ -50,6 +51,7 @@ type State struct {
 	receipts            map[string]receipt
 	proofs              map[uint64]observationProof
 	observationBindings map[uint64]observationProof
+	ignore              *ignore.Rules
 }
 
 func New() *State {
@@ -58,6 +60,9 @@ func New() *State {
 func (s *State) Initialized() bool  { return s.initialized }
 func (s *State) Cursor() uint64     { return s.cursor }
 func (s *State) HostCursor() uint64 { return s.hostCursor }
+
+// Ignore returns the epoch's ignore rules, or nil to observe everything.
+func (s *State) Ignore() *ignore.Rules { return s.ignore }
 
 // Put copies bounded bytes and generates an unguessable, single-purpose handle.
 // The environment's fence check binds this store to its exact host/grant/epoch.
@@ -144,9 +149,17 @@ func (s *State) Initialize(request execenv.ProjectionInitialization, commit func
 	if err := validateSize(next); err != nil {
 		return execenv.ProjectionReceipt{}, err
 	}
+	var rules *ignore.Rules
+	if request.Ignore != nil {
+		var err error
+		if rules, err = ignore.New(request.Ignore.File, request.Ignore.Fallback); err != nil {
+			return execenv.ProjectionReceipt{}, execenv.ErrInvalid
+		}
+	}
 	if err := commit(disk); err != nil {
 		return execenv.ProjectionReceipt{}, err
 	}
+	s.ignore = rules
 	s.initialized = true
 	s.nodes = next
 	s.cursor = request.WorkspaceCursor
@@ -359,4 +372,11 @@ func (s *State) Nodes() map[string]Node {
 		result[name] = node
 	}
 	return result
+}
+
+// Holds reports whether the projection currently holds name. Held paths are
+// observed even when an ignore pattern matches them.
+func (s *State) Holds(name string) bool {
+	_, ok := s.nodes[name]
+	return ok
 }

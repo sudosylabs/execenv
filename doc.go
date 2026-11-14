@@ -16,6 +16,8 @@
 // InitializeProjection and ApplyProjection push consecutive journal entries
 // into the grant, each bound to a ProjectionFence. Observe reports what the
 // isolated environment wrote, with immutable captured content, until the
-// caller acknowledges it. Losing a grant must not be treated as losing
+// caller acknowledges it. IgnoreRules name a caller-chosen file of
+// gitignore patterns for paths Observe leaves out; held paths stay
+// observed. Losing a grant must not be treated as losing
 // caller state the caller already has.
 package execenv

@@ -49,13 +49,22 @@ func (e *environment) recordGuest(next tree.Snapshot, movedFrom, movedTo string)
 	if e.semantic == nil || e.guestTree == nil {
 		return execenv.ErrUnavailable
 	}
+	identityPath := func(name string) string {
+		if movedTo != "" && (name == movedTo || strings.HasPrefix(name, movedTo+"/")) {
+			return movedFrom + strings.TrimPrefix(name, movedTo)
+		}
+		return name
+	}
+	observed := e.observed(next, func(name string) bool {
+		_, reported := e.guestTree.Nodes[identityPath(name)]
+		return reported
+	})
 	candidate := &guesttree.Snapshot{Nodes: make(map[string]guesttree.Node, len(next))}
 	for name, node := range next {
-		identityPath := name
-		if movedTo != "" && (name == movedTo || strings.HasPrefix(name, movedTo+"/")) {
-			identityPath = movedFrom + strings.TrimPrefix(name, movedTo)
+		if !observed(name) {
+			continue
 		}
-		identity := e.guestTree.Nodes[identityPath].Identity
+		identity := e.guestTree.Nodes[identityPath(name)].Identity
 		if identity == "" {
 			identity = rand.Text()
 		}
@@ -72,7 +81,41 @@ func (e *environment) recordGuest(next tree.Snapshot, movedFrom, movedTo string)
 			}
 		}
 	}
+	// The observed tree keeps the projection bound even though ignored guest
+	// paths do not count toward it.
+	if len(candidate.Nodes) > execenv.MaxTreeEntries {
+		return execenv.ErrTooLarge
+	}
 	return e.recordGuestSnapshot(candidate)
+}
+
+// observed returns the ignore decision for files, the tree the guest now
+// holds. reported says whether the stream already holds a path (after any
+// move). Without rules every path is observed.
+func (e *environment) observed(files tree.Snapshot, reported func(string) bool) func(string) bool {
+	rules := e.projection.Ignore()
+	if rules == nil {
+		return func(string) bool { return true }
+	}
+	body, present := []byte(nil), false
+	if node, ok := files[rules.File()]; ok && node.Kind == execenv.KindFile {
+		body, present = node.Data, true
+	}
+	policy := rules.Policy(body, present)
+	if !policy.Active() {
+		return func(string) bool { return true }
+	}
+	dirs := make(map[string]bool, len(files))
+	for name, node := range files {
+		dirs[name] = node.Kind == execenv.KindDirectory
+	}
+	kept := policy.Keep(dirs, func(name string) bool {
+		return e.projection.Holds(name) || reported(name)
+	})
+	return func(name string) bool {
+		_, ok := kept[name]
+		return ok
+	}
 }
 func (e *environment) recordGuestSnapshot(candidate *guesttree.Snapshot) error {
 	changes, err := guesttree.Diff(e.guestTree, candidate)
@@ -118,6 +161,13 @@ func (e *environment) Observe(ctx context.Context, fence execenv.ProjectionFence
 		defer e.mu.Unlock()
 		if e.semantic == nil {
 			return execenv.ErrConflict
+		}
+		// A projected ignore-file edit changes what is observed without any
+		// guest write; rescan as the agent does before every page.
+		if e.projection.Ignore() != nil {
+			if err := e.recordGuest(e.files, "", ""); err != nil {
+				return err
+			}
 		}
 		var err error
 		page, err = e.semantic.Page(after, limit)

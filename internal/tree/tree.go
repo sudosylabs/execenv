@@ -59,7 +59,7 @@ func FromTree(tree execenv.Tree) (Snapshot, error) {
 			return nil, execenv.ErrInvalid
 		}
 	}
-	if err := validateTopology(next); err != nil {
+	if err := validateTopology(next, true); err != nil {
 		return nil, err
 	}
 	return next, nil
@@ -68,6 +68,17 @@ func FromTree(tree execenv.Tree) (Snapshot, error) {
 // Apply returns a new snapshot with batch applied, or an error and the
 // original left unused. Callers must not commit on error.
 func Apply(current Snapshot, batch execenv.Batch) (Snapshot, error) {
+	return apply(current, batch, true)
+}
+
+// ApplyGuest is Apply for a guest-side tree that also holds ignored paths.
+// Those never count toward MaxTreeEntries, so only the observed part is
+// bounded by its owner; bytes stay bounded here.
+func ApplyGuest(current Snapshot, batch execenv.Batch) (Snapshot, error) {
+	return apply(current, batch, false)
+}
+
+func apply(current Snapshot, batch execenv.Batch, bounded bool) (Snapshot, error) {
 	if len(batch.Mutations) > execenv.MaxTreeEntries {
 		return nil, execenv.ErrTooLarge
 	}
@@ -81,7 +92,7 @@ func Apply(current Snapshot, batch execenv.Batch) (Snapshot, error) {
 			return nil, err
 		}
 	}
-	if err := validateTopology(next); err != nil {
+	if err := validateTopology(next, bounded); err != nil {
 		return nil, err
 	}
 	return next, nil
@@ -206,8 +217,8 @@ func put(next Snapshot, mut execenv.Mutation, total *int64) error {
 
 // Missing parent entries retain the original implicit-directory convention;
 // an explicitly projected file can never become another node's parent.
-func validateTopology(nodes Snapshot) error {
-	if len(nodes) > execenv.MaxTreeEntries {
+func validateTopology(nodes Snapshot, bounded bool) error {
+	if bounded && len(nodes) > execenv.MaxTreeEntries {
 		return execenv.ErrTooLarge
 	}
 	var total int64

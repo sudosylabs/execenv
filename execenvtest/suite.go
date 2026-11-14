@@ -1,8 +1,9 @@
 // Package execenvtest contains a reusable Host conformance suite.
 //
 // Run covers occupancy, terminal sessions, fenced control, and the journal
-// projection. Guest-originated observations need a real or simulated guest
-// and are covered by each adapter's own tests.
+// projection. Guest-originated observations need a real or simulated guest:
+// RunIgnore covers IgnoreRules given a Guest that acts inside the
+// workspace, and the rest is covered by each adapter's own tests.
 //
 // Terminal subtests drive the shell with a small POSIX subset every adapter
 // supports: NAME=value, echo with $NAME and quotes, seq, and exit.

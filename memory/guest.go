@@ -76,6 +76,27 @@ func (h *Host) RemoveGuest(ctx context.Context, id execenv.ID, path string) erro
 	}, "", "")
 }
 
+// MkdirGuest creates one directory as the environment would. Its parent
+// must already exist.
+func (h *Host) MkdirGuest(ctx context.Context, id execenv.ID, path string) error {
+	if err := ctx.Err(); err != nil {
+		return execenv.Error("guest", err)
+	}
+	if err := execenv.ValidatePath(path); err != nil {
+		return execenv.Error("guest", err)
+	}
+	env, err := h.grant(id)
+	if err != nil {
+		return err
+	}
+	return env.commitGuest(func() (execenv.Mutation, error) {
+		if _, exists := env.files[path]; exists {
+			return execenv.Mutation{}, execenv.ErrConflict
+		}
+		return execenv.Mutation{Op: execenv.OpCreate, Path: path, Kind: execenv.KindDirectory}, nil
+	}, "", "")
+}
+
 func (h *Host) MoveGuest(ctx context.Context, id execenv.ID, from, to string) error {
 	if err := ctx.Err(); err != nil {
 		return execenv.Error("guest", err)
@@ -123,7 +144,13 @@ func (e *environment) commitGuest(plan func() (execenv.Mutation, error), movedFr
 	if err != nil {
 		return execenv.Error("guest", err)
 	}
-	next, err := tree.Apply(e.files, execenv.Batch{Mutations: []execenv.Mutation{mutation}})
+	apply := tree.Apply
+	if e.projection.Ignore() != nil {
+		// Ignored guest paths never count toward the observed tree's bound;
+		// recordGuest enforces that bound on what it observes.
+		apply = tree.ApplyGuest
+	}
+	next, err := apply(e.files, execenv.Batch{Mutations: []execenv.Mutation{mutation}})
 	if err != nil {
 		return err
 	}
