@@ -9,9 +9,9 @@
 </p>
 
 <p align="center">
-  Check readiness, ensure a grant, project a workspace tree, attach one
-  PTY, freeze and thaw execution, and revoke. Isolation stays behind that
-  contract.
+  Check readiness, ensure a grant, project a workspace journal, observe
+  guest changes, attach a terminal, control execution under a fence, and
+  revoke. Isolation stays behind that contract.
 </p>
 
 <p align="center">
@@ -46,10 +46,9 @@ go get github.com/sudosylabs/execenv@v1.2.3
 ```
 
 Pin the same tag the host binaries were built from. The remote protocol also
-requires its exact wire revision, and the host verifies the guest-helper protocol
-before admitting an environment. Older helpers cannot advertise the new
-reversible control semantics. A `v1.2.3` client
-refuses to occupy a host stamped `v1.4.0`.
+requires its exact wire revision, and the host verifies the guest-helper
+protocol and its native journal before admitting an environment. A `v1.2.3`
+client refuses to occupy a host stamped `v1.4.0`.
 
 Import the occupancy API and, in production, the remote dialer:
 
@@ -161,8 +160,7 @@ A non-loopback insecure address is rejected.
 
 `execenv.RequireIsolated(host)` fails closed when the adapter is not
 isolated. Use it in production composition so the in-memory host cannot
-be selected by accident. Both isolation classes (below) pass it; read
-`Report.Isolation` if your policy needs a particular one.
+be selected by accident.
 
 ### Ready
 
@@ -177,22 +175,23 @@ if !rep.Usable {
 ```
 
 `Images` is the catalog ids on that machine. `Networks` is the network modes
-the host offers. `Slots` is how many more grants it will take. `Release` is
-the process stamp (display only; a mismatch already failed at dial). One
-client talks to one host. If you have several machines, you choose among
-them.
+the host offers. `Slots` is how many more grants it has room for. `Grants`
+is how many it holds now, and `Lost` how many it has lost since it started
+(see Lost grants). `Release` is the process stamp (display only; a mismatch
+already failed at dial). One client talks to one host. If you have several
+machines, you choose among them.
+
+`Usable` false means the host takes no new grants; `Reason` says why.
+`execenv.ReasonDraining` means its operator is draining it before a
+restart: it keeps serving the grants it holds, and Ensure of a new id
+returns `ErrDraining`. Place new grants elsewhere until it is usable again.
 
 `Isolation` is the boundary class the host provides:
 
 | Value | Boundary |
 | --- | --- |
 | `execenv.IsolationVM` (`"vm"`) | each grant is a hardware-virtualized microVM with its own guest kernel |
-| `execenv.IsolationUserKernel` (`"user-kernel"`) | each grant runs against a user-space kernel that intercepts its system calls; no virtualization hardware, weaker than `vm` |
 | `execenv.IsolationNone` (`"none"`) | in-memory adapter; tests only |
-
-An empty value is an older host that did not report it. execenv does not
-rank classes for you; apply your own policy (for example, refuse
-high-stakes grants on `user-kernel` hosts).
 
 ### Ensure
 
@@ -216,278 +215,36 @@ if err != nil {
 | Same id, different image or network | `ErrConflict` |
 | Image not installed on the host | `ErrUnknownImage` |
 | No remaining slots | `ErrCapacity` |
+| Host draining, id not held | `ErrDraining` |
+| Id was lost and not yet revoked | `ErrLost` |
 | Allowlist requested, host has no dests | `ErrNetwork` |
+| Guest helper cannot serve the journal | `ErrUnavailable`; the guest is destroyed |
+| Guest kernel lacks process events | `ErrUnavailable`; the guest is destroyed |
 
 Ids and image names are 1–64 characters in `[A-Za-z0-9._-:]`. Concurrent
 identical `Ensure` calls for one new id coalesce into one launch. Ensure does
 not download images; occupying a new grant starts its guest.
 
-### ReplaceTree
+Every `Env` has the whole contract below: fenced control, journal projection,
+semantic observations, one terminal and revoke. There is nothing to discover
+and no type assertion to make.
 
-Makes `/workspace` match the snapshot: listed paths exist, everything
-else is deleted.
+### Control
 
-```go
-err := env.ReplaceTree(ctx, execenv.Tree{
-	{Path: "src", Kind: execenv.KindDirectory},
-	{
-		Path:    "src/main.py",
-		Kind:    execenv.KindFile,
-		Version: "v1",
-		Data:    []byte("print('hello')\n"),
-	},
-	{
-		Path:    "data.json",
-		Kind:    execenv.KindFile,
-		Version: "v4",
-		Data:    nil, // already on the host at v4; do not send the body
-	},
-})
-```
-
-`Version` is an opaque token you choose. The host compares it for
-equality and never parses it.
-
-- `Data: nil` on a file means skip the transfer. The host must already
-  have that path at that version, or the call fails and the tree is
-  unchanged.
-- `Data: []byte{}` is an empty file.
-- Directories ignore `Data` and require an empty `Version`.
-
-After reconstruction, replace from **your** last acknowledged snapshot.
-Freeze/thaw preserves the existing projection and terminal; neither requires
-a replacement snapshot or a new attachment.
-
-A successful `ReplaceTree` starts a new Watch generation. Any live
-observation fails with `ErrLagged`, and cursors from the replaced projection
-cannot be resumed.
-
-### Apply
-
-Atomic incremental edits. The whole batch succeeds or nothing changes.
+`Epoch()` identifies this exact occupancy and survives reconnect and
+re-Ensure. Reconstruction generates a fresh epoch; the host never recovers an
+old epoch without its highest fence. Production host process death kills its
+execution children; restart does not adopt them.
 
 ```go
-err := env.Apply(ctx, execenv.Batch{Mutations: []execenv.Mutation{
-	{
-		Op:       execenv.OpReplace,
-		Path:     "src/main.py",
-		Kind:     execenv.KindFile,
-		Version:  "v2",
-		Expected: "v1", // fence: fail with ErrConflict if the file is not v1
-		Data:     []byte("print('hello world')\n"),
-	},
-	{
-		Op:   execenv.OpCreate,
-		Path: "out",
-		Kind: execenv.KindDirectory,
-	},
-}})
-```
-
-Empty `Expected` means apply unconditionally. `OpMove` uses `From` (old
-path) and `Path` (new path), preserving every descendant and its version. `OpDelete`
-removes a path; deleting a nonempty directory requires `Recursive: true`.
-Incremental projection advances observation baselines only for its own changed
-paths, preserving unrelated guest changes for Watch.
-
-### Fenced journal projection and semantic observations
-
-`ProjectionEnv` extends `ControlledEnv` with `UploadProjectionContent`,
-`InitializeProjection`, and `ApplyProjection`. Check `Capabilities.JournalProjection`
-before using it. The memory adapter and its remote transport currently advertise
-this capability. The isolated adapter advertises it only when `RequireJournal` is selected
-(`require_journal` in the daemon configuration). Ensure then refuses a guest
-whose actual protocol handshake lacks the native workload implementation. Leave
-this option disabled until the installed guest artifacts have been certified. Older guest helpers fail the version handshake.
-
-Initialize once before opening the first terminal. Every subsequent Apply binds
-an exact grant/epoch/revision fence, mutation ID, from/through journal cursors,
-expected host cursor, stable entry IDs, kinds, and opaque content versions.
-Batches contain 1–128 consecutive mutations and at most 256 KiB of metadata.
-File contents travel separately as immutable, scoped SHA-256 references.
-Directory moves preserve all descendant identities and versions. Exact retries
-return their original receipt; changing a used mutation ID conflicts. The epoch
-retains at most 65,536 receipts and refuses additional mutations rather than
-forgetting retry bindings. Legacy Apply, ReplaceTree and Watch cannot bypass an
-initialized journal.
-
-Uploads use existing 10-MiB file and 50-MiB tree limits. Unconsumed content expires
-after five minutes, with at most 512 handles per environment. The remote wire
-uses 64-KiB chunks and four active upload slots per listener; incomplete uploads
-expire after 30 idle seconds and are released on disconnect. References cannot
-name paths, URLs, credentials, another environment or observation content.
-
-`SemanticEnv` adds `Observe`, `OpenObservationContent`, and
-`AcknowledgeObservations`; discover it through `Capabilities.SemanticObservations`.
-Memory, its remote transport, and isolated hosts configured with the required
-native journal support it. Each ordered event binds its
-original projected cursor/version, epoch-stable node identity and immutable bytes.
-Directory moves are single subtree operations; parent creates precede children,
-and recursive directory deletion is explicit. Download streams use 64-KiB chunks,
-four active listener-wide slots, immutable-reference verification, and idle expiry.
-
-After accepting a guest event durably, call `ConfirmObservationProjection`
-with its host sequence and exact resulting journal mutation before acknowledging
-it. The host binds the original identity/topology/content digest to that outcome.
-A later consecutive Apply advances the baseline while suppressing only that known
-echo, preserving any later guest writes. A confirmation retry tolerates a new
-upload handle for the same immutable content; changing the outcome conflicts.
-Rejected/ignored outcomes need no projection confirmation. Acknowledge only after
-recording the outcome durably. Acknowledgement releases retained content; it does
-not itself imply acceptance or advance projection versions. Unacknowledged retention is bounded to 4096 events and 50 MiB. Overflow
-reports `ErrLagged` without discarding the retained prefix. A cursor before the
-acknowledged prefix also returns `ErrLagged`.
-
-The native guest work uses a kernel-acknowledged workload barrier and pinned
-filesystem identities, not content hashes, for semantic observations. The agent's
-`-contain-workload` option requires a dedicated Linux guest with a usable unified
-workload hierarchy. It launches unprivileged processes inside that hierarchy before
-execution and prevents privilege escalation. Uncertain filesystem commits remain
-contained. Rebaked images start a PID-1 child reaper, require the kernel workload hierarchy,
-and run the contained agent. Existing catalog images are not upgraded by changing
-the host configuration. Run `make certify` with the intended kernel/rootfs on real
-isolation hardware before enabling `require_journal`; this includes TLS remote
-journal projection, immutable guest events, accepted-outcome echoes, semantic
-directory moves and preservation of the same shell/PTY through save and containment.
-Portable unit tests and Linux build containers are not that certification.
-
-### Watch and Open
-
-`Watch` is how the guest reports files **it** created, replaced, moved,
-or deleted. Your own `ReplaceTree` / `Apply` calls do not appear here.
-
-```go
-cursor := loadAcknowledgedCursor()
-obs, err := env.Watch(ctx, cursor)
+fence := execenv.ProjectionFence{
+	ExecutionGrantID: env.ID(),
+	EnvironmentEpoch: env.Epoch(),
+	FenceRevision:    7,
+}
+receipt, err := env.Control(ctx, execenv.ControlRequest{Fence: fence, State: execenv.ControlFrozen})
 if err != nil {
 	return err
-}
-defer obs.Close()
-
-// This is meaningful even before the first event. Persist it if cursor was
-// empty so a reconnect can resume changes made after Watch succeeded.
-cursor = obs.Cursor()
-
-for {
-	ev, err := obs.Next(ctx)
-	if err != nil {
-		if errors.Is(err, execenv.ErrConnection) {
-			// Redial, Ensure the same grant, then Watch(ctx, cursor).
-		}
-		if errors.Is(err, execenv.ErrLagged) {
-			// Replay is unavailable. ReplaceTree from your store, then start
-			// a new generation with Watch(ctx, "").
-		}
-		return err
-	}
-	switch ev.Op {
-	case execenv.OpCreate, execenv.OpReplace:
-		body, err := env.Open(ctx, ev.Path)
-		if err != nil {
-			return err
-		}
-		data, err := io.ReadAll(body)
-		_ = body.Close()
-		if err != nil {
-			return err
-		}
-		saveInYourStore(ev.Path, data) // you own durable files
-	case execenv.OpDelete:
-		deleteFromYourStore(ev.Path)
-	case execenv.OpMove:
-		moveInYourStore(ev.From, ev.Path)
-	}
-	// Commit the mutation and ev.Cursor together. Do not acknowledge a
-	// cursor before the corresponding file mutation is durable.
-	cursor = ev.Cursor
-}
-```
-
-The guest watches `/workspace` with kernel file notifications, coalesces
-bursts, and rescans only metadata (size, times, inode) before hashing a
-changed file; a slow safety rescan catches anything a notification missed.
-Tool caches, virtual environments and dotfiles written through `$HOME` are
-not in `/workspace` (see Attach) and never appear here. A project-local
-`venv` or `node_modules` inside `/workspace` is still observed and can
-exceed the 500-entry cap, which reports `ErrLagged`.
-
-The host retains the most recent 64 guest events. A non-empty cursor resumes
-strictly after its event. An unknown, replaced, or evicted cursor returns
-`ErrLagged`; resynchronize with `ReplaceTree`. After a non-nil `Next` error
-the observation is spent.
-
-Paths are POSIX-relative: no leading `/`, no `..`, no NUL, UTF-8.
-
-### Attach a terminal
-
-One PTY per environment. Bytes are not workspace mutations.
-
-```go
-term, err := env.Attach(ctx, execenv.Window{Cols: 120, Rows: 40})
-if err != nil {
-	return err
-}
-defer term.Close()
-
-go copyTo(term, userInput)  // io.Reader from your UI
-go copyTo(userOutput, term) // io.Writer to your UI
-
-_ = term.Resize(ctx, execenv.Window{Cols: 80, Rows: 24})
-```
-
-Zero Cols or Rows means 80×24. A second `Attach` returns `ErrBusy` until
-`Close`. Close is hangup (`ErrClosed`); the grant stays.
-
-The shell starts in `/workspace` (`execenv.GuestWorkspace`), the projected
-tree. Its `$HOME` is `/run/execenv/home` (`execenv.GuestHome`), guest-local
-scratch outside the tree: it is not projected, watched, or harvested, and
-it is discarded with the grant. Both live on the grant's writable disk,
-not in guest memory.
-
-### Freeze and thaw
-
-```go
-if err := env.Freeze(ctx); err != nil {
-    return err
-}
-// New I/O is blocked. The existing PTY, process, and tree are preserved.
-if err := env.Thaw(ctx); err != nil {
-    return err
-}
-// Continue using the same terminal. Another Attach returns ErrBusy.
-```
-
-The isolated host acknowledges Freeze only after every execution-process thread
-is confirmed stopped (a `vm` host checks every monitor thread; a `user-kernel`
-host waits until the sandbox runtime reports the sandbox paused). A sent
-signal or request alone is insufficient. Agent I/O gating is
-separate from host execution suspension. A failed Thaw keeps the local gate
-closed and attempts to pause the instance again. Any error requires reconciliation;
-it is never evidence that the requested state was reached.
-
-### Ordered control
-
-Adapters also implement `execenv.ControlledEnv`. `Epoch()` identifies this exact
-occupancy and survives reconnect/re-Ensure. Reconstruction generates a fresh
-epoch; the host never recovers an old epoch without its highest fence. Production
-host process death kills its execution children; restart does not adopt them.
-
-```go
-controlled, ok := env.(execenv.ControlledEnv)
-if !ok {
-    return execenv.ErrUnavailable
-}
-request := execenv.ControlRequest{
-    Fence: execenv.ProjectionFence{
-        ExecutionGrantID: env.ID(),
-        EnvironmentEpoch: controlled.Epoch(),
-        FenceRevision: 7,
-    },
-    State: execenv.ControlFrozen,
-}
-receipt, err := controlled.Control(ctx, request)
-if err != nil {
-    return err
 }
 // Match receipt.Fence to the caller's current durable authorization before
 // acknowledging the effect or opening any caller-side gate.
@@ -500,20 +257,330 @@ intent before attempting an effect. Older requests and reuse of a revision with
 a different state conflict. Exact successful retries return the same receipt;
 exact failed retries attempt the effect again. `ControlStatus` reports the highest
 intent and whether its effect was confirmed, including after a lost response.
-Before the first fenced command its revision is zero.
+Before the first fenced command its revision is zero, so enter the protocol with
+a `running` request before the first projection call.
 
-Control accepts `running`, `frozen`, and `revoked`. Revocation is terminal even
-if destruction initially fails. Failed destruction retains the occupancy's slot
-until a successful retry. Once a fenced command is accepted, unfenced Freeze and
-Thaw conflict. Administrative `Host.Revoke(id)` still destroys the current grant;
-`Env.Revoke` targets only the captured epoch and cannot destroy a replacement.
-Remote environment requests bind their captured epoch, while PTY frames bind
-one connection's unique stream identity.
+Control accepts `running`, `frozen`, and `revoked`. `frozen` blocks new I/O and
+preserves the existing PTY, processes and tree; a later `running` continues the
+same terminal. The isolated host acknowledges `frozen` only after every monitor
+thread is confirmed stopped; a sent signal alone is insufficient. Agent I/O
+gating is separate from host execution suspension. A failed thaw keeps the local
+gate closed and pauses the instance again. Any error requires reconciliation; it
+is never evidence that the requested state was reached.
 
-This control extension does not certify the stronger incremental projection or
-semantic observation protocol. The existing Apply and Watch APIs still
-have their documented limits; callers must not infer new projection capabilities
-from support for ordered control.
+Revocation is terminal even if destruction initially fails. Failed destruction
+retains the occupancy's slot until a successful retry. Administrative
+`Host.Revoke(id)` destroys the current grant; `Env.Revoke` targets only the
+captured epoch and cannot destroy a replacement. Remote attach requests bind
+their captured epoch, while PTY frames bind one connection's unique stream
+identity.
+
+### Project the workspace
+
+Your application owns a journal of the workspace. The grant receives it as
+consecutive journal entries, each bound to the current fence.
+
+```go
+body, err := env.UploadProjectionContent(ctx, fence, strings.NewReader("print('hello')\n"))
+if err != nil {
+	return err
+}
+_, err = env.InitializeProjection(ctx, execenv.ProjectionInitialization{
+	Fence:           fence,
+	MutationID:      "init-job-7f3a",
+	WorkspaceCursor: 41, // your journal position this snapshot reflects
+	Entries: []execenv.ProjectionEntry{
+		{EntryID: "e-src", Kind: execenv.ProjectionDirectory, Path: "src"},
+		{EntryID: "e-main", Kind: execenv.ProjectionFile, Path: "src/main.py", ContentVersion: "v1", Content: &body},
+	},
+	// Optional: leave dependency installs and build output out of Observe.
+	// You choose the file; the host hardcodes none.
+	Ignore: &execenv.IgnoreRules{
+		File:     "your-ignore-file",
+		Fallback: []string{"node_modules/", "__pycache__/", "*.pyc"},
+	},
+})
+if err != nil {
+	return err
+}
+
+body, err = env.UploadProjectionContent(ctx, fence, strings.NewReader("print('hello world')\n"))
+if err != nil {
+	return err
+}
+receipt, err := env.ApplyProjection(ctx, execenv.ProjectionApply{
+	Fence:                  fence,
+	MutationID:             "save-42",
+	FromWorkspaceCursor:    41,
+	ThroughWorkspaceCursor: 42,
+	ExpectedHostCursor:     hostCursor, // from your last Observe page
+	Mutations: []execenv.ProjectionMutation{{
+		JournalCursor:           42,
+		EntryID:                 "e-main",
+		Operation:               execenv.ProjectionWrite,
+		Kind:                    execenv.ProjectionFile,
+		Path:                    "src/main.py",
+		ExpectedContentVersion:  "v1",
+		ResultingContentVersion: "v2",
+		Content:                 &body,
+	}},
+})
+```
+
+Initialize once, before opening the first terminal, into an empty workspace.
+Every Apply binds an exact grant/epoch/revision fence, mutation ID, from/through
+journal cursors, expected host cursor, stable entry IDs, kinds, and opaque
+content versions. The host compares versions for equality and never parses
+them. Batches contain 1–128 consecutive mutations and at most 256 KiB of
+metadata. Directory moves preserve all descendant identities and versions;
+deleting a nonempty directory requires `Recursive`. Exact retries return their
+original receipt; changing a used mutation ID conflicts. The epoch retains at
+most 65,536 receipts and refuses additional mutations rather than forgetting
+retry bindings.
+
+An Apply whose expected host cursor is behind an unobserved guest change, or
+that would overwrite a guest change on an affected path, fails with
+`ErrConflict` before any path changes. Observe first, decide, then apply.
+Freeze and thaw preserve the projection; neither requires a new snapshot.
+
+File contents travel separately as immutable, scoped SHA-256 references, within
+the 10-MiB file and 50-MiB tree limits. Unconsumed content expires after five
+minutes, with at most 512 handles per environment. The remote wire uses 64-KiB
+chunks and four active upload slots per listener; incomplete uploads expire
+after 30 idle seconds and are released on disconnect. References cannot name
+paths, URLs, credentials, another environment or observation content.
+
+Paths are POSIX-relative: no leading `/`, no `..`, no NUL, UTF-8.
+
+### Observe guest changes
+
+`Observe` is how the guest reports files **it** created, wrote, moved, or
+deleted. Your own projection calls do not appear here.
+
+```go
+page, err := env.Observe(ctx, fence, acknowledged, 128)
+if err != nil {
+	return err // ErrLagged: resynchronize from your journal
+}
+for _, event := range page.Observations {
+	if event.Content != nil {
+		body, err := env.OpenObservationContent(ctx, fence, *event.Content)
+		if err != nil {
+			return err
+		}
+		data, err := io.ReadAll(body)
+		_ = body.Close()
+		if err != nil {
+			return err
+		}
+		_ = data // the bytes the guest wrote, captured when it wrote them
+	}
+	mutation, accepted := decideInYourStore(event) // you own durable files
+	if accepted {
+		if err := env.ConfirmObservationProjection(ctx, execenv.ObservationProjection{
+			Fence: fence, HostSequence: event.HostSequence, Mutation: mutation,
+		}); err != nil {
+			return err
+		}
+	}
+	acknowledged = event.HostSequence
+}
+if err := env.AcknowledgeObservations(ctx, fence, acknowledged); err != nil {
+	return err
+}
+hostCursor = page.HostCursor
+```
+
+Each ordered event binds its original projected cursor and version, an
+epoch-stable node identity and immutable captured bytes; it never means
+reading the current path later. Directory moves are single subtree
+operations, parent creates precede children, and recursive directory deletion
+is explicit. Download streams use 64-KiB chunks, four active listener-wide
+slots, immutable-reference verification, and idle expiry.
+
+After accepting a guest event durably, call `ConfirmObservationProjection` with
+its host sequence and the exact resulting journal mutation before acknowledging
+it. The host binds the original identity, topology and content digest to that
+outcome. A later consecutive Apply of that mutation advances the baseline while
+suppressing only that known echo, preserving any later guest writes. A
+confirmation retry tolerates a new upload handle for the same immutable
+content; changing the outcome conflicts. Rejected or ignored outcomes need no
+confirmation.
+
+Acknowledge only after recording the outcome durably. Acknowledgement releases
+retained content; it does not itself imply acceptance or advance projection
+versions. Unacknowledged retention is bounded to 4096 events and 50 MiB.
+Overflow reports `ErrLagged` without discarding the retained prefix. A cursor
+before the acknowledged prefix also returns `ErrLagged`.
+
+Tool caches, virtual environments and dotfiles written through `$HOME` are not
+in `/workspace` (see Attach) and never appear here. A project-local `venv` or
+`node_modules` inside `/workspace` is observed and counts toward the retention
+bounds unless your `IgnoreRules` leave it out.
+
+#### Ignore rules
+
+`ProjectionInitialization.Ignore` names a workspace-relative file of
+gitignore patterns, and a fallback list used while that file is missing, is
+not a regular file, is larger than 64 KiB, or does not parse. Patterns follow
+gitignore: `#` comments, `!` negation, a trailing `/` for directories only, a
+leading or inner `/` anchors to the workspace root, `**` spans any depth, and
+the last matching pattern wins. A path under an ignored directory cannot be
+re-included.
+
+- Patterns suppress only paths the projection does not hold. A path you
+  projected, or one Observe already reported, stays observed while it exists,
+  including after a move to an ignored name. A held path moved *into* an
+  ignored, unheld directory leaves the stream as a delete.
+- The ignore file and its parent directories are always observed. The guest
+  re-reads the file whenever its bytes change, whether you projected the edit
+  or the guest wrote it, and the next Observe applies it: paths it un-ignores
+  arrive as creates.
+- An ignored directory that is not held is never walked. Its contents cost
+  nothing, never lag the stream, and never count toward the observation or
+  entry limits.
+- Ignored paths stay in the environment; nothing is deleted for being
+  ignored. A projected file or move onto an ignored path replaces what the
+  guest left there, as a checkout does, and a projected directory adopts an
+  ignored directory already at its path.
+
+The rules last for the epoch: initialization happens once, and an exact retry
+is a replay.
+
+The guest captures changes behind a kernel-acknowledged workload barrier with
+pinned filesystem identities, not content hashes. The agent's
+`-contain-workload` option requires a dedicated Linux guest with a usable
+unified workload hierarchy. It launches unprivileged processes inside that
+hierarchy before execution and prevents privilege escalation. Uncertain
+filesystem commits remain contained. Baked images start a PID-1 child reaper,
+require the kernel workload hierarchy, and run the contained agent; a guest
+helper that cannot serve the journal is refused at Ensure. Run `make certify`
+with the intended kernel/rootfs on real isolation hardware before production
+use; it covers TLS remote journal projection, immutable guest events,
+accepted-outcome echoes, semantic directory moves and preservation of the same
+shell/PTY through save and containment. Portable unit tests and Linux build
+containers are not that certification.
+
+### Process log
+
+`ObserveProcesses` is an ordered log of every program the environment's
+workload starts and how each process ends. The guest helper records it from
+the guest kernel, outside the workload, so the workload cannot see, alter or
+suppress an event already recorded. Each event leaves the guest as soon as it
+is taken; the host keeps it until you acknowledge it.
+
+```go
+page, err := env.ObserveProcesses(ctx, fence, acknowledged, execenv.MaxProcessPage)
+if err != nil {
+	return err // ErrLagged: that position was already acknowledged
+}
+for _, event := range page.Events {
+	switch event.Kind {
+	case execenv.ProcessStarted:
+		_ = event.Argv // bounded; Truncated says it was cut, Unread that it ended unread
+	case execenv.ProcessExited:
+		_ = event.ExitCode // nil when event.Signal ended it
+	case execenv.ProcessDropped:
+		_ = event.Dropped // events lost before this one
+	}
+	record(event) // keep what you need before acknowledging
+}
+if err := env.AcknowledgeProcesses(ctx, fence, page.Next); err != nil {
+	return err
+}
+acknowledged = page.Next
+```
+
+- The same fence as observations guards both calls; a stale epoch or
+  revision is `ErrConflict`, a frozen grant `ErrFrozen`, and revoke ends the
+  log with `ErrRevoked`.
+- Only the contained workload's processes are recorded, the login shell
+  included; never the guest helper or init. A fork that never starts a
+  program is part of its parent. A process that replaces its program reports
+  another start under the same PID, and its one exit ends the latest.
+- Sequences are per epoch and gapless. An exit never precedes its start, but
+  PIDs are reused, so pair starts and exits by order.
+- `Dir` is the working directory when it is inside `/workspace` or the scratch
+  home, else empty. A process that ended before its command line could be
+  read is reported `Unread`.
+- A full log never evicts and never blocks the workload. It counts what it
+  cannot keep, and one `ProcessDropped` event carrying the count takes the
+  next sequence once acknowledgement frees space. If the guest kernel's own
+  event buffer overflows, the loss is reported the same way, counted as 1
+  because the kernel does not say how many.
+- A cursor before the acknowledged prefix is `ErrLagged`; acknowledging or
+  asking past the events produced is `ErrInvalid`.
+
+The guest kernel must have the process events connector
+(`CONFIG_CONNECTOR`, `CONFIG_PROC_EVENTS`; `scripts/check-kernel-config`
+requires both). A guest helper without it says so in its handshake and is
+refused at Ensure, like one that cannot serve the journal. The in-memory
+adapter's shell records itself and every command line it runs.
+
+### Attach a terminal
+
+Each grant has at most one terminal session: one shell plus its most recent
+1 MiB of output. Clients attach to it; the shell outlives them. Bytes are not
+workspace mutations.
+
+```go
+term, err := env.Attach(ctx, execenv.AttachRequest{Window: execenv.Window{Cols: 120, Rows: 40}})
+if err != nil {
+	return err
+}
+defer term.Close() // detach; the shell keeps running
+
+go copyTo(term, userInput)  // io.Reader from your UI
+go copyTo(userOutput, term) // io.Writer to your UI
+
+_ = term.Resize(ctx, execenv.Window{Cols: 80, Rows: 24})
+```
+
+Output positions are absolute byte offsets from the shell's first byte.
+`Start()` is where this attachment begins and `Offset()` is the next byte
+`Read` returns. Remember `term.ID()` and `term.Offset()` to come back later,
+for example after a lost connection:
+
+```go
+term, err := env.Attach(ctx, execenv.AttachRequest{
+	Window: win,
+	Resume: &execenv.TerminalPosition{Terminal: id, Offset: offset},
+})
+switch {
+case errors.Is(err, execenv.ErrNotFound):
+	// The shell is gone. Attach again without Resume for a new one.
+case err == nil && term.Start() > offset:
+	// Output between offset and Start was overwritten and is lost.
+}
+```
+
+- No live session: Attach starts a shell; `Start()` is 0.
+- Resume: output from `Offset` (or from the oldest retained byte) then live
+  output. An offset beyond what the shell produced is `ErrInvalid`.
+- No Resume while a shell is live: the last 16 KiB of output, then a
+  redraw of full-screen programs.
+- Another client attached: `ErrBusy`, unless `Takeover: true`, which
+  supersedes it; its `Read` and `Write` return `ErrSuperseded`.
+- `Close` detaches. With no client attached the shell keeps running for the
+  host's `grace` (default 60s), then is hung up. A lost remote connection is
+  a detach.
+- `Hangup` ends the shell now. When the shell exits, `Read` returns `io.EOF`
+  after the remaining output, and the next Attach starts a new shell.
+- A reader that falls behind the retained history skips ahead; `Offset()`
+  jumps. Over a remote connection each terminal has its own 256 KiB flow
+  control window per direction: the client buffers at most that much unread
+  output, and the host stops reading a terminal whose reader is stalled
+  until it reads again, so one stalled terminal never delays calls or other
+  terminals. `Write` blocks while the host has not taken earlier input.
+- Freeze and thaw keep the session. Revoke ends it (`ErrRevoked`).
+
+Zero Cols or Rows means 80×24. The window applies on every attach.
+
+The shell starts in `/workspace` (`execenv.GuestWorkspace`), the projected
+tree. Its `$HOME` is `/run/execenv/home` (`execenv.GuestHome`), guest-local
+scratch outside the tree: it is not projected, observed, or harvested, and
+it is discarded with the grant. Both live on the grant's writable disk,
+not in guest memory.
 
 ### Revoke
 
@@ -523,6 +590,22 @@ err := host.Revoke(ctx, "job-7f3a") // also env.Revoke(ctx); both are idempotent
 
 The guest is destroyed. Keep anything you still need in your own store
 before this call.
+
+### Lost grants
+
+A grant's environment can end without a revoke: its machine exits, its
+guest kernel panics, or the host loses the guest link for good. The host
+notices on its own. It frees the slot and cleans up as a revoke would, and
+every call on that occupancy fails with `ErrLost`: Attach, Control,
+ControlStatus, projection, Observe, the process log, and an attached
+terminal's Read and Write. Over the wire the same sentinel reaches the
+client.
+
+`Ensure` of the lost id also returns `ErrLost`, so a reconnecting caller
+cannot mistake an empty new guest for the one it had. Acknowledge the loss
+with `Revoke` (host or env; it returns nil), then `Ensure` the id again: it
+gets a new `Epoch`, and you rebuild it from your journal as after any new
+occupancy. Fences from the lost epoch never apply to the new one.
 
 ### Network
 
@@ -546,18 +629,20 @@ Match with `errors.Is`. Wrappers preserve the sentinel.
 
 | Error | When |
 | --- | --- |
-| `ErrInvalid` | bad id, image, path, or config |
+| `ErrInvalid` | bad id, image, path, fence, or config |
 | `ErrUnknownImage` | that catalog id is not on the host |
 | `ErrCapacity` | no remaining slots |
-| `ErrConflict` | live grant mismatch, or Apply fence |
-| `ErrUnavailable` | host unusable, or release stamp mismatch |
+| `ErrDraining` | host is draining; it serves held grants only |
+| `ErrConflict` | live grant mismatch, stale fence, or unobserved guest change |
+| `ErrUnavailable` | host unusable, release stamp or protocol mismatch |
 | `ErrFrozen` | I/O while frozen |
 | `ErrRevoked` | grant is gone |
+| `ErrLost` | grant's environment ended without a revoke; Revoke, then Ensure again |
 | `ErrBusy` | a terminal is already attached |
-| `ErrClosed` | terminal or observation closed (not revoke) |
-| `ErrNotFound` | path missing |
-| `ErrLagged` | Watch overflow; resync |
-| `ErrTooLarge` | file or tree over the cap |
+| `ErrClosed` | terminal or content reader closed (not revoke) |
+| `ErrNotFound` | path missing from the projection |
+| `ErrLagged` | observations no longer retained, or a process log position already acknowledged |
+| `ErrTooLarge` | file, tree or metadata over the cap |
 | `ErrConnection` | remote session lost |
 | `ErrNetwork` | allowlist requested, host offers none |
 
@@ -568,16 +653,25 @@ Do not log tokens, tree bodies, or PTY octets.
 | Cap | Value |
 | --- | --- |
 | Grant id / image id | 1–64 characters `[A-Za-z0-9._-:]` |
-| Entries per ReplaceTree or Apply | 500 |
+| Entries in one projection | 500 |
+| Mutations per Apply | 128 |
 | One file body | 10 MiB |
-| Sum of bodies in one call | 50 MiB |
+| Sum of file bodies | 50 MiB |
+| Apply metadata | 256 KiB |
+| Initialization metadata | 4 MiB |
+| Unacknowledged observations | 4096 events, 50 MiB |
+| Unacknowledged process events | 4096 events, 2 MiB |
+| Process log page | 256 events, 256 KiB |
+| Started command line | 64 arguments, 1 KiB |
+| Reported working directory | 4096 bytes |
+| Ignore file read | 64 KiB (larger uses the fallback) |
+| Ignore fallback | 256 patterns, 16 KiB |
 | Encoded protocol frame | 72 MiB |
 | PTY frame | 64 KiB |
-| Guest-event replay window | 64 events |
+| Remote PTY flow-control window | 256 KiB per terminal and direction |
 | Path length | 1024 bytes UTF-8 |
 | Path segments | 16 |
 | One segment | 255 bytes |
-| Watch cursor | 128 bytes |
 | Terminals per environment | 1 |
 
 The workspace inside the guest is `/workspace`; `$HOME` is
@@ -592,71 +686,27 @@ This section is for the Linux machine that will occupy grants. It does
 not use Go. You install binaries and catalog disks, then give the
 application the listen address, token, and certificate.
 
-### Choose an isolation class
+### The isolation boundary
 
-The operator chooses the boundary in Host configuration (`isolation`) or
-with `execenvctl bootstrap --isolation`. execenv never picks one for you
-and never falls back from one to the other.
-
-- **`vm` (default, recommended).** Each grant is a microVM run by the
-  runtime and supervisor pair bootstrap installs. Use it whenever the
-  machine has usable KVM. A `vm`
-  host without a usable `/dev/kvm` fails closed: bootstrap writes nothing
-  and `Ready` reports unusable. It does not become a `user-kernel` host.
-- **`user-kernel`.** Each grant is a gVisor sandbox run directly with
-  `runsc` and an OCI bundle. Docker and containerd are not used. It needs
-  no virtualization hardware, so institutions can self-host on any Linux
-  machine, including cloud VMs without nested virtualization.
-
-Be honest with yourself about the difference. In `vm`, a guest that fully
-compromises its own kernel still has to escape a hypervisor. In
-`user-kernel`, the guest talks to gVisor's Sentry, a user-space kernel
-written in Go, which runs on the host kernel inside namespaces and seccomp
-filters. That is a much stronger boundary than an ordinary container, but
-a bug in the Sentry, the gofer, or the host kernel's reduced syscall
-surface is one step from the host instead of two. Applications can read
-`Report.Isolation` and apply their own policy.
-
-What stays the same: the one catalog (the same baked `rootfs.ext4`), the
-`/workspace` projection, one PTY, freeze/thaw, revoke, `none` and
-allowlist networks, CPU and memory limits, slots, and stale cleanup after
-a daemon crash. What differs:
-
-| | `vm` | `user-kernel` |
-| --- | --- | --- |
-| Boundary | hypervisor + guest kernel | user-space kernel + namespaces + seccomp |
-| Freeze | monitor threads stopped, confirmed in `/proc` | `runsc pause`, confirmed by `runsc state` |
-| Workspace disk | guest mounts it; the host never parses it | host loop-mounts it and binds it in |
-| Catalog rootfs | read-only drive | host loop-mounts it read-only once per image |
-| Journal (`require_journal`) | supported once certified | refused by configuration |
+Each grant is a microVM run by the runtime and supervisor pair bootstrap
+installs: a guest that fully compromises its own kernel still has to escape a
+hypervisor. A host without a usable `/dev/kvm` fails closed: bootstrap writes
+nothing and `Ready` reports unusable. There is no container fallback.
 
 ### What the machine needs
 
-Both classes:
-
 - Linux on **amd64**
 - Root, or equivalent, for the default layout
+- A usable isolation device at `/dev/kvm` (readable and writable by the
+  host process, typically the `kvm` group)
+- The microVM runtime and supervisor pair (bootstrap installs them)
 - `mkfs.ext4` (e2fsprogs): every grant gets a sparse ext4 workspace disk
 - `ip` and `iptables` if you configure an allowlist
 - Network reachability from the application on port **8443** (or the
   listen address you choose)
 
-`vm` additionally:
-
-- A usable isolation device at `/dev/kvm` (readable and writable by the
-  host process, typically the `kvm` group)
-- The microVM runtime and supervisor pair (bootstrap installs them)
-
-`user-kernel` additionally:
-
-- `runsc`, installed and verified by you. Bootstrap copies it into the
-  prefix but never downloads it.
-- The host kernel's loop device and ext4 support, and `mount` from
-  util-linux (`mount -o loop`)
-- cgroup v2 at `/sys/fs/cgroup`, so per-grant CPU and memory limits apply
-
-Missing prerequisites fail closed for either class. Docker is not used on
-this machine and is not a substitute.
+Missing prerequisites fail closed. Docker is not used on this machine and is
+not a substitute.
 
 **Use a dedicated Linux machine, not a nested VM, when you can.** The
 isolation device is itself a virtual machine monitor. Running that inside
@@ -670,9 +720,7 @@ WSL2, Docker Desktop’s Linux VM, many CI runners) often means:
 Bare metal, or a provider that exposes KVM to the guest as a first-class
 device, is the production path. A “nested Linux” lab can work for
 exploration if `/dev/kvm` opens, but it is the first thing to blame when
-Ready is unusable or grants fail to start. If you cannot get KVM, choose
-`user-kernel` deliberately rather than running `vm` on unreliable nested
-virtualization.
+Ready is unusable or grants fail to start.
 
 ### Grant resources
 
@@ -680,13 +728,13 @@ These Host configuration keys apply to every grant:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `cpu_millis` | 1000 | vCPUs (`vm`, rounded down to whole CPUs) or CPU quota (`user-kernel`) |
-| `memory_bytes` | 128 MiB | guest memory (`vm`) or cgroup memory limit (`user-kernel`) |
+| `cpu_millis` | 1000 | vCPUs, rounded down to whole CPUs |
+| `memory_bytes` | 128 MiB | guest memory |
 | `disk_bytes` | 2 GiB | sparse workspace disk; minimum 64 MiB |
 | `mkfs` | `mkfs.ext4` on `PATH` | formatter for workspace disks |
-| `jail_uid_base` | 2000000000 | `vm` only: first of 65536 host uids reserved for jailed microVM monitors |
+| `jail_uid_base` | 2000000000 | first of 65536 host uids reserved for jailed microVM monitors |
 
-On `vm` hosts each grant's monitor runs in its own jail under
+Each grant's monitor runs in its own jail under
 `<state>/work/jails`, as its own unprivileged uid from the
 `jail_uid_base` range, never as root. The kernel and rootfs are hard-linked
 into the jail (read-only bind mounts when they sit on another filesystem),
@@ -699,7 +747,13 @@ written blocks use host storage. It is created when the grant starts and
 removed on revoke and when a restarted daemon clears stale grants. The
 guest does not reclaim space from deleted files during a grant.
 
-On `vm` hosts each microVM also gets a balloon device with free page
+The daemon watches every grant's machine. If a monitor exits, a guest
+panics (guests boot with `panic=1`, so a panic resets and ends the
+machine), or the guest link breaks, the daemon releases that grant's jail,
+disk, tap and uid at once, as a revoke would, and its slot is free again.
+Callers see `ErrLost`; `Ready` counts it in `Lost`.
+
+Each microVM also gets a balloon device with free page
 reporting and `deflate_on_oom`, so pages the guest frees go back to the
 host and a grant's resident memory follows what it actually uses. This
 needs the guest kernel to have `CONFIG_VIRTIO_BALLOON`,
@@ -737,44 +791,40 @@ Defaults:
 | `--state` | `/var/lib/execenv` |
 | `--listen` | `0.0.0.0:8443` |
 | `--slots` | `8` |
-| `--isolation` | `vm` |
-| `--device` | `/dev/kvm` (`vm` only) |
-| `--sandbox-runtime` | `runsc` on `PATH` (`user-kernel` only) |
+| `--device` | `/dev/kvm` |
 | `--mkfs` | `mkfs.ext4` on `PATH` |
 
 What bootstrap does, in order:
 
-1. For `vm`, opens the isolation device. If that fails, it stops and
-   writes nothing. The error says the device is missing or not usable,
-   and that there is no container fallback. `user-kernel` skips this
-   step; it is only used when you pass `--isolation user-kernel`.
+1. Opens the isolation device. If that fails, it stops and writes
+   nothing. The error says the device is missing or not usable, and that
+   there is no container fallback.
 2. Finds `mkfs.ext4`, or stops and writes nothing.
 3. Creates the bin, state, and config directories.
 4. Installs the `execenv` daemon binary (from this tag, or `--execenv`
    for an air-gapped file).
-5. For `vm`, installs the runtime and supervisor pair, fetching them if
-   they are not already on `PATH` (unless `--no-fetch`). For
-   `user-kernel`, installs your `runsc`.
+5. Installs the runtime and supervisor pair, fetching them if they are
+   not already on `PATH` (unless `--no-fetch`).
 6. Writes Host configuration and TLS files (see below).
 7. Writes `execenv.service` and enables it (unless `--no-start`).
-
-```sh
-# A machine without KVM, chosen deliberately:
-sudo execenvctl bootstrap --isolation user-kernel --sandbox-runtime /usr/local/bin/runsc
-```
 
 The catalog is still empty. The host cannot occupy grants until you
 install at least one Image.
 
 ```sh
 sudo execenvctl status
-# isolation=vm
 # device=ok
 # mkfs=ok
 # unit=active
+# drain=serving
+# grants=0
 # installed=
 # release=v1.2.3
 ```
+
+`drain` is `serving`, `draining`, `drained`, or `unreachable` when the
+daemon does not answer on its operator socket; `grants` is how many grants
+it holds.
 
 Useful flags: `--listen`, `--slots`, `--execenv ./execenv`, `--no-start`,
 `--no-fetch`. `--insecure` writes cleartext for loopback labs only; do
@@ -836,14 +886,16 @@ sudo execenvctl list
 
 `install` fetches that id from this binary’s tagged release, verifies the
 kernel-then-rootfs hash, writes local paths into Host configuration, and
-reloads the daemon.
+restarts the daemon. A restart destroys every grant the daemon holds, so
+`install`, `remove` and `upgrade` refuse, before changing anything, while
+grants are live; see Drain before a restart.
 
 Ids you can install when the release includes them: `python`, `node`,
 `go`, `java`. `default` is a large universal-class disk, often published
 onto the same tag later. `fixture` is a tiny disk for live isolation
-tests. The same disks serve `vm` and `user-kernel` hosts.
+tests.
 
-Prefer the slim per-language ids for exams and other high-concurrency use.
+Prefer the slim per-language ids for high-concurrency use.
 Every grant reads its image from the host page cache, and a slim image
 keeps that cache, boot time and install size small. `default` is several
 gigabytes of toolchains most grants never touch; install it only for
@@ -858,6 +910,42 @@ sudo execenvctl remove python   # does not touch the token
 ```
 
 Until an id is installed, `Ensure` of that id is `ErrUnknownImage`.
+
+### Drain before a restart
+
+`install`, `remove` and `upgrade` restart a running daemon. Drain it first
+so no live grant is destroyed:
+
+```sh
+sudo execenvctl drain --timeout 30m
+# state=draining grants=3
+# state=draining grants=1
+# state=drained grants=0
+sudo execenvctl install python
+```
+
+While draining, the daemon keeps serving the grants it holds (including
+`Ensure` of one of them) and refuses new ones with `ErrDraining`; `Ready`
+reports `Usable` false with reason `draining`, so the application places
+new grants elsewhere. `drain` prints the remaining count as it changes and
+returns once none remain. If `--timeout` passes first it exits non-zero
+and the daemon stays draining; `--timeout 0` starts the drain and returns
+at once. A drained daemon restarts without `--force`, and the restart
+brings it back serving. To cancel a drain without restarting:
+
+```sh
+sudo execenvctl undrain
+```
+
+`--force` on `install`, `remove` or `upgrade` restarts anyway and destroys
+the live grants. They also refuse when the unit is running but its daemon
+does not answer, since then nothing can say whether grants are live.
+
+execenvctl reaches the daemon on a Unix socket, `operator_socket` in Host
+configuration (bootstrap writes `/var/lib/execenv/operator.sock`, mode
+`0600`). It carries only drain requests and the live grant count, never
+grant operations, so grant callers on the network cannot take the host out
+of service. Drain state is not saved: every daemon start begins serving.
 
 ### Give the application what it needs
 
@@ -879,7 +967,9 @@ sudo execenvctl upgrade
 
 That replaces `execenv` and `execenvctl` from this binary’s tag, then
 reinstalls every catalog id already on the host so the guest agent
-matches. Token, TLS files, listen address, slots, and allowlist stay.
+matches, then restarts the daemon once. Drain first (see above); without
+`--force` it refuses before replacing anything while grants are live.
+Token, TLS files, listen address, slots, and allowlist stay.
 If an installed id is missing from the new index, upgrade fails before
 binaries move. When everything already matches: `upgraded=already current`.
 
@@ -895,9 +985,7 @@ make build    # stamps Release, Build, and Tag when HEAD is an exact git tag
 Pull requests run `make check`. Catalog-related pull requests smoke-bake
 `fixture`. Pushing `v*` publishes linux/amd64 binaries and language
 disks. Isolation hardware tests are opt-in (`make isolation`,
-`make certify`). They default to `vm`; set
-`EXECENV_ISOLATION_CLASSES=vm,user-kernel` (isolation) or
-`EXECENV_ISOLATION_CLASS=user-kernel` (certify) to cover the sandbox.
+`make certify`).
 
 Bake (`scripts/bake`) is CI-only. It is not an `execenv` command and is
 not installed on the grant host.
