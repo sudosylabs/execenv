@@ -144,15 +144,8 @@ func (sc *serverConn) unwrapEpoch(f *frame) error {
 	return nil
 }
 func (e *remoteEnv) hangupTerm(err error) {
-	e.client.mu.Lock()
-	term := e.client.terms[e.id]
-	if term != nil && term.epoch == e.epoch {
-		delete(e.client.terms, e.id)
-	} else {
-		term = nil
-	}
-	e.client.mu.Unlock()
-	if term != nil {
+	for _, term := range e.terminals() {
+		e.client.forget(term)
 		term.hangup(err)
 	}
 }

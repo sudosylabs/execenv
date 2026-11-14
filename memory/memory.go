@@ -3,22 +3,22 @@ package memory
 
 import (
 	"context"
-	"io"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/internal/control"
 	"github.com/sudosylabs/execenv/internal/guesttree"
 	"github.com/sudosylabs/execenv/internal/observations"
 	"github.com/sudosylabs/execenv/internal/projection"
+	"github.com/sudosylabs/execenv/internal/terminal"
 	"github.com/sudosylabs/execenv/internal/tree"
 )
 
 var (
-	_ execenv.Host     = (*Host)(nil)
-	_ execenv.Env      = (*environment)(nil)
-	_ execenv.Terminal = (*terminal)(nil)
+	_ execenv.Host = (*Host)(nil)
+	_ execenv.Env  = (*environment)(nil)
 )
 
 // Config constructs an in-memory host.
@@ -26,6 +26,9 @@ type Config struct {
 	Images   []execenv.Image
 	Slots    int
 	Unusable bool
+	// TerminalGrace is how long a detached shell keeps running. Zero uses
+	// execenv.DefaultTerminalGrace.
+	TerminalGrace time.Duration
 }
 
 // Host is an in-process execenv.Host. It is not isolated.
@@ -34,6 +37,7 @@ type Host struct {
 	images   []execenv.Image
 	slots    int
 	unusable bool
+	grace    time.Duration
 	grants   map[execenv.ID]*environment
 }
 
@@ -50,20 +54,9 @@ type environment struct {
 	host            *Host
 	frozen          bool
 	revoked         bool
-	term            *terminal
+	terminal        *terminal.Manager
 	// files is the current projection. Paths are already-validated.
 	files tree.Snapshot
-}
-
-type terminal struct {
-	env    *environment
-	mu     sync.Mutex
-	cond   *sync.Cond
-	buf    []byte
-	win    execenv.Window
-	closed bool
-	frozen bool
-	dead   error
 }
 
 // New returns an inert in-memory host.
@@ -76,6 +69,7 @@ func New(cfg Config) (*Host, error) {
 		images:   append([]execenv.Image(nil), cfg.Images...),
 		slots:    slots,
 		unusable: cfg.Unusable,
+		grace:    cfg.TerminalGrace,
 		grants:   make(map[execenv.ID]*environment),
 	}, nil
 }
@@ -140,6 +134,14 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		host:       h,
 		files:      make(tree.Snapshot),
 	}
+	// The in-memory shell is a stand-in, not a process; it starts with no
+	// window or isolation beyond the session machinery every adapter shares.
+	env.terminal = terminal.New(terminal.Config{
+		Grace: h.grace,
+		Start: func(_ context.Context, win execenv.Window) (terminal.Shell, error) {
+			return newShell(win), nil
+		},
+	})
 	h.grants[spec.ID] = env
 	return env, nil
 }
@@ -184,24 +186,17 @@ func (h *Host) hasImage(want execenv.Image) bool {
 
 func (e *environment) ID() execenv.ID { return e.id }
 
-func (e *environment) Attach(ctx context.Context, win execenv.Window) (execenv.Terminal, error) {
+func (e *environment) Attach(ctx context.Context, request execenv.AttachRequest) (execenv.Terminal, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, execenv.Error("attach", err)
 	}
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.revoked {
-		return nil, execenv.Error("attach", execenv.ErrRevoked)
+	err := e.guard("attach")
+	e.mu.Unlock()
+	if err != nil {
+		return nil, err
 	}
-	if e.frozen {
-		return nil, execenv.Error("attach", execenv.ErrFrozen)
-	}
-	if e.term != nil && !e.term.finished() {
-		return nil, execenv.Error("attach", execenv.ErrBusy)
-	}
-	term := newTerminal(e, win)
-	e.term = term
-	return term, nil
+	return e.terminal.Attach(ctx, request)
 }
 
 func (e *environment) freeze(ctx context.Context) error {
@@ -214,9 +209,7 @@ func (e *environment) freeze(ctx context.Context) error {
 		return execenv.Error("freeze", execenv.ErrRevoked)
 	}
 	e.frozen = true
-	if e.term != nil {
-		e.term.setFrozen(true)
-	}
+	e.terminal.Freeze()
 	return nil
 }
 
@@ -230,9 +223,7 @@ func (e *environment) thaw(ctx context.Context) error {
 		return execenv.Error("thaw", execenv.ErrRevoked)
 	}
 	e.frozen = false
-	if e.term != nil {
-		e.term.setFrozen(false)
-	}
+	e.terminal.Thaw()
 	return nil
 }
 
@@ -252,112 +243,6 @@ func (e *environment) stop() error {
 	defer e.mu.Unlock()
 	e.revoked = true
 	e.frozen = false
-	if e.term != nil {
-		e.term.kill(execenv.ErrRevoked)
-		e.term = nil
-	}
-	return nil
-}
-
-func newTerminal(env *environment, win execenv.Window) *terminal {
-	if win.Cols == 0 {
-		win.Cols = 80
-	}
-	if win.Rows == 0 {
-		win.Rows = 24
-	}
-	term := &terminal{env: env, win: win}
-	term.cond = sync.NewCond(&term.mu)
-	return term
-}
-
-func (t *terminal) setFrozen(frozen bool) {
-	t.mu.Lock()
-	t.frozen = frozen
-	t.cond.Broadcast()
-	t.mu.Unlock()
-}
-
-func (t *terminal) finished() bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.closed || t.dead != nil
-}
-
-func (t *terminal) kill(reason error) {
-	t.mu.Lock()
-	t.dead = reason
-	t.cond.Broadcast()
-	t.mu.Unlock()
-}
-
-func (t *terminal) Read(p []byte) (int, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	for (t.frozen || len(t.buf) == 0) && !t.closed && t.dead == nil {
-		t.cond.Wait()
-	}
-	if t.dead != nil {
-		return 0, execenv.Error("read", t.dead)
-	}
-	if len(t.buf) == 0 {
-		return 0, io.EOF
-	}
-	n := copy(p, t.buf)
-	t.buf = t.buf[n:]
-	return n, nil
-}
-
-func (t *terminal) Write(p []byte) (int, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.dead != nil {
-		return 0, execenv.Error("write", t.dead)
-	}
-	if t.frozen {
-		return 0, execenv.Error("terminal", execenv.ErrFrozen)
-	}
-	if t.closed {
-		return 0, execenv.Error("write", execenv.ErrClosed)
-	}
-	t.buf = append(t.buf, p...)
-	t.cond.Broadcast()
-	return len(p), nil
-}
-
-func (t *terminal) Resize(ctx context.Context, win execenv.Window) error {
-	if err := ctx.Err(); err != nil {
-		return execenv.Error("resize", err)
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.dead != nil {
-		return execenv.Error("resize", t.dead)
-	}
-	if t.frozen {
-		return execenv.Error("terminal", execenv.ErrFrozen)
-	}
-	if t.closed {
-		return execenv.Error("resize", execenv.ErrClosed)
-	}
-	if win.Cols == 0 {
-		win.Cols = 80
-	}
-	if win.Rows == 0 {
-		win.Rows = 24
-	}
-	t.win = win
-	return nil
-}
-
-func (t *terminal) Close() error {
-	t.mu.Lock()
-	if t.closed {
-		t.mu.Unlock()
-		return nil
-	}
-	t.closed = true
-	t.cond.Broadcast()
-	t.mu.Unlock()
+	e.terminal.End(execenv.ErrRevoked)
 	return nil
 }

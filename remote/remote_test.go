@@ -17,9 +17,17 @@ import (
 )
 
 func TestConformance(t *testing.T) {
-	execenvtest.Run(t, func(t *testing.T) execenv.Host {
+	execenvtest.Run(t, func(t *testing.T, cfg execenvtest.Config) execenv.Host {
 		t.Helper()
-		return startLoopback(t)
+		inner, err := memory.New(memory.Config{
+			Images:        []execenv.Image{"default", "alt"},
+			Slots:         2,
+			TerminalGrace: cfg.TerminalGrace,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return serveInner(t, inner)
 	})
 }
 
@@ -102,7 +110,7 @@ func TestAttachEchoesBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	term, err := env.Attach(t.Context(), execenv.Window{})
+	term, err := env.Attach(t.Context(), execenv.AttachRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +137,7 @@ func TestAttachKeepsOutputProducedBeforeReply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	term, err := env.Attach(t.Context(), execenv.Window{})
+	term, err := env.Attach(t.Context(), execenv.AttachRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +251,7 @@ func TestDroppedPtyIsHangupNotRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	term, err := env.Attach(t.Context(), execenv.Window{})
+	term, err := env.Attach(t.Context(), execenv.AttachRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +263,7 @@ func TestDroppedPtyIsHangupNotRevoke(t *testing.T) {
 	if err != nil || receipt.State != execenv.ControlRunning {
 		t.Fatalf("ControlStatus() after PTY close = %+v %v", receipt, err)
 	}
-	again, err := env.Attach(t.Context(), execenv.Window{})
+	again, err := env.Attach(t.Context(), execenv.AttachRequest{})
 	if err != nil {
 		t.Fatalf("Attach() after hangup error = %v", err)
 	}
@@ -316,8 +324,8 @@ type promptEnv struct {
 	execenv.Env
 }
 
-func (e promptEnv) Attach(ctx context.Context, window execenv.Window) (execenv.Terminal, error) {
-	term, err := e.Env.Attach(ctx, window)
+func (e promptEnv) Attach(ctx context.Context, request execenv.AttachRequest) (execenv.Terminal, error) {
+	term, err := e.Env.Attach(ctx, request)
 	if err != nil {
 		return nil, err
 	}

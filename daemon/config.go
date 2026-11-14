@@ -51,13 +51,16 @@ type Config struct {
 	// Isolated grants use these as machine defaults. Memory ignores them.
 	// DiskBytes sizes each grant's sparse workspace disk (default 2 GiB,
 	// minimum 64 MiB); only written blocks use host storage.
-	CPUMillis   int           `json:"cpu_millis,omitempty"`
-	MemoryBytes int64         `json:"memory_bytes,omitempty"`
-	DiskBytes   int64         `json:"disk_bytes,omitempty"`
-	Network     string        `json:"network,omitempty"`
-	Allow       []string      `json:"allow,omitempty"`
-	Grace       time.Duration `json:"-"`
-	GraceText   string        `json:"grace,omitempty"`
+	CPUMillis   int      `json:"cpu_millis,omitempty"`
+	MemoryBytes int64    `json:"memory_bytes,omitempty"`
+	DiskBytes   int64    `json:"disk_bytes,omitempty"`
+	Network     string   `json:"network,omitempty"`
+	Allow       []string `json:"allow,omitempty"`
+	// Grace (JSON "grace", a Go duration) is how long a detached terminal
+	// shell keeps running before the host hangs it up. Unset uses
+	// execenv.DefaultTerminalGrace (60s).
+	Grace     time.Duration `json:"-"`
+	GraceText string        `json:"grace,omitempty"`
 }
 
 // Image is one catalog entry. Memory only needs ID. Isolated grants use

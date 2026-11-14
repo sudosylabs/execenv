@@ -31,8 +31,19 @@ const (
 	methodRevoke                 = "revoke"
 	methodAttach                 = "attach"
 	methodDetach                 = "detach"
+	methodHangup                 = "hangup"
 	methodResize                 = "resize"
 )
+
+// statusEOF ends a terminal stream whose shell exited. It is a PTY end
+// status only, never an RPC status.
+const statusEOF = "eof"
+
+// maxClientPtyBytes bounds the PTY output one client Terminal buffers
+// before its reader takes it. Past it the Terminal fails with ErrLagged
+// and detaches, so the caller resumes from Offset instead of the client
+// growing without bound.
+const maxClientPtyBytes = 1 << 20
 
 var (
 	encodeExtra     = mux.EncodeExtra
@@ -44,7 +55,7 @@ var (
 // protocolVersion is the wire revision shared by New and Serve. Both refuse
 // a peer on any other revision. Bump it whenever a method, its arguments or
 // its meaning changes.
-const protocolVersion = 4
+const protocolVersion = 5
 
 type authResult struct {
 	Protocol     int
@@ -61,9 +72,19 @@ type ensureArgs struct {
 	Spec execenv.Spec
 }
 
+// attachArgs carries an execenv.AttachRequest and the connection's new
+// stream identity. Server PTY frames on that stream carry, in Seq, the
+// absolute terminal offset of their first byte.
 type attachArgs struct {
-	Window execenv.Window
-	Stream uint64
+	Window   execenv.Window
+	Stream   uint64
+	Resume   *execenv.TerminalPosition
+	Takeover bool
+}
+
+type attachResult struct {
+	Terminal execenv.TerminalID
+	Start    uint64
 }
 
 type resizeArgs struct {

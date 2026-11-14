@@ -147,7 +147,7 @@ func TestOrdinaryLogsOmitSecrets(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	term, err := env.Attach(t.Context(), execenv.Window{})
+	term, err := env.Attach(t.Context(), execenv.AttachRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}

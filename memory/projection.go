@@ -42,7 +42,7 @@ func (e *environment) InitializeProjection(ctx context.Context, request execenv.
 		defer e.mu.Unlock()
 		var err error
 		receipt, err = e.projection.Initialize(request, func(snapshot execenv.Tree) error {
-			if e.term != nil && !e.term.finished() || len(e.files) != 0 {
+			if e.terminal.Live() || len(e.files) != 0 {
 				return execenv.ErrConflict
 			}
 			next, err := tree.FromTree(snapshot)

@@ -41,7 +41,7 @@ func TestCertifyRemoteJournalPreservesLiveWork(t *testing.T) {
 	if _, err := journal.InitializeProjection(t.Context(), execenv.ProjectionInitialization{Fence: fence, MutationID: "init", WorkspaceCursor: 10, Entries: []execenv.ProjectionEntry{{EntryID: "dir", Kind: execenv.ProjectionDirectory, Path: "dir"}, {EntryID: "file", Kind: execenv.ProjectionFile, Path: "dir/file", ContentVersion: "v1", Content: &reference}}}); err != nil {
 		t.Fatal(err)
 	}
-	term, err := env.Attach(t.Context(), execenv.Window{})
+	term, err := env.Attach(t.Context(), execenv.AttachRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}

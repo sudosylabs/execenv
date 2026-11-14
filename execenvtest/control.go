@@ -10,7 +10,7 @@ import (
 
 func runControl(t *testing.T, factory Factory) {
 	t.Run("opaque control fences survive reensure and reject replacement effects", func(t *testing.T) {
-		host := factory(t)
+		host := factory(t, Config{})
 		spec := execenv.Spec{ID: "fenced-grant", Image: "default"}
 		env, err := host.Ensure(t.Context(), spec)
 		if err != nil {
@@ -60,7 +60,7 @@ func runControl(t *testing.T, factory Factory) {
 		if err := env.Revoke(t.Context()); err != nil && !errors.Is(err, execenv.ErrConflict) {
 			t.Fatal(err)
 		}
-		if _, err := successor.Attach(t.Context(), execenv.Window{}); err != nil {
+		if _, err := successor.Attach(t.Context(), execenv.AttachRequest{}); err != nil {
 			t.Fatalf("stale revoke affected successor: %v", err)
 		}
 		req.State = execenv.ControlRunning

@@ -3,4 +3,8 @@
 //
 // The host never implements a fake PTY. Unit tests run this package on a
 // Unix socket; a real machine uses the same protocol on the guest link.
+//
+// Closing the PTY ends the guest shell. The host keeps terminal sessions
+// alive across client detaches above this package and closes the PTY only
+// when it hangs a session up.
 package agent

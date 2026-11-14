@@ -24,8 +24,10 @@ type Client struct {
 	stream       atomic.Uint64
 	mu           sync.Mutex
 	pending      map[uint64]chan frame
-	terms        map[execenv.ID]*remoteTerminal
-	closed       bool
+	// terms is keyed by stream. Several streams may name one grant while a
+	// takeover is settling; only the host decides which one is attached.
+	terms  map[uint64]*remoteTerminal
+	closed bool
 }
 
 // New dials cfg.Address. The constructor is inert aside from the dial and
@@ -56,7 +58,7 @@ func New(cfg Config) (*Client, error) {
 		cfg:     cfg,
 		sess:    newSession(conn),
 		pending: make(map[uint64]chan frame),
-		terms:   make(map[execenv.ID]*remoteTerminal),
+		terms:   make(map[uint64]*remoteTerminal),
 	}
 	go client.readLoop()
 	if err := client.authenticate(); err != nil {
@@ -123,24 +125,43 @@ func (c *Client) failAll() {
 		ch <- frame{Seq: seq, Status: "connection"}
 		delete(c.pending, seq)
 	}
-	for id, term := range c.terms {
-		term.hangup(execenv.ErrClosed)
-		delete(c.terms, id)
+	// A lost connection is a detach on the host. Each Terminal keeps its
+	// Offset so a new connection can resume it.
+	for stream, term := range c.terms {
+		term.hangup(execenv.ErrConnection)
+		delete(c.terms, stream)
 	}
 }
 
 func (c *Client) deliverPty(f frame) {
 	c.mu.Lock()
-	term := c.terms[execenv.ID(f.Grant)]
+	term := c.terms[f.Stream]
 	c.mu.Unlock()
-	if term == nil || term.stream != f.Stream {
+	if term == nil || string(term.id) != f.Grant {
 		return
 	}
-	if f.Status != "" {
+	switch f.Status {
+	case "":
+		if !term.push(f.Seq, f.Extra) {
+			// The reader fell too far behind. Detach without blocking the
+			// read loop; the caller resumes from Offset.
+			go func() { _ = term.detach() }()
+		}
+	case statusEOF:
+		c.forget(term)
+		term.finish(io.EOF)
+	default:
+		c.forget(term)
 		term.hangup(errorFromStatus(f.Status))
-		return
 	}
-	term.push(f.Extra)
+}
+
+func (c *Client) forget(term *remoteTerminal) {
+	c.mu.Lock()
+	if c.terms[term.stream] == term {
+		delete(c.terms, term.stream)
+	}
+	c.mu.Unlock()
 }
 
 func (c *Client) call(ctx context.Context, method, grant string, extra []byte) ([]byte, error) {
@@ -238,38 +259,47 @@ type remoteEnv struct {
 
 func (e *remoteEnv) ID() execenv.ID { return e.id }
 
-func (e *remoteEnv) Attach(ctx context.Context, win execenv.Window) (execenv.Terminal, error) {
+func (e *remoteEnv) Attach(ctx context.Context, request execenv.AttachRequest) (execenv.Terminal, error) {
 	if e.revoked.Load() {
 		return nil, execenv.ErrRevoked
 	}
 	stream := e.client.stream.Add(1)
-	extra, err := encodeExtra(attachArgs{Window: win, Stream: stream})
+	extra, err := encodeExtra(attachArgs{Window: request.Window, Stream: stream, Resume: request.Resume, Takeover: request.Takeover})
 	if err != nil {
 		return nil, execenv.Error("attach", err)
 	}
 	term := newRemoteTerminal(e.client, e.id, stream)
 	term.epoch = e.epoch
+	// Register before the call: output may arrive before the reply.
 	e.client.mu.Lock()
-	if current := e.client.terms[e.id]; current != nil {
-		current.mu.Lock()
-		frozen := current.frozen
-		current.mu.Unlock()
-		e.client.mu.Unlock()
-		if frozen {
-			return nil, execenv.ErrFrozen
-		}
-		return nil, execenv.Error("attach", execenv.ErrBusy)
-	}
-	e.client.terms[e.id] = term
+	e.client.terms[stream] = term
 	e.client.mu.Unlock()
-	if _, err := e.call(ctx, methodAttach, string(e.id), extra); err != nil {
-		e.client.mu.Lock()
-		if e.client.terms[e.id] == term {
-			delete(e.client.terms, e.id)
+	out, err := e.call(ctx, methodAttach, string(e.id), extra)
+	var result attachResult
+	if err == nil {
+		if decodeErr := decodeExtra(out, &result); decodeErr != nil || result.Terminal == "" {
+			err = execenv.Error("attach", execenv.ErrUnavailable)
 		}
-		e.client.mu.Unlock()
+	}
+	if err != nil {
+		e.client.forget(term)
 		term.hangup(err)
 		return nil, err
+	}
+	term.setStart(result.Terminal, result.Start)
+	// The host attached this stream; any earlier stream of this client for
+	// the grant is replaced, whatever frames are still in flight for it.
+	e.client.mu.Lock()
+	var replaced []*remoteTerminal
+	for other, previous := range e.client.terms {
+		if other != stream && previous.id == e.id {
+			replaced = append(replaced, previous)
+			delete(e.client.terms, other)
+		}
+	}
+	e.client.mu.Unlock()
+	for _, previous := range replaced {
+		previous.hangup(execenv.ErrSuperseded)
 	}
 	return term, nil
 }
@@ -287,11 +317,20 @@ func (e *remoteEnv) Revoke(ctx context.Context) error {
 	return err
 }
 
-func (e *remoteEnv) setTermFrozen(frozen bool) {
+func (e *remoteEnv) terminals() []*remoteTerminal {
 	e.client.mu.Lock()
-	term := e.client.terms[e.id]
-	e.client.mu.Unlock()
-	if term != nil && term.epoch == e.epoch {
+	defer e.client.mu.Unlock()
+	var out []*remoteTerminal
+	for _, term := range e.client.terms {
+		if term.id == e.id && term.epoch == e.epoch {
+			out = append(out, term)
+		}
+	}
+	return out
+}
+
+func (e *remoteEnv) setTermFrozen(frozen bool) {
+	for _, term := range e.terminals() {
 		term.mu.Lock()
 		term.frozen = frozen
 		term.cond.Broadcast()
@@ -299,18 +338,35 @@ func (e *remoteEnv) setTermFrozen(frozen bool) {
 	}
 }
 
+// remoteTerminal buffers at most maxClientPtyBytes of output as segments
+// that remember their absolute terminal offsets.
 type remoteTerminal struct {
 	epoch  string
 	client *Client
 	id     execenv.ID
 	stream uint64
-	mu     sync.Mutex
-	cond   *sync.Cond
-	buf    []byte
-	closed bool
-	frozen bool
-	dead   error
+
+	mu       sync.Mutex
+	cond     *sync.Cond
+	terminal execenv.TerminalID
+	start    uint64
+	offset   uint64
+	segments []ptySegment
+	buffered int
+	closed   bool
+	frozen   bool
+	// ended is the shell's exit (io.EOF), delivered after the buffer drains.
+	ended error
+	// dead fails the terminal; buffered output still drains first.
+	dead error
 }
+
+type ptySegment struct {
+	offset uint64
+	data   []byte
+}
+
+var _ execenv.Terminal = (*remoteTerminal)(nil)
 
 func newRemoteTerminal(client *Client, id execenv.ID, stream uint64) *remoteTerminal {
 	t := &remoteTerminal{client: client, id: id, stream: stream}
@@ -318,10 +374,41 @@ func newRemoteTerminal(client *Client, id execenv.ID, stream uint64) *remoteTerm
 	return t
 }
 
-func (t *remoteTerminal) push(p []byte) {
+func (t *remoteTerminal) setStart(id execenv.TerminalID, start uint64) {
 	t.mu.Lock()
-	if !t.closed && t.dead == nil {
-		t.buf = append(t.buf, p...)
+	t.terminal = id
+	t.start = start
+	if len(t.segments) > 0 {
+		t.offset = t.segments[0].offset
+	} else {
+		t.offset = start
+	}
+	t.mu.Unlock()
+}
+
+// push buffers one frame. It reports false when the buffer is full; the
+// frame is dropped and the terminal fails with ErrLagged after draining.
+func (t *remoteTerminal) push(offset uint64, p []byte) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed || t.dead != nil || t.ended != nil {
+		return true
+	}
+	if t.buffered+len(p) > maxClientPtyBytes {
+		t.dead = execenv.ErrLagged
+		t.cond.Broadcast()
+		return false
+	}
+	t.segments = append(t.segments, ptySegment{offset: offset, data: append([]byte(nil), p...)})
+	t.buffered += len(p)
+	t.cond.Broadcast()
+	return true
+}
+
+func (t *remoteTerminal) finish(err error) {
+	t.mu.Lock()
+	if t.ended == nil && t.dead == nil {
+		t.ended = err
 		t.cond.Broadcast()
 	}
 	t.mu.Unlock()
@@ -339,41 +426,85 @@ func (t *remoteTerminal) hangup(err error) {
 	t.mu.Unlock()
 }
 
+func (t *remoteTerminal) ID() execenv.TerminalID {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.terminal
+}
+
+func (t *remoteTerminal) Start() uint64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.start
+}
+
+func (t *remoteTerminal) Offset() uint64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.offset
+}
+
+// Read drains buffered output before reporting why the terminal ended.
+// Superseded and closed terminals stop at once.
 func (t *remoteTerminal) Read(p []byte) (int, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	for len(t.buf) == 0 && !t.closed && t.dead == nil {
+	for len(t.segments) == 0 && !t.closed && t.dead == nil && t.ended == nil {
 		t.cond.Wait()
 	}
-	if t.dead != nil && len(t.buf) == 0 {
+	if t.closed {
+		return 0, execenv.Error("read", execenv.ErrClosed)
+	}
+	if errors.Is(t.dead, execenv.ErrSuperseded) || errors.Is(t.dead, execenv.ErrRevoked) {
 		return 0, execenv.Error("read", t.dead)
 	}
-	if len(t.buf) == 0 {
-		return 0, io.EOF
+	if len(t.segments) > 0 {
+		seg := &t.segments[0]
+		// A segment past the cursor is output the host skipped because this
+		// reader fell behind its history.
+		t.offset = max(t.offset, seg.offset)
+		n := copy(p, seg.data)
+		seg.data = seg.data[n:]
+		seg.offset += uint64(n)
+		t.offset += uint64(n)
+		t.buffered -= n
+		if len(seg.data) == 0 {
+			t.segments = t.segments[1:]
+		}
+		return n, nil
 	}
-	n := copy(p, t.buf)
-	t.buf = t.buf[n:]
-	return n, nil
+	if t.dead != nil {
+		return 0, execenv.Error("read", t.dead)
+	}
+	return 0, t.ended
+}
+
+func (t *remoteTerminal) liveLocked() error {
+	if t.closed {
+		return execenv.ErrClosed
+	}
+	if t.dead != nil {
+		return t.dead
+	}
+	if t.ended != nil {
+		return execenv.ErrClosed
+	}
+	if t.frozen {
+		return execenv.ErrFrozen
+	}
+	return nil
 }
 
 func (t *remoteTerminal) Write(p []byte) (int, error) {
 	t.mu.Lock()
-	if t.frozen {
-		t.mu.Unlock()
-		return 0, execenv.ErrFrozen
-	}
-	if t.closed || t.dead != nil {
-		err := t.dead
-		if err == nil {
-			err = execenv.ErrClosed
-		}
-		t.mu.Unlock()
+	err := t.liveLocked()
+	t.mu.Unlock()
+	if err != nil {
 		return 0, execenv.Error("write", err)
 	}
-	t.mu.Unlock()
 	// PTY octets travel as kindPty, not as an RPC, so a hangup does not
 	// take the control channel down with it.
-	err := t.client.sess.Send(frame{
+	err = t.client.sess.Send(frame{
 		Kind:   kindPty,
 		Grant:  string(t.id),
 		Stream: t.stream,
@@ -383,17 +514,17 @@ func (t *remoteTerminal) Write(p []byte) (int, error) {
 		if errors.Is(err, execenv.ErrTooLarge) {
 			return 0, execenv.Error("write", err)
 		}
-		return 0, execenv.Error("write", execenv.ErrClosed)
+		return 0, execenv.Error("write", execenv.ErrConnection)
 	}
 	return len(p), nil
 }
 
 func (t *remoteTerminal) Resize(ctx context.Context, win execenv.Window) error {
 	t.mu.Lock()
-	frozen := t.frozen
+	err := t.liveLocked()
 	t.mu.Unlock()
-	if frozen {
-		return execenv.ErrFrozen
+	if err != nil {
+		return execenv.Error("resize", err)
 	}
 	extra, err := encodeExtra(resizeArgs{Window: win, Stream: t.stream})
 	if err != nil {
@@ -403,20 +534,49 @@ func (t *remoteTerminal) Resize(ctx context.Context, win execenv.Window) error {
 	return err
 }
 
+// Close detaches. The shell keeps running on the host for its grace.
 func (t *remoteTerminal) Close() error {
 	t.mu.Lock()
+	if t.closed {
+		t.mu.Unlock()
+		return nil
+	}
 	t.closed = true
 	t.cond.Broadcast()
 	t.mu.Unlock()
-	extra, encodeErr := encodeExtra(streamArgs{Stream: t.stream})
-	if encodeErr != nil {
-		return execenv.Error("detach", encodeErr)
+	return t.detach()
+}
+
+func (t *remoteTerminal) detach() error {
+	t.client.forget(t)
+	extra, err := encodeExtra(streamArgs{Stream: t.stream})
+	if err != nil {
+		return execenv.Error("detach", err)
 	}
-	_, err := t.client.call(context.Background(), methodDetach, string(t.id), extra)
-	t.client.mu.Lock()
-	if t.client.terms[t.id] == t {
-		delete(t.client.terms, t.id)
+	_, err = t.client.call(context.Background(), methodDetach, string(t.id), extra)
+	if errors.Is(err, execenv.ErrConnection) {
+		// The host detaches a lost connection's terminals itself.
+		return nil
 	}
-	t.client.mu.Unlock()
 	return err
+}
+
+// Hangup ends the shell on the host now.
+func (t *remoteTerminal) Hangup(ctx context.Context) error {
+	t.mu.Lock()
+	err := t.liveLocked()
+	t.mu.Unlock()
+	if err != nil && !errors.Is(err, execenv.ErrFrozen) {
+		return execenv.Error("hangup", err)
+	}
+	extra, err := encodeExtra(streamArgs{Stream: t.stream})
+	if err != nil {
+		return execenv.Error("hangup", err)
+	}
+	if _, err := t.client.call(ctx, methodHangup, string(t.id), extra); err != nil {
+		return err
+	}
+	t.client.forget(t)
+	t.hangup(execenv.ErrClosed)
+	return nil
 }

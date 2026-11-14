@@ -23,7 +23,7 @@ func TestAttachEchoesBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	term, err := env.Attach(t.Context(), execenv.Window{})
+	term, err := env.Attach(t.Context(), execenv.AttachRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,11 +41,12 @@ func TestAttachEchoesBytes(t *testing.T) {
 }
 
 func TestConformance(t *testing.T) {
-	execenvtest.Run(t, func(t *testing.T) execenv.Host {
+	execenvtest.Run(t, func(t *testing.T, cfg execenvtest.Config) execenv.Host {
 		t.Helper()
 		host, err := memory.New(memory.Config{
-			Images: []execenv.Image{"default", "alt"},
-			Slots:  2,
+			Images:        []execenv.Image{"default", "alt"},
+			Slots:         2,
+			TerminalGrace: cfg.TerminalGrace,
 		})
 		if err != nil {
 			t.Fatal(err)

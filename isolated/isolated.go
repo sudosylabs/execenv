@@ -7,9 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/internal/control"
+	"github.com/sudosylabs/execenv/internal/terminal"
 )
 
 var (
@@ -58,6 +60,9 @@ type Config struct {
 	// Allow is the host's IPv4 dests. Grants cannot add dests. Empty
 	// means this host does not offer NetworkAllowlist.
 	Allow []string
+	// TerminalGrace is how long a detached shell keeps running before the
+	// host hangs it up. Zero uses execenv.DefaultTerminalGrace.
+	TerminalGrace time.Duration
 }
 
 // Host occupies grants as isolated microVMs.
@@ -276,6 +281,7 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		inst:    inst,
 		treeDir: treeDir,
 	}
+	env.terminal = terminal.New(terminal.Config{Grace: h.cfg.TerminalGrace, Start: env.startShell})
 	if err := env.dial(launchCtx); err != nil {
 		_ = env.revoke()
 		return h.completeEnsure(call, nil, execenv.Error("ensure", err), treeDir)

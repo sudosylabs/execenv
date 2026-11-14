@@ -22,18 +22,24 @@ var (
 	ErrRevoked = errors.New("execenv: grant revoked")
 	// ErrBusy indicates a terminal is already attached.
 	ErrBusy = errors.New("execenv: terminal busy")
+	// ErrSuperseded indicates another client took over the terminal
+	// session this Terminal was attached to.
+	ErrSuperseded = errors.New("execenv: terminal superseded")
 	// ErrClosed indicates the terminal or content reader has been closed.
 	ErrClosed = errors.New("execenv: closed")
-	// ErrNotFound indicates a path does not exist in the projection.
+	// ErrNotFound indicates a path does not exist in the projection, or a
+	// terminal session to resume is gone.
 	ErrNotFound = errors.New("execenv: not found")
 	// ErrLagged indicates the host can no longer report guest changes from
 	// the requested position, or could not capture one. The caller must
-	// resynchronize from its own journal.
+	// resynchronize from its own journal. A remote Terminal whose reader fell
+	// too far behind also fails with it; Resume from its Offset.
 	ErrLagged = errors.New("execenv: observation lagged")
 	// ErrTooLarge indicates a file or tree exceeds the documented limits.
 	ErrTooLarge = errors.New("execenv: too large")
-	// ErrConnection indicates the remote session was lost. A dropped PTY is
-	// hangup (ErrClosed), not this error, and does not revoke the grant.
+	// ErrConnection indicates the remote session was lost. The host treats
+	// it as a detach: the grant and its terminal session stay, and a new
+	// connection can Resume the terminal.
 	ErrConnection = errors.New("execenv: connection failed")
 	// ErrNetwork indicates the grant requested a network the host does not
 	// offer. The caller cannot supply destinations; only the host allowlist

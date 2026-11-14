@@ -20,7 +20,7 @@ type Client struct {
 	stream  atomic.Uint64
 	mu      sync.Mutex
 	pending map[uint64]chan frame
-	term    *clientTerm
+	term    *PTY
 	closed  bool
 	frozen  bool
 }
@@ -121,6 +121,16 @@ func (c *Client) deliverPty(f frame) {
 		term.hangup(errorFromStatus(f.Status))
 		return
 	}
+	// The guest ends a stream with one empty frame when the shell exits.
+	if len(f.Extra) == 0 {
+		c.mu.Lock()
+		if c.term == term {
+			c.term = nil
+		}
+		c.mu.Unlock()
+		term.finish()
+		return
+	}
 	term.push(f.Extra)
 }
 
@@ -172,8 +182,9 @@ func (c *Client) call(ctx context.Context, method string, extra []byte) ([]byte,
 	}
 }
 
-// Attach starts a login shell with cwd at Home.
-func (c *Client) Attach(ctx context.Context, win execenv.Window) (execenv.Terminal, error) {
+// Attach starts a login shell with cwd at Home. The guest ends that shell
+// when the PTY is closed; the host keeps terminal sessions above this.
+func (c *Client) Attach(ctx context.Context, win execenv.Window) (*PTY, error) {
 	if err := c.ioGuard(); err != nil {
 		return nil, err
 	}
@@ -256,23 +267,26 @@ func (c *Client) ioGuard() error {
 	return nil
 }
 
-type clientTerm struct {
+// PTY is the host end of the guest's one login shell. Read returns io.EOF
+// once the shell exits and its output is drained, or after Close.
+type PTY struct {
 	client *Client
 	stream uint64
 	mu     sync.Mutex
 	cond   *sync.Cond
 	buf    []byte
 	closed bool
+	ended  bool
 	dead   error
 }
 
-func newClientTerm(c *Client, stream uint64) *clientTerm {
-	t := &clientTerm{client: c, stream: stream}
+func newClientTerm(c *Client, stream uint64) *PTY {
+	t := &PTY{client: c, stream: stream}
 	t.cond = sync.NewCond(&t.mu)
 	return t
 }
 
-func (t *clientTerm) push(p []byte) {
+func (t *PTY) push(p []byte) {
 	t.mu.Lock()
 	if !t.closed && t.dead == nil {
 		t.buf = append(t.buf, p...)
@@ -281,7 +295,14 @@ func (t *clientTerm) push(p []byte) {
 	t.mu.Unlock()
 }
 
-func (t *clientTerm) hangup(err error) {
+func (t *PTY) finish() {
+	t.mu.Lock()
+	t.ended = true
+	t.cond.Broadcast()
+	t.mu.Unlock()
+}
+
+func (t *PTY) hangup(err error) {
 	t.mu.Lock()
 	if t.dead == nil {
 		if err == nil {
@@ -293,10 +314,10 @@ func (t *clientTerm) hangup(err error) {
 	t.mu.Unlock()
 }
 
-func (t *clientTerm) Read(p []byte) (int, error) {
+func (t *PTY) Read(p []byte) (int, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	for len(t.buf) == 0 && !t.closed && t.dead == nil {
+	for len(t.buf) == 0 && !t.closed && !t.ended && t.dead == nil {
 		t.cond.Wait()
 	}
 	if t.dead != nil && len(t.buf) == 0 {
@@ -310,12 +331,12 @@ func (t *clientTerm) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-func (t *clientTerm) Write(p []byte) (int, error) {
+func (t *PTY) Write(p []byte) (int, error) {
 	if err := t.client.ioGuard(); err != nil {
 		return 0, err
 	}
 	t.mu.Lock()
-	if t.closed || t.dead != nil {
+	if t.closed || t.ended || t.dead != nil {
 		err := t.dead
 		if err == nil {
 			err = execenv.ErrClosed
@@ -338,7 +359,7 @@ func (t *clientTerm) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (t *clientTerm) Resize(ctx context.Context, win execenv.Window) error {
+func (t *PTY) Resize(ctx context.Context, win execenv.Window) error {
 	if err := t.client.ioGuard(); err != nil {
 		return err
 	}
@@ -350,7 +371,8 @@ func (t *clientTerm) Resize(ctx context.Context, win execenv.Window) error {
 	return err
 }
 
-func (t *clientTerm) Close() error {
+// Close hangs the guest shell up.
+func (t *PTY) Close() error {
 	t.mu.Lock()
 	t.closed = true
 	t.cond.Broadcast()

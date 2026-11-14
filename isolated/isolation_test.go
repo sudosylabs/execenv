@@ -83,9 +83,10 @@ func revokeAll(h *Host) {
 // boundary, including one PTY, journal projection, fenced control and revoke.
 func TestLiveConformance(t *testing.T) {
 	requireLive(t)
-	execenvtest.Run(t, func(t *testing.T) execenv.Host {
+	execenvtest.Run(t, func(t *testing.T, cfg execenvtest.Config) execenv.Host {
 		t.Helper()
 		host := liveHost(t, 2, "")
+		host.cfg.TerminalGrace = cfg.TerminalGrace
 		t.Cleanup(func() { revokeAll(host) })
 		return host
 	})
@@ -209,7 +210,7 @@ func liveJournal(t *testing.T, env execenv.Env) execenv.ProjectionFence {
 
 func liveShell(t *testing.T, env execenv.Env) execenv.Terminal {
 	t.Helper()
-	term, err := env.Attach(t.Context(), execenv.Window{})
+	term, err := env.Attach(t.Context(), execenv.AttachRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}

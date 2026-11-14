@@ -30,6 +30,8 @@ func StatusOf(err error) string {
 		return "revoked"
 	case errors.Is(err, execenv.ErrBusy):
 		return "busy"
+	case errors.Is(err, execenv.ErrSuperseded):
+		return "superseded"
 	case errors.Is(err, execenv.ErrClosed):
 		return "closed"
 	case errors.Is(err, execenv.ErrNotFound):
@@ -70,6 +72,8 @@ func ErrorFromStatus(status string) error {
 		return execenv.ErrRevoked
 	case "busy":
 		return execenv.ErrBusy
+	case "superseded":
+		return execenv.ErrSuperseded
 	case "closed":
 		return execenv.ErrClosed
 	case "not_found":

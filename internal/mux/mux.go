@@ -1,7 +1,7 @@
 // Package mux is the shared frame, session, and status map used by the
 // agent hop and the remote hop. It is not a hop of its own.
 //
-// Agent and remote keep their own method tables. Closing a PTY is hangup,
+// Agent and remote keep their own method tables. Ending a PTY stream is
 // not connection teardown. Status is a sentinel name, never octets.
 // Grant callers never import this package.
 package mux

@@ -10,7 +10,7 @@ import (
 
 func runProjection(t *testing.T, factory Factory) {
 	t.Run("journal projection preserves terminal and exact retry", func(t *testing.T) {
-		host := factory(t)
+		host := factory(t, Config{})
 		env, err := host.Ensure(t.Context(), execenv.Spec{ID: "journal", Image: "default"})
 		if err != nil {
 			t.Fatal(err)
@@ -34,7 +34,7 @@ func runProjection(t *testing.T, factory Factory) {
 		if err != nil || receipt != replay {
 			t.Fatalf("initialization retry: %+v %v", replay, err)
 		}
-		terminal, err := env.Attach(t.Context(), execenv.Window{})
+		terminal, err := env.Attach(t.Context(), execenv.AttachRequest{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -59,7 +59,7 @@ func runProjection(t *testing.T, factory Factory) {
 		if _, err := terminal.Write([]byte("same terminal\n")); err != nil {
 			t.Fatalf("terminal lost on save: %v", err)
 		}
-		if _, err := env.Attach(t.Context(), execenv.Window{}); !errors.Is(err, execenv.ErrBusy) {
+		if _, err := env.Attach(t.Context(), execenv.AttachRequest{}); !errors.Is(err, execenv.ErrBusy) {
 			t.Fatal("save replaced terminal")
 		}
 		apply.Mutations[1].ResultingContentVersion = "v3"

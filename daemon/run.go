@@ -96,8 +96,9 @@ func newAdapter(cfg Config) (execenv.Host, error) {
 	switch cfg.Adapter {
 	case adapterMemory:
 		return memory.New(memory.Config{
-			Images: cfg.imageIDs(),
-			Slots:  cfg.Slots,
+			Images:        cfg.imageIDs(),
+			Slots:         cfg.Slots,
+			TerminalGrace: cfg.Grace,
 		})
 	case adapterIsolated:
 		if cfg.WorkDir == "" {
@@ -125,6 +126,8 @@ func newAdapter(cfg Config) (execenv.Host, error) {
 			Mkfs:        cfg.Mkfs,
 			JailUIDBase: cfg.JailUIDBase,
 			Allow:       append([]string(nil), cfg.Allow...),
+			// Unset grace is execenv.DefaultTerminalGrace.
+			TerminalGrace: cfg.Grace,
 		})
 	default:
 		return nil, execenv.Error("adapter", execenv.ErrInvalid)
