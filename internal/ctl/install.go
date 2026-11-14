@@ -14,46 +14,68 @@ import (
 )
 
 // Install fetches one catalog id from the release channel onto an already
-// bootstrapped host. It does not occupy grants and does not pull at
-// Ensure time. The host token is left untouched.
+// bootstrapped host, then restarts a running daemon so it serves the disk.
+// It does not occupy grants and does not pull at Ensure time. The host
+// token is left untouched. It refuses, before changing anything, to restart
+// a daemon that holds grants unless opts.Force is set.
 func Install(opts Options, id string, stdout io.Writer) error {
 	opts = opts.resolved()
 	if id == "" {
 		return wrap("install", execenv.ErrInvalid)
 	}
+	if err := opts.guardRestart(); err != nil {
+		return wrap("install", err)
+	}
+	installed, err := installImage(opts, id)
+	if err != nil {
+		return err
+	}
+	if err := opts.reloadUnit(); err != nil {
+		return wrap("install", fmt.Errorf("%s is in host config but the daemon was not restarted: %w", installed, err))
+	}
+	if stdout != nil {
+		fmt.Fprintf(stdout, "installed=%s\n", installed)
+		fmt.Fprintln(stdout, "hash=written to config")
+	}
+	return nil
+}
+
+// installImage fetches, verifies and records one catalog id without
+// restarting the daemon. It returns the installed id.
+func installImage(opts Options, id string) (string, error) {
 	doc, err := loadHost(opts.configPath())
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return wrap("install", fmt.Errorf("host config missing; run execenvctl bootstrap first"))
+			return "", wrap("install", fmt.Errorf("host config missing; run execenvctl bootstrap first"))
 		}
-		return err
+		return "", err
 	}
 	token := doc.Token
 	base, err := opts.releaseBase()
 	if err != nil {
-		return err
+		return "", err
 	}
 	raw, err := fetchBytes(base + "/index.json")
 	if err != nil {
-		return err
+		return "", err
 	}
 	idx, err := parseIndex(raw)
 	if err != nil {
-		return err
+		return "", err
 	}
 	entry, err := idx.lookup(id)
 	if err != nil {
-		return err
+		return "", err
 	}
 	imageDir := filepath.Join(opts.State, "images")
 	if err := os.MkdirAll(imageDir, 0o755); err != nil {
-		return wrap("install", err)
+		return "", wrap("install", err)
 	}
 	kernelDest := filepath.Join(imageDir, filepath.Base(idx.Kernel))
 	rootfsDest := filepath.Join(imageDir, filepath.Base(entry.Rootfs))
 	kernel, rootfs, err := fetchVerified(base, idx.Kernel, entry.Rootfs, kernelDest, rootfsDest, entry.Hash)
 	if err != nil {
-		return err
+		return "", err
 	}
 	upsertImage(&doc, daemon.Image{
 		ID:     entry.ID,
@@ -62,23 +84,16 @@ func Install(opts Options, id string, stdout io.Writer) error {
 		Hash:   entry.Hash,
 	})
 	if err := daemon.Save(opts.configPath(), doc); err != nil {
-		return err
+		return "", err
 	}
 	again, err := loadHost(opts.configPath())
 	if err != nil {
-		return err
+		return "", err
 	}
 	if again.Token != token {
-		return wrap("install", fmt.Errorf("host token changed"))
+		return "", wrap("install", fmt.Errorf("host token changed"))
 	}
-	if err := opts.reloadUnit(); err != nil {
-		return err
-	}
-	if stdout != nil {
-		fmt.Fprintf(stdout, "installed=%s\n", entry.ID)
-		fmt.Fprintln(stdout, "hash=written to config")
-	}
-	return nil
+	return entry.ID, nil
 }
 
 // fetchVerified downloads into sibling .new files, checks the catalog
@@ -124,7 +139,11 @@ func fetchVerified(base, kernelName, rootfsName, kernelDest, rootfsDest, want st
 	return kernel, rootfsDest, nil
 }
 
+// reloadUnit restarts a running daemon, after guardRestart agrees.
 func (o Options) reloadUnit() error {
+	if err := o.guardRestart(); err != nil {
+		return err
+	}
 	if o.Reload != nil {
 		return o.Reload()
 	}

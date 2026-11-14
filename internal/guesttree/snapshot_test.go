@@ -13,7 +13,7 @@ import (
 
 func capture(t *testing.T, home string, previous *Snapshot) *Snapshot {
 	t.Helper()
-	snap, err := Capture(home, previous)
+	snap, err := Capture(home, previous, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestCaptureRejectsUnsupportedTopology(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			after, err := Capture(home, before)
+			after, err := Capture(home, before, nil)
 			if !errors.Is(err, execenv.ErrLagged) || after != nil {
 				t.Fatalf("unsupported tree became observation: %+v %v", after, err)
 			}

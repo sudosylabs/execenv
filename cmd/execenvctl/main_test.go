@@ -121,3 +121,27 @@ func TestBootstrapCommandDoesNotPrintSecrets(t *testing.T) {
 		t.Fatalf("token missing or leaked: stdout=%q stderr=%q", out.String(), errb.String())
 	}
 }
+
+func TestRestartingCommandsTakeForceAndDrainExists(t *testing.T) {
+	t.Parallel()
+	root := newRoot()
+	for _, name := range []string{"install", "remove", "upgrade"} {
+		cmd, _, err := root.Find([]string{name})
+		if err != nil || cmd.Name() != name {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if cmd.Flags().Lookup("force") == nil {
+			t.Fatalf("%s has no --force", name)
+		}
+		if !strings.Contains(cmd.Long, "drain") {
+			t.Fatalf("%s help does not mention drain", name)
+		}
+	}
+	drain, _, err := root.Find([]string{"drain"})
+	if err != nil || drain.Name() != "drain" || drain.Flags().Lookup("timeout") == nil {
+		t.Fatalf("drain command: %v", err)
+	}
+	if undrain, _, err := root.Find([]string{"undrain"}); err != nil || undrain.Name() != "undrain" {
+		t.Fatalf("undrain command: %v", err)
+	}
+}

@@ -1,11 +1,18 @@
 // Command execenvctl installs and manages an execenv isolation host.
 //
 //	execenvctl bootstrap
-//	execenvctl install <id>
+//	execenvctl install <id> [--force]
 //	execenvctl list
-//	execenvctl remove <id>
+//	execenvctl remove <id> [--force]
 //	execenvctl status
-//	execenvctl upgrade
+//	execenvctl upgrade [--force]
+//	execenvctl drain [--timeout 15m]
+//	execenvctl undrain
+//
+// install, remove and upgrade restart a running daemon, which destroys
+// every grant it holds, so they refuse while grants are live unless
+// --force is given. drain stops the daemon taking new grants and waits for
+// the live ones to end; a drained daemon restarts without --force.
 //
 // This is not the daemon and not the guest agent. It does not occupy
 // grants. Flags and exit codes only; there is no TUI.
@@ -14,6 +21,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/sudosylabs/execenv"
@@ -48,6 +56,8 @@ func newRoot() *cobra.Command {
 	root.AddCommand(newRemove(&opts))
 	root.AddCommand(newStatus(&opts))
 	root.AddCommand(newUpgrade(&opts))
+	root.AddCommand(newDrain(&opts))
+	root.AddCommand(newUndrain(&opts))
 	return root
 }
 
@@ -55,15 +65,13 @@ func newBootstrap(opts *ctl.Options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "bootstrap",
 		Short: "Install the execenv daemon on this isolation host",
-		Long:  "Verify the isolation device, install runtime and supervisor binaries, write host config and a systemd unit. Does not fetch catalog disks. A missing device fails closed (no container fallback). Hosts without virtualization hardware may instead be bootstrapped with --isolation user-kernel, an explicit choice of the weaker user-space-kernel sandbox.",
+		Long:  "Verify the isolation device, install runtime and supervisor binaries, write host config and a systemd unit. Does not fetch catalog disks. A missing device fails closed (no container fallback).",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return ctl.Bootstrap(*opts, cmd.OutOrStdout())
 		},
 	}
-	cmd.Flags().StringVar(&opts.Device, "device", opts.Device, "isolation device path (vm only)")
-	cmd.Flags().StringVar(&opts.Isolation, "isolation", "vm", "isolation class: vm (microVM, needs the device) or user-kernel (sandbox, weaker, no device)")
-	cmd.Flags().StringVar(&opts.SandboxRuntime, "sandbox-runtime", "", "runsc binary to install for user-kernel isolation (default: PATH)")
+	cmd.Flags().StringVar(&opts.Device, "device", opts.Device, "isolation device path")
 	cmd.Flags().StringVar(&opts.Mkfs, "mkfs", "", "mkfs.ext4 used for per-grant workspace disks (default: PATH)")
 	cmd.Flags().StringVar(&opts.Listen, "listen", opts.Listen, "daemon listen address")
 	cmd.Flags().IntVar(&opts.Slots, "slots", opts.Slots, "maximum concurrent grants")
@@ -74,16 +82,25 @@ func newBootstrap(opts *ctl.Options) *cobra.Command {
 	return cmd
 }
 
+// restartNote is the shared help for commands that restart the daemon.
+const restartNote = " Restarts a running daemon, which destroys every grant it holds, so it refuses before changing anything while the daemon holds grants. Run execenvctl drain first, or pass --force to restart anyway."
+
+func forceFlag(cmd *cobra.Command, opts *ctl.Options) {
+	cmd.Flags().BoolVar(&opts.Force, "force", false, "restart the daemon even while it holds grants, destroying them")
+}
+
 func newInstall(opts *ctl.Options) *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "install id",
 		Short: "Install one catalog image onto this host",
-		Long:  "Fetch the current index entry for id from the release channel. Writes the shared kernel if missing, verifies the kernel-then-rootfs hash, and updates host config. Does not occupy grants. Ensure never fetches.",
+		Long:  "Fetch the current index entry for id from the release channel. Writes the shared kernel if missing, verifies the kernel-then-rootfs hash, and updates host config. Does not occupy grants. Ensure never fetches." + restartNote,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return ctl.Install(*opts, args[0], cmd.OutOrStdout())
 		},
 	}
+	forceFlag(cmd, opts)
+	return cmd
 }
 
 func newList(opts *ctl.Options) *cobra.Command {
@@ -98,20 +115,23 @@ func newList(opts *ctl.Options) *cobra.Command {
 }
 
 func newRemove(opts *ctl.Options) *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "remove id",
 		Short: "Remove one catalog image from this host",
+		Long:  "Drop id from host config and delete its disk. The shared kernel stays while another image uses it." + restartNote,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return ctl.Remove(*opts, args[0], cmd.OutOrStdout())
 		},
 	}
+	forceFlag(cmd, opts)
+	return cmd
 }
 
 func newStatus(opts *ctl.Options) *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
-		Short: "Show device, unit, and installed ids",
+		Short: "Show device, unit, drain state, live grants and installed ids",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return ctl.Status(*opts, cmd.OutOrStdout())
@@ -120,13 +140,45 @@ func newStatus(opts *ctl.Options) *cobra.Command {
 }
 
 func newUpgrade(opts *ctl.Options) *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "upgrade",
 		Short: "Replace execenvctl and execenv from the release channel",
-		Long:  "Fetch linux/amd64 binaries and reinstall every catalog id already on the host from this binary's tag. The host token and TLS files are left alone.",
+		Long:  "Fetch linux/amd64 binaries and reinstall every catalog id already on the host from this binary's tag, then restart the daemon once. The host token and TLS files are left alone." + restartNote,
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return ctl.Upgrade(*opts, cmd.OutOrStdout())
+		},
+	}
+	forceFlag(cmd, opts)
+	return cmd
+}
+
+func newDrain(opts *ctl.Options) *cobra.Command {
+	var timeout time.Duration
+	cmd := &cobra.Command{
+		Use:   "drain",
+		Short: "Stop taking new grants and wait for live ones to end",
+		Long: "Tell the local daemon to refuse new grants (callers see ErrDraining and an unusable Ready) while it keeps serving the grants it holds, " +
+			"then wait until it holds none, printing the remaining count as it changes. " +
+			"Exits non-zero if --timeout passes first; the daemon stays draining either way. " +
+			"--timeout 0 starts draining and returns at once. A drained daemon restarts without --force; " +
+			"the restart brings it back serving, and execenvctl undrain does so without one.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return ctl.Drain(*opts, timeout, cmd.OutOrStdout())
+		},
+	}
+	cmd.Flags().DurationVar(&timeout, "timeout", ctl.DefaultDrainTimeout, "how long to wait for live grants to end")
+	return cmd
+}
+
+func newUndrain(opts *ctl.Options) *cobra.Command {
+	return &cobra.Command{
+		Use:   "undrain",
+		Short: "Take new grants again after a drain",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return ctl.Undrain(*opts, cmd.OutOrStdout())
 		},
 	}
 }

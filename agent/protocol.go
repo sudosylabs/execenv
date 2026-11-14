@@ -13,21 +13,15 @@ const (
 	kindRequest  = mux.KindRequest
 	kindResponse = mux.KindResponse
 	kindPty      = mux.KindPty
-	kindWatch    = mux.KindWatch
 )
 
 const (
-	methodHello   = "hello"
-	methodReplace = "replace"
-	methodApply   = "apply"
-	methodOpen    = "open"
-	methodWatch   = "watch"
-	methodUnwatch = "unwatch"
-	methodAttach  = "attach"
-	methodDetach  = "detach"
-	methodResize  = "resize"
-	methodFreeze  = "freeze"
-	methodThaw    = "thaw"
+	methodHello  = "hello"
+	methodAttach = "attach"
+	methodDetach = "detach"
+	methodResize = "resize"
+	methodFreeze = "freeze"
+	methodThaw   = "thaw"
 )
 
 var (
@@ -36,18 +30,6 @@ var (
 	statusOf        = mux.StatusOf
 	errorFromStatus = mux.ErrorFromStatus
 )
-
-type replaceArgs struct {
-	Tree execenv.Tree
-}
-
-type applyArgs struct {
-	Batch execenv.Batch
-}
-
-type openArgs struct {
-	Path string
-}
 
 type attachArgs struct {
 	Window execenv.Window
@@ -63,17 +45,11 @@ type streamArgs struct {
 	Stream uint64
 }
 
-type watchArgs struct {
-	After  execenv.Cursor
-	Stream uint64
-}
-
-type watchResult struct {
-	Cursor execenv.Cursor
-}
-
 func newSession(conn net.Conn) *mux.Session {
 	return mux.NewSession(conn)
 }
 
-const protocolVersion = 4
+// protocolVersion is the guest helper revision. The host and the helper
+// refuse each other unless both speak exactly this revision. Bump it
+// whenever a method, its arguments or its meaning changes.
+const protocolVersion = 7

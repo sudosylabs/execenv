@@ -5,8 +5,6 @@ import (
 	"github.com/sudosylabs/execenv"
 )
 
-var _ execenv.ControlledEnv = (*environment)(nil)
-
 func (e *environment) Epoch() string { return e.control.Epoch() }
 func (e *environment) ControlStatus(ctx context.Context) (execenv.ControlReceipt, error) {
 	return e.control.Status(ctx)
@@ -22,7 +20,7 @@ func (e *environment) Control(ctx context.Context, request execenv.ControlReques
 		case execenv.ControlRunning:
 			return e.thaw(ctx)
 		case execenv.ControlRevoked:
-			return e.stop()
+			return e.stop(execenv.ErrRevoked)
 		default:
 			return execenv.ErrInvalid
 		}

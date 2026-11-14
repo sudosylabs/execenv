@@ -73,3 +73,42 @@ func TestCancelledWaitDoesNotExecuteOrChangeFence(t *testing.T) {
 		t.Fatalf("status %+v %v", receipt, err)
 	}
 }
+
+func TestLoseFencesEveryLaterCallWithErrLost(t *testing.T) {
+	s := New("grant")
+	fence := execenv.ProjectionFence{ExecutionGrantID: "grant", EnvironmentEpoch: s.Epoch(), FenceRevision: 1}
+	if _, err := s.Execute(t.Context(), execenv.ControlRequest{Fence: fence, State: execenv.ControlRunning}, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	lost, err := s.Lose(t.Context(), func() error { return nil })
+	if !lost || err != nil {
+		t.Fatalf("Lose() = %v %v", lost, err)
+	}
+	if again, _ := s.Lose(t.Context(), func() error { t.Fatal("second loss ran"); return nil }); again {
+		t.Fatal("second Lose() reported a loss")
+	}
+	if err := s.Run(t.Context(), fence, func() error { t.Fatal("lost epoch ran"); return nil }); !errors.Is(err, execenv.ErrLost) {
+		t.Fatalf("Run() error = %v, want ErrLost", err)
+	}
+	next := fence
+	next.FenceRevision++
+	if _, err := s.Execute(t.Context(), execenv.ControlRequest{Fence: next, State: execenv.ControlRunning}, func() error { t.Fatal("lost epoch reopened"); return nil }); !errors.Is(err, execenv.ErrLost) {
+		t.Fatalf("Execute() error = %v, want ErrLost", err)
+	}
+	if _, err := s.Status(t.Context()); !errors.Is(err, execenv.ErrLost) {
+		t.Fatalf("Status() error = %v, want ErrLost", err)
+	}
+	if err := s.Revoke(t.Context(), func() error { t.Fatal("confirmed loss released twice"); return nil }); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRevokedEpochIsNotLost(t *testing.T) {
+	s := New("grant")
+	if err := s.Revoke(t.Context(), func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if lost, _ := s.Lose(t.Context(), func() error { t.Fatal("revoked epoch lost"); return nil }); lost {
+		t.Fatal("Lose() after Revoke reported a loss")
+	}
+}

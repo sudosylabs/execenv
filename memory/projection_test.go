@@ -3,7 +3,6 @@ package memory_test
 import (
 	"bytes"
 	"errors"
-	"io"
 	"testing"
 
 	"github.com/sudosylabs/execenv"
@@ -20,7 +19,7 @@ func TestJournalDoesNotOverwriteGuestChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer env.Revoke(t.Context())
-	projection := env.(execenv.ProjectionEnv)
+	projection := env
 	fence := execenv.ProjectionFence{ExecutionGrantID: env.ID(), EnvironmentEpoch: projection.Epoch(), FenceRevision: 1}
 	if _, err := projection.Control(t.Context(), execenv.ControlRequest{Fence: fence, State: execenv.ControlRunning}); err != nil {
 		t.Fatal(err)
@@ -66,12 +65,7 @@ func TestJournalDoesNotOverwriteGuestChanges(t *testing.T) {
 	if err != nil || receipt.HostCursor != 1 {
 		t.Fatalf("unrelated projection: %+v %v", receipt, err)
 	}
-	reader, err := env.Open(t.Context(), "dir/file")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reader.Close()
-	got, err := io.ReadAll(reader)
+	got, err := host.ReadGuest(t.Context(), env.ID(), "dir/file")
 	if err != nil || string(got) != "guest" {
 		t.Fatalf("lost unrelated guest change: %q %v", got, err)
 	}

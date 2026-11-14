@@ -23,7 +23,7 @@ func TestContainmentRequiresPauseAndRecoveryAcknowledgements(t *testing.T) {
 	if !errors.Is(err, execenv.ErrUnavailable) || receipt.Confirmed {
 		t.Fatalf("failed pause acknowledged: %+v %v", receipt, err)
 	}
-	if _, err := e.Attach(t.Context(), execenv.Window{}); !errors.Is(err, execenv.ErrFrozen) {
+	if _, err := e.Attach(t.Context(), execenv.AttachRequest{}); !errors.Is(err, execenv.ErrFrozen) {
 		t.Fatalf("failed containment opened gate: %v", err)
 	}
 	inst.mu.Lock()
@@ -45,13 +45,27 @@ func TestContainmentRequiresPauseAndRecoveryAcknowledgements(t *testing.T) {
 	inst.mu.Lock()
 	inst.resumeErr = nil
 	inst.mu.Unlock()
+	// A closed guest link is also a lost environment. Either the thaw sees
+	// the failed recovery first and pauses again, or the watcher already
+	// stopped the machine; neither leaves a runnable guest behind.
 	_ = e.client.Close()
 	receipt, err = e.Control(t.Context(), req)
 	inst.mu.Lock()
-	paused := inst.paused
+	paused, stopped := inst.paused, inst.stopped
 	inst.mu.Unlock()
-	if err == nil || receipt.Confirmed || !paused {
+	if errors.Is(err, execenv.ErrLost) {
+		if !stopped {
+			t.Fatal("lost machine was not stopped")
+		}
+	} else if err == nil || receipt.Confirmed || !paused {
 		t.Fatalf("failed agent recovery escaped containment: %+v %v paused=%v", receipt, err, paused)
+	}
+	waitLost(t, e)
+	inst.mu.Lock()
+	stopped = inst.stopped
+	inst.mu.Unlock()
+	if !stopped {
+		t.Fatal("lost machine was not stopped")
 	}
 }
 
@@ -89,14 +103,30 @@ func TestFailedRevokeRetainsCapacityAndCanRetry(t *testing.T) {
 	}
 }
 
-func TestRequiredJournalRefusesUncontainedGuestHelper(t *testing.T) {
-	launch := &recordingLauncher{}
+func TestEnsureRefusesHelperWithoutJournal(t *testing.T) {
+	refusesHelper(t, &recordingLauncher{noJournal: true})
+}
+
+// A guest kernel without process events fails closed, like a missing journal.
+func TestEnsureRefusesHelperWithoutProcessLog(t *testing.T) {
+	refusesHelper(t, &recordingLauncher{noProcesses: true})
+}
+
+func refusesHelper(t *testing.T, launch *recordingLauncher) {
+	t.Helper()
 	host := testHost(t, func() error { return nil }, launch)
-	host.cfg.RequireJournal = true
-	if !host.Capabilities().JournalProjection || !host.Capabilities().SemanticObservations {
-		t.Fatal("required contract not discoverable")
+	if _, err := host.Ensure(t.Context(), execenv.Spec{ID: "helper-refused", Image: "default"}); !errors.Is(err, execenv.ErrUnavailable) {
+		t.Fatalf("incapable helper accepted: %v", err)
 	}
-	if _, err := host.Ensure(t.Context(), execenv.Spec{ID: "journal-required", Image: "default"}); !errors.Is(err, execenv.ErrUnavailable) {
-		t.Fatalf("uncontained helper accepted as journal capable: %v", err)
+	inst := launch.instances[0]
+	inst.mu.Lock()
+	stopped := inst.stopped
+	inst.mu.Unlock()
+	if !stopped {
+		t.Fatal("refused guest was left running")
+	}
+	report, err := host.Ready(t.Context())
+	if err != nil || report.Slots != host.slots {
+		t.Fatalf("refused guest kept its slot: %+v %v", report, err)
 	}
 }

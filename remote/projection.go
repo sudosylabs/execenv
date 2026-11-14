@@ -12,8 +12,6 @@ import (
 	"github.com/sudosylabs/execenv"
 )
 
-var _ execenv.ProjectionEnv = (*remoteEnv)(nil)
-
 const projectionChunkBytes = 64 << 10
 
 type projectionUploadArgs struct {
@@ -28,9 +26,6 @@ type projectionUploadResult struct {
 }
 
 func (e *remoteEnv) projectionGuard(fence execenv.ProjectionFence) error {
-	if !e.client.Capabilities().JournalProjection {
-		return execenv.ErrUnavailable
-	}
 	if e.revoked.Load() {
 		return execenv.ErrRevoked
 	}
@@ -164,23 +159,16 @@ func (e *remoteEnv) projectionReceipt(ctx context.Context, method string, extra 
 	return receipt, nil
 }
 
-func (sc *serverConn) projectionEnvironment(ctx context.Context, grant string, fence execenv.ProjectionFence) (execenv.ProjectionEnv, error) {
-	if !sc.inner.Capabilities().JournalProjection {
-		return nil, execenv.ErrUnavailable
-	}
+func (sc *serverConn) projectionEnvironment(ctx context.Context, grant string, fence execenv.ProjectionFence) (execenv.Env, error) {
 	if string(fence.ExecutionGrantID) != grant {
 		return nil, execenv.ErrInvalid
 	}
 	if execenv.ValidateProjectionFence(fence) != nil {
 		return nil, execenv.ErrInvalid
 	}
-	env, err := sc.env(execenv.ID(grant))
+	projected, err := sc.env(execenv.ID(grant))
 	if err != nil {
 		return nil, err
-	}
-	projected, ok := env.(execenv.ProjectionEnv)
-	if !ok {
-		return nil, execenv.ErrUnavailable
 	}
 	if projected.Epoch() != fence.EnvironmentEpoch {
 		return nil, execenv.ErrConflict

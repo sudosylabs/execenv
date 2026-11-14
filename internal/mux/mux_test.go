@@ -78,6 +78,23 @@ func TestEncodeExtra(t *testing.T) {
 	}
 }
 
+func TestEventFramesAreUnsolicited(t *testing.T) {
+	if err := validateFrame(Frame{Kind: KindEvent, Method: "record", Extra: []byte("{}")}); err != nil {
+		t.Fatalf("event: %v", err)
+	}
+	for _, f := range []Frame{
+		{Kind: KindEvent},
+		{Kind: KindEvent, Method: "record", Seq: 1},
+		{Kind: KindEvent, Method: "record", Stream: 1},
+		{Kind: KindEvent, Method: "record", Status: "invalid"},
+		{Kind: KindEvent + 1, Method: "record"},
+	} {
+		if err := validateFrame(f); !errors.Is(err, execenv.ErrInvalid) {
+			t.Fatalf("%+v accepted: %v", f, err)
+		}
+	}
+}
+
 func TestSessionRejectsOversizedPty(t *testing.T) {
 	a, b := net.Pipe()
 	t.Cleanup(func() { _ = a.Close(); _ = b.Close() })

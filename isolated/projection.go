@@ -9,17 +9,8 @@ import (
 	"github.com/sudosylabs/execenv/agent"
 )
 
-var _ execenv.SemanticEnv = (*environment)(nil)
-
 func (e *environment) projectionClient() (*agent.Client, error) {
-	client, err := e.live("projection")
-	if err != nil {
-		return nil, err
-	}
-	if !client.JournalEnabled() {
-		return nil, execenv.ErrUnavailable
-	}
-	return client, nil
+	return e.live("projection")
 }
 func (e *environment) UploadProjectionContent(ctx context.Context, fence execenv.ProjectionFence, reader io.Reader) (execenv.ContentReference, error) {
 	if reader == nil {

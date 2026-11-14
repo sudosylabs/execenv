@@ -3,7 +3,6 @@ package execenvtest
 import (
 	"bytes"
 	"errors"
-	"io"
 	"testing"
 
 	"github.com/sudosylabs/execenv"
@@ -11,18 +10,12 @@ import (
 
 func runProjection(t *testing.T, factory Factory) {
 	t.Run("journal projection preserves terminal and exact retry", func(t *testing.T) {
-		host := factory(t)
-		if !host.Capabilities().JournalProjection {
-			t.Skip("adapter does not advertise journal projection")
-		}
+		host := factory(t, Config{})
 		env, err := host.Ensure(t.Context(), execenv.Spec{ID: "journal", Image: "default"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		projected, ok := env.(execenv.ProjectionEnv)
-		if !ok {
-			t.Fatal("advertised projection is absent")
-		}
+		projected := env
 		fence := execenv.ProjectionFence{ExecutionGrantID: env.ID(), EnvironmentEpoch: projected.Epoch(), FenceRevision: 1}
 		if _, err := projected.Control(t.Context(), execenv.ControlRequest{Fence: fence, State: execenv.ControlRunning}); err != nil {
 			t.Fatal(err)
@@ -41,7 +34,7 @@ func runProjection(t *testing.T, factory Factory) {
 		if err != nil || receipt != replay {
 			t.Fatalf("initialization retry: %+v %v", replay, err)
 		}
-		terminal, err := env.Attach(t.Context(), execenv.Window{})
+		terminal, err := env.Attach(t.Context(), execenv.AttachRequest{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -63,27 +56,15 @@ func runProjection(t *testing.T, factory Factory) {
 		if err != nil || receipt != replay {
 			t.Fatalf("apply retry: %+v %v", replay, err)
 		}
-		reader, err := env.Open(t.Context(), "moved/file")
-		if err != nil {
-			t.Fatal(err)
-		}
-		got, err := io.ReadAll(reader)
-		_ = reader.Close()
-		if err != nil || !bytes.Equal(got, saved) {
-			t.Fatal("save did not project exact bytes")
-		}
 		if _, err := terminal.Write([]byte("same terminal\n")); err != nil {
 			t.Fatalf("terminal lost on save: %v", err)
 		}
-		if _, err := env.Attach(t.Context(), execenv.Window{}); !errors.Is(err, execenv.ErrBusy) {
+		if _, err := env.Attach(t.Context(), execenv.AttachRequest{}); !errors.Is(err, execenv.ErrBusy) {
 			t.Fatal("save replaced terminal")
 		}
 		apply.Mutations[1].ResultingContentVersion = "v3"
 		if _, err := projected.ApplyProjection(t.Context(), apply); !errors.Is(err, execenv.ErrConflict) {
 			t.Fatal("mutation ID rebound")
-		}
-		if err := env.Apply(t.Context(), execenv.Batch{}); !errors.Is(err, execenv.ErrConflict) {
-			t.Fatal("legacy Apply bypassed journal")
 		}
 		freeze := fence
 		freeze.FenceRevision++

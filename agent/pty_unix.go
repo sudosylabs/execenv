@@ -15,7 +15,7 @@ import (
 
 // startShell is a login-style interactive shell whose cwd is the projected
 // tree and whose HOME is guest-local scratch outside it, so caches and
-// dotfiles written through HOME are not watched or harvested.
+// dotfiles written through HOME are not observed or harvested.
 func startShell(home, scratch string, win execenv.Window, group *workload.Group) (*shell, error) {
 	cmd := exec.Command("/bin/sh", "-l")
 	if group != nil {

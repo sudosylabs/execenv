@@ -10,7 +10,7 @@ import (
 	"github.com/sudosylabs/execenv/memory"
 )
 
-func TestSemanticObservationsPreserveOriginalContentAndSubtreeIdentity(t *testing.T) {
+func TestObservationsPreserveOriginalContentAndSubtreeIdentity(t *testing.T) {
 	host, err := memory.New(memory.Config{Images: []execenv.Image{"default"}})
 	if err != nil {
 		t.Fatal(err)
@@ -20,7 +20,7 @@ func TestSemanticObservationsPreserveOriginalContentAndSubtreeIdentity(t *testin
 		t.Fatal(err)
 	}
 	defer env.Revoke(t.Context())
-	semantic := env.(execenv.SemanticEnv)
+	semantic := env
 	fence := execenv.ProjectionFence{ExecutionGrantID: env.ID(), EnvironmentEpoch: semantic.Epoch(), FenceRevision: 1}
 	if _, err := semantic.Control(t.Context(), execenv.ControlRequest{Fence: fence, State: execenv.ControlRunning}); err != nil {
 		t.Fatal(err)

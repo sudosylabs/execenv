@@ -31,7 +31,7 @@ git pull --ff-only
 git switch -c feat/short-description
 ```
 
-Use a branch name that describes the outcome, such as `feat/watch-lag`,
+Use a branch name that describes the outcome, such as `feat/observation-lag`,
 `fix/tls-listen`, or `docs/host-bootstrap`.
 
 You need:

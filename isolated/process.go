@@ -207,6 +207,11 @@ func (l *processLauncher) cleanStale() error {
 	return os.RemoveAll(l.jailBase())
 }
 
+// Done closes when the monitor process has been reaped. The guest kernel
+// resets on panic, and a reset ends the monitor, so this also covers a
+// crashed guest.
+func (p *processInstance) Done() <-chan struct{} { return p.done }
+
 func (p *processInstance) Pause(ctx context.Context) error {
 	return signalProcess(ctx, p.cmd, true)
 }

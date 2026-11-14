@@ -29,7 +29,7 @@ func TestRemoteSemanticReplayAndImmutableStreamingContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	one, two := env.(execenv.SemanticEnv), other.(execenv.SemanticEnv)
+	one, two := env, other
 	fence := execenv.ProjectionFence{ExecutionGrantID: env.ID(), EnvironmentEpoch: one.Epoch(), FenceRevision: 1}
 	if _, err := one.Control(t.Context(), execenv.ControlRequest{Fence: fence, State: execenv.ControlRunning}); err != nil {
 		t.Fatal(err)
@@ -79,12 +79,7 @@ func TestRemoteSemanticReplayAndImmutableStreamingContent(t *testing.T) {
 	if err := one.ConfirmObservationProjection(t.Context(), binding); err != nil {
 		t.Fatalf("confirmation retry after acknowledgement: %v", err)
 	}
-	live, err := env.Open(t.Context(), "file")
-	if err != nil {
-		t.Fatal(err)
-	}
-	latest, err := io.ReadAll(live)
-	_ = live.Close()
+	latest, err := inner.ReadGuest(t.Context(), env.ID(), "file")
 	if err != nil || string(latest) != "later content" {
 		t.Fatal("confirmed echo overwrote later guest content")
 	}
@@ -119,7 +114,7 @@ func TestRemoteInitialProjectionRetainsLargeSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer env.Revoke(t.Context())
-	projection := env.(execenv.SemanticEnv)
+	projection := env
 	fence := execenv.ProjectionFence{ExecutionGrantID: env.ID(), EnvironmentEpoch: projection.Epoch(), FenceRevision: 1}
 	if _, err := projection.Control(t.Context(), execenv.ControlRequest{Fence: fence, State: execenv.ControlRunning}); err != nil {
 		t.Fatal(err)

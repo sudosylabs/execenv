@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/agent"
@@ -20,8 +21,66 @@ type stubInstance struct {
 	stopErr   error
 	stopped   bool
 	sock      string
+	scratch   string
 	ln        net.Listener
+	conns     *trackedConns
 	cancel    context.CancelFunc
+	// processes simulates the guest kernel's view of the workload.
+	processes *stubProcesses
+	// exited closes when the simulated machine ends: Stop, or die.
+	exited   chan struct{}
+	exitOnce sync.Once
+}
+
+func (s *stubInstance) Done() <-chan struct{} { return s.exited }
+
+// dropLink breaks the guest link while the simulated machine keeps
+// running, as a guest helper that died would.
+func (s *stubInstance) dropLink() { s.conns.closeAll() }
+
+// trackedConns lets a test sever the links the stub helper accepted.
+type trackedConns struct {
+	net.Listener
+	mu    sync.Mutex
+	conns []net.Conn
+}
+
+func (l *trackedConns) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err == nil {
+		l.mu.Lock()
+		l.conns = append(l.conns, conn)
+		l.mu.Unlock()
+	}
+	return conn, err
+}
+
+func (l *trackedConns) closeAll() {
+	l.mu.Lock()
+	conns := l.conns
+	l.conns = nil
+	l.mu.Unlock()
+	for _, conn := range conns {
+		_ = conn.Close()
+	}
+}
+
+// die ends the simulated machine on its own, as a killed monitor or a
+// crashed guest would: the guest helper and its link go away, then the
+// machine is reaped.
+func (s *stubInstance) die() {
+	s.dropLink()
+	s.mu.Lock()
+	if s.cancel != nil {
+		s.cancel()
+		s.cancel = nil
+	}
+	if s.ln != nil {
+		_ = s.ln.Close()
+		s.ln = nil
+	}
+	s.mu.Unlock()
+	s.exitOnce.Do(func() { close(s.exited) })
 }
 
 func (s *stubInstance) Pause(context.Context) error {
@@ -62,6 +121,10 @@ func (s *stubInstance) Stop(context.Context) error {
 	if s.sock != "" {
 		_ = os.Remove(s.sock)
 	}
+	if s.scratch != "" {
+		_ = os.RemoveAll(s.scratch)
+	}
+	s.exitOnce.Do(func() { close(s.exited) })
 	return nil
 }
 
@@ -82,6 +145,11 @@ type recordingLauncher struct {
 	instances []*stubInstance
 	last      startRequest
 	fail      error
+	// noJournal serves a helper that advertises no native journal.
+	noJournal bool
+	// noProcesses serves a helper whose kernel has no process events.
+	noProcesses bool
+	byID        map[execenv.ID]*stubInstance
 }
 
 type blockingLauncher struct {
@@ -107,17 +175,39 @@ func (l *recordingLauncher) Start(ctx context.Context, req startRequest) (instan
 	if l.fail != nil {
 		return nil, l.fail
 	}
-	inst, err := startStubAgent(ctx, req)
+	inst, err := startStubAgent(ctx, req, !l.noJournal, !l.noProcesses)
 	if err != nil {
 		return nil, err
 	}
 	l.starts++
 	l.last = req
 	l.instances = append(l.instances, inst)
+	if l.byID == nil {
+		l.byID = make(map[execenv.ID]*stubInstance)
+	}
+	l.byID[req.ID] = inst
 	return inst, nil
 }
 
-func startStubAgent(_ context.Context, req startRequest) (*stubInstance, error) {
+// instance returns the machine last started for id.
+func (l *recordingLauncher) instance(id execenv.ID) *stubInstance {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.byID[id]
+}
+
+// quiescentBarrier serves the stub helper's journal. Unit tests write the
+// workspace only between calls, so nothing races a capture.
+type quiescentBarrier struct{}
+
+func (quiescentBarrier) Stopped(ctx context.Context, fn func() error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return fn()
+}
+
+func startStubAgent(_ context.Context, req startRequest, journal, processLog bool) (*stubInstance, error) {
 	if err := os.MkdirAll(req.TreeDir, 0o700); err != nil {
 		return nil, err
 	}
@@ -132,11 +222,75 @@ func startStubAgent(_ context.Context, req startRequest) (*stubInstance, error) 
 	if err != nil {
 		return nil, err
 	}
+	// The shell's HOME stays outside the grant directory, as on a real guest,
+	// so a hung-up shell writing its history cannot race grant removal.
+	scratch, err := os.MkdirTemp("", "execenv-scratch-")
+	if err != nil {
+		_ = ln.Close()
+		return nil, err
+	}
 	ctx, cancel := context.WithCancel(context.Background())
+	processes := newStubProcesses()
+	cfg := agent.Config{Home: req.TreeDir, Scratch: scratch}
+	if journal {
+		cfg.Barrier = quiescentBarrier{}
+	}
+	if processLog {
+		cfg.Processes = processes
+	}
+	conns := &trackedConns{Listener: ln}
 	go func() {
-		_ = agent.ListenAndServe(ctx, ln, agent.Config{Home: req.TreeDir})
+		_ = agent.ListenAndServe(ctx, conns, cfg)
 	}()
-	return &stubInstance{sock: sock, ln: ln, cancel: cancel}, nil
+	return &stubInstance{sock: sock, scratch: scratch, ln: ln, conns: conns, cancel: cancel, processes: processes, exited: make(chan struct{})}, nil
+}
+
+// stubProcesses is the stub helper's process source. Run reports one
+// command as the guest kernel would see it start and exit, with a fresh PID.
+type stubProcesses struct {
+	events chan execenv.ProcessEvent
+	done   chan struct{}
+	once   sync.Once
+	mu     sync.Mutex
+	pid    int
+}
+
+func newStubProcesses() *stubProcesses {
+	return &stubProcesses{events: make(chan execenv.ProcessEvent), done: make(chan struct{}), pid: 100}
+}
+
+func (p *stubProcesses) Next() (execenv.ProcessEvent, error) {
+	select {
+	case event := <-p.events:
+		return event, nil
+	case <-p.done:
+		return execenv.ProcessEvent{}, execenv.ErrClosed
+	}
+}
+
+func (p *stubProcesses) Close() error {
+	p.once.Do(func() { close(p.done) })
+	return nil
+}
+
+func (p *stubProcesses) Run(ctx context.Context, argv []string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.pid++
+	code := 0
+	for _, event := range []execenv.ProcessEvent{
+		{Kind: execenv.ProcessStarted, PID: p.pid, ParentPID: 100, Argv: argv, At: time.Now()},
+		{Kind: execenv.ProcessExited, PID: p.pid, ExitCode: &code, At: time.Now()},
+	} {
+		select {
+		case p.events <- event:
+		case <-p.done:
+			return execenv.ErrClosed
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
 }
 
 // recordingAttacher is the test adapter for attach: it records dests and
@@ -161,5 +315,3 @@ func (a *recordingAttacher) Setup(id execenv.ID, dests []string) (*netAttach, er
 	a.last = &att
 	return &att, nil
 }
-
-func pipeConnForTest(r, w *os.File) net.Conn { return agent.NewPipeConn(r, w) }

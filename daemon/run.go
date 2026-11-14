@@ -15,8 +15,10 @@ import (
 )
 
 // Run constructs the configured adapter, listens, then serves the existing
-// remote contract. It does not invent a second protocol. The process stays
-// inert (no grants) until Listen succeeds.
+// remote contract. It does not invent a second grant protocol. The process
+// stays inert (no grants) until Listen succeeds. With an OperatorSocket it
+// also answers the local operator's drain requests there (see
+// ServeOperator); that socket carries no grant operations.
 func Run(ctx context.Context, cfg Config, logger *slog.Logger) error {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -80,6 +82,26 @@ func serveListener(ctx context.Context, ln net.Listener, inner execenv.Host, cfg
 		}
 		server.TLS = tlsConfig
 	}
+	if cfg.OperatorSocket != "" {
+		if _, ok := inner.(drainable); !ok {
+			_ = ln.Close()
+			return execenv.Error("operator", execenv.ErrInvalid)
+		}
+		operator, err := listenOperator(cfg.OperatorSocket)
+		if err != nil {
+			_ = ln.Close()
+			return err
+		}
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		go func() {
+			if err := ServeOperator(ctx, operator, inner); err != nil {
+				logger.Error("operator socket stopped", "err", err)
+			}
+		}()
+		defer func() { _ = os.Remove(cfg.OperatorSocket) }()
+		return remote.Serve(ctx, ln, inner, server)
+	}
 	return remote.Serve(ctx, ln, inner, server)
 }
 
@@ -96,8 +118,9 @@ func newAdapter(cfg Config) (execenv.Host, error) {
 	switch cfg.Adapter {
 	case adapterMemory:
 		return memory.New(memory.Config{
-			Images: cfg.imageIDs(),
-			Slots:  cfg.Slots,
+			Images:        cfg.imageIDs(),
+			Slots:         cfg.Slots,
+			TerminalGrace: cfg.Grace,
 		})
 	case adapterIsolated:
 		if cfg.WorkDir == "" {
@@ -113,20 +136,20 @@ func newAdapter(cfg Config) (execenv.Host, error) {
 			})
 		}
 		return isolated.New(isolated.Config{
-			Isolation:      execenv.Isolation(cfg.isolation()),
-			RequireJournal: cfg.RequireJournal,
-			Images:         images,
-			Slots:          cfg.Slots,
-			WorkDir:        cfg.WorkDir,
-			Device:         cfg.Device,
-			Runtime:        cfg.Runtime,
-			Supervisor:     cfg.Supervisor,
-			CPUMillis:      cfg.CPUMillis,
-			MemoryBytes:    cfg.MemoryBytes,
-			DiskBytes:      cfg.DiskBytes,
-			Mkfs:           cfg.Mkfs,
-			JailUIDBase:    cfg.JailUIDBase,
-			Allow:          append([]string(nil), cfg.Allow...),
+			Images:      images,
+			Slots:       cfg.Slots,
+			WorkDir:     cfg.WorkDir,
+			Device:      cfg.Device,
+			Runtime:     cfg.Runtime,
+			Supervisor:  cfg.Supervisor,
+			CPUMillis:   cfg.CPUMillis,
+			MemoryBytes: cfg.MemoryBytes,
+			DiskBytes:   cfg.DiskBytes,
+			Mkfs:        cfg.Mkfs,
+			JailUIDBase: cfg.JailUIDBase,
+			Allow:       append([]string(nil), cfg.Allow...),
+			// Unset grace is execenv.DefaultTerminalGrace.
+			TerminalGrace: cfg.Grace,
 		})
 	default:
 		return nil, execenv.Error("adapter", execenv.ErrInvalid)

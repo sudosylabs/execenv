@@ -1,7 +1,6 @@
 package remote
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -25,9 +24,10 @@ type Client struct {
 	stream       atomic.Uint64
 	mu           sync.Mutex
 	pending      map[uint64]chan frame
-	terms        map[execenv.ID]*remoteTerminal
-	obs          map[execenv.ID]*remoteObservation
-	closed       bool
+	// terms is keyed by stream. Several streams may name one grant while a
+	// takeover is settling; only the host decides which one is attached.
+	terms  map[uint64]*remoteTerminal
+	closed bool
 }
 
 // New dials cfg.Address. The constructor is inert aside from the dial and
@@ -58,8 +58,7 @@ func New(cfg Config) (*Client, error) {
 		cfg:     cfg,
 		sess:    newSession(conn),
 		pending: make(map[uint64]chan frame),
-		terms:   make(map[execenv.ID]*remoteTerminal),
-		obs:     make(map[execenv.ID]*remoteObservation),
+		terms:   make(map[uint64]*remoteTerminal),
 	}
 	go client.readLoop()
 	if err := client.authenticate(); err != nil {
@@ -114,8 +113,8 @@ func (c *Client) readLoop() {
 			}
 		case kindPty:
 			c.deliverPty(f)
-		case kindWatch:
-			c.deliverWatch(f)
+		case kindCredit:
+			c.deliverCredit(f)
 		}
 	}
 }
@@ -128,60 +127,67 @@ func (c *Client) failAll() {
 		ch <- frame{Seq: seq, Status: "connection"}
 		delete(c.pending, seq)
 	}
-	for id, term := range c.terms {
-		term.hangup(execenv.ErrClosed)
-		delete(c.terms, id)
-	}
-	for id, obs := range c.obs {
-		obs.fail(execenv.ErrConnection)
-		delete(c.obs, id)
+	// A lost connection is a detach on the host. Each Terminal keeps its
+	// Offset so a new connection can resume it.
+	for stream, term := range c.terms {
+		term.hangup(execenv.ErrConnection)
+		delete(c.terms, stream)
 	}
 }
 
+func (c *Client) termFor(f frame) *remoteTerminal {
+	c.mu.Lock()
+	term := c.terms[f.Stream]
+	c.mu.Unlock()
+	if term == nil || string(term.id) != f.Grant {
+		return nil
+	}
+	return term
+}
+
+// deliverPty never blocks the read loop: credit bounds what one terminal
+// buffers, so a caller that stops reading delays nothing else.
 func (c *Client) deliverPty(f frame) {
-	c.mu.Lock()
-	term := c.terms[execenv.ID(f.Grant)]
-	c.mu.Unlock()
-	if term == nil || term.stream != f.Stream {
+	term := c.termFor(f)
+	if term == nil {
 		return
 	}
-	if f.Status != "" {
+	switch f.Status {
+	case "":
+		if !term.push(f.Seq, f.Extra) {
+			c.failStream(term)
+		}
+	case statusEOF:
+		c.forget(term)
+		term.finish(io.EOF)
+	default:
+		c.forget(term)
 		term.hangup(errorFromStatus(f.Status))
-		return
 	}
-	term.push(f.Extra)
 }
 
-func (c *Client) deliverWatch(f frame) {
-	c.mu.Lock()
-	obs := c.obs[execenv.ID(f.Grant)]
-	c.mu.Unlock()
-	if obs == nil || obs.stream != f.Stream {
-		return
+func (c *Client) deliverCredit(f frame) {
+	term := c.termFor(f)
+	if term != nil && !term.grantInput(f.Seq) {
+		c.failStream(term)
 	}
-	if f.Status != "" {
-		c.finishObservation(execenv.ID(f.Grant), obs, errorFromStatus(f.Status))
-		return
-	}
-	var ev execenv.Event
-	if err := decodeExtra(f.Extra, &ev); err != nil {
-		c.finishObservation(execenv.ID(f.Grant), obs, execenv.ErrUnavailable)
-		return
-	}
-	if err := execenv.ValidateEvent(ev); err != nil {
-		c.finishObservation(execenv.ID(f.Grant), obs, execenv.ErrUnavailable)
-		return
-	}
-	obs.push(ev)
 }
 
-func (c *Client) finishObservation(id execenv.ID, obs *remoteObservation, err error) {
+// failStream ends one terminal whose host broke flow control and detaches
+// it without blocking the read loop. The connection and other terminals
+// are unaffected.
+func (c *Client) failStream(term *remoteTerminal) {
+	c.forget(term)
+	term.hangup(execenv.ErrInvalid)
+	go func() { _ = term.detach() }()
+}
+
+func (c *Client) forget(term *remoteTerminal) {
 	c.mu.Lock()
-	if c.obs[id] == obs {
-		delete(c.obs, id)
+	if c.terms[term.stream] == term {
+		delete(c.terms, term.stream)
 	}
 	c.mu.Unlock()
-	obs.fail(err)
 }
 
 func (c *Client) call(ctx context.Context, method, grant string, extra []byte) ([]byte, error) {
@@ -231,8 +237,8 @@ func (c *Client) call(ctx context.Context, method, grant string, extra []byte) (
 	}
 }
 
-// Capabilities is local. A remote host is isolated; the wire does not name
-// how isolation is implemented.
+// Capabilities is what the served host reported at authentication. The wire
+// does not name how isolation is implemented.
 func (c *Client) Capabilities() execenv.Capabilities {
 	return c.capabilities
 }
@@ -279,121 +285,49 @@ type remoteEnv struct {
 
 func (e *remoteEnv) ID() execenv.ID { return e.id }
 
-func (e *remoteEnv) Attach(ctx context.Context, win execenv.Window) (execenv.Terminal, error) {
+func (e *remoteEnv) Attach(ctx context.Context, request execenv.AttachRequest) (execenv.Terminal, error) {
 	if e.revoked.Load() {
 		return nil, execenv.ErrRevoked
 	}
 	stream := e.client.stream.Add(1)
-	extra, err := encodeExtra(attachArgs{Window: win, Stream: stream})
+	extra, err := encodeExtra(attachArgs{Window: request.Window, Stream: stream, Resume: request.Resume, Takeover: request.Takeover, Credit: ptyWindow})
 	if err != nil {
 		return nil, execenv.Error("attach", err)
 	}
 	term := newRemoteTerminal(e.client, e.id, stream)
 	term.epoch = e.epoch
+	// Register before the call: output may arrive before the reply.
 	e.client.mu.Lock()
-	if current := e.client.terms[e.id]; current != nil {
-		current.mu.Lock()
-		frozen := current.frozen
-		current.mu.Unlock()
-		e.client.mu.Unlock()
-		if frozen {
-			return nil, execenv.ErrFrozen
-		}
-		return nil, execenv.Error("attach", execenv.ErrBusy)
-	}
-	e.client.terms[e.id] = term
+	e.client.terms[stream] = term
 	e.client.mu.Unlock()
-	if _, err := e.call(ctx, methodAttach, string(e.id), extra); err != nil {
-		e.client.mu.Lock()
-		if e.client.terms[e.id] == term {
-			delete(e.client.terms, e.id)
+	out, err := e.call(ctx, methodAttach, string(e.id), extra)
+	var result attachResult
+	if err == nil {
+		if decodeErr := decodeExtra(out, &result); decodeErr != nil || result.Terminal == "" || result.Credit == 0 || result.Credit > maxPtyWindow {
+			err = execenv.Error("attach", execenv.ErrUnavailable)
 		}
-		e.client.mu.Unlock()
+	}
+	if err != nil {
+		e.client.forget(term)
 		term.hangup(err)
 		return nil, err
 	}
-	return term, nil
-}
-
-func (e *remoteEnv) ReplaceTree(ctx context.Context, tree execenv.Tree) error {
-	extra, err := encodeExtra(replaceArgs{Tree: tree})
-	if err != nil {
-		return execenv.Error("replace", err)
-	}
-	_, err = e.call(ctx, methodReplace, string(e.id), extra)
-	return err
-}
-
-func (e *remoteEnv) Apply(ctx context.Context, batch execenv.Batch) error {
-	extra, err := encodeExtra(applyArgs{Batch: batch})
-	if err != nil {
-		return execenv.Error("apply", err)
-	}
-	_, err = e.call(ctx, methodApply, string(e.id), extra)
-	return err
-}
-
-func (e *remoteEnv) Watch(ctx context.Context, after execenv.Cursor) (execenv.Observation, error) {
-	stream := e.client.stream.Add(1)
-	extra, err := encodeExtra(watchArgs{After: after, Stream: stream})
-	if err != nil {
-		return nil, execenv.Error("watch", err)
-	}
-	obs := newRemoteObservation(e.client, e.id, stream, after)
+	term.setStart(result.Terminal, result.Start, result.Credit)
+	// The host attached this stream; any earlier stream of this client for
+	// the grant is replaced, whatever frames are still in flight for it.
 	e.client.mu.Lock()
-	if e.client.obs[e.id] != nil {
-		e.client.mu.Unlock()
-		return nil, execenv.Error("watch", execenv.ErrBusy)
-	}
-	e.client.obs[e.id] = obs
-	e.client.mu.Unlock()
-	out, err := e.call(ctx, methodWatch, string(e.id), extra)
-	if err != nil {
-		e.client.mu.Lock()
-		if e.client.obs[e.id] == obs {
-			delete(e.client.obs, e.id)
+	var replaced []*remoteTerminal
+	for other, previous := range e.client.terms {
+		if other != stream && previous.id == e.id {
+			replaced = append(replaced, previous)
+			delete(e.client.terms, other)
 		}
-		e.client.mu.Unlock()
-		obs.fail(err)
-		return nil, err
 	}
-	var result watchResult
-	if err := decodeExtra(out, &result); err != nil {
-		_ = obs.Close()
-		return nil, execenv.Error("watch", execenv.ErrUnavailable)
+	e.client.mu.Unlock()
+	for _, previous := range replaced {
+		previous.hangup(execenv.ErrSuperseded)
 	}
-	obs.setInitialCursor(result.Cursor, after)
-	return obs, nil
-}
-
-func (e *remoteEnv) Open(ctx context.Context, path string) (io.ReadCloser, error) {
-	extra, err := encodeExtra(openArgs{Path: path})
-	if err != nil {
-		return nil, execenv.Error("open", err)
-	}
-	out, err := e.call(ctx, methodOpen, string(e.id), extra)
-	if err != nil {
-		return nil, err
-	}
-	var body []byte
-	if err := decodeExtra(out, &body); err != nil {
-		return nil, execenv.Error("open", execenv.ErrUnavailable)
-	}
-	return io.NopCloser(bytes.NewReader(body)), nil
-}
-
-func (e *remoteEnv) Freeze(ctx context.Context) error {
-	_, err := e.call(ctx, methodFreeze, string(e.id), nil)
-	e.setTermFrozen(true)
-	return err
-}
-
-func (e *remoteEnv) Thaw(ctx context.Context) error {
-	_, err := e.call(ctx, methodThaw, string(e.id), nil)
-	if err == nil {
-		e.setTermFrozen(false)
-	}
-	return err
+	return term, nil
 }
 
 func (e *remoteEnv) Revoke(ctx context.Context) error {
@@ -409,21 +343,20 @@ func (e *remoteEnv) Revoke(ctx context.Context) error {
 	return err
 }
 
-func (c *Client) hangupTerm(id execenv.ID, err error) {
-	c.mu.Lock()
-	term := c.terms[id]
-	delete(c.terms, id)
-	c.mu.Unlock()
-	if term != nil {
-		term.hangup(err)
+func (e *remoteEnv) terminals() []*remoteTerminal {
+	e.client.mu.Lock()
+	defer e.client.mu.Unlock()
+	var out []*remoteTerminal
+	for _, term := range e.client.terms {
+		if term.id == e.id && term.epoch == e.epoch {
+			out = append(out, term)
+		}
 	}
+	return out
 }
 
 func (e *remoteEnv) setTermFrozen(frozen bool) {
-	e.client.mu.Lock()
-	term := e.client.terms[e.id]
-	e.client.mu.Unlock()
-	if term != nil && term.epoch == e.epoch {
+	for _, term := range e.terminals() {
 		term.mu.Lock()
 		term.frozen = frozen
 		term.cond.Broadcast()
@@ -431,29 +364,104 @@ func (e *remoteEnv) setTermFrozen(frozen bool) {
 	}
 }
 
+// remoteTerminal is one attached stream. It buffers at most ptyWindow
+// bytes of output as segments that remember their absolute terminal
+// offsets: the host sends no more than the credit this side granted, and
+// Read returns credit as the caller consumes. Write sends input only
+// within the host's credit.
 type remoteTerminal struct {
 	epoch  string
 	client *Client
 	id     execenv.ID
 	stream uint64
-	mu     sync.Mutex
-	cond   *sync.Cond
-	buf    []byte
-	closed bool
-	frozen bool
-	dead   error
+	// writeMu keeps one Write's frames contiguous.
+	writeMu sync.Mutex
+
+	mu       sync.Mutex
+	cond     *sync.Cond
+	terminal execenv.TerminalID
+	start    uint64
+	offset   uint64
+	segments []ptySegment
+	buffered int
+	// outCredit is output the host may still send; outUsed is output read
+	// and not yet granted back.
+	outCredit uint64
+	outUsed   uint64
+	// inCredit is input the host still accepts, at most inWindow.
+	inWindow uint64
+	inCredit uint64
+	closed   bool
+	frozen   bool
+	// ended is the shell's exit (io.EOF), delivered after the buffer drains.
+	ended error
+	// dead fails the terminal; buffered output still drains first.
+	dead error
 }
 
+type ptySegment struct {
+	offset uint64
+	data   []byte
+}
+
+var _ execenv.Terminal = (*remoteTerminal)(nil)
+
 func newRemoteTerminal(client *Client, id execenv.ID, stream uint64) *remoteTerminal {
-	t := &remoteTerminal{client: client, id: id, stream: stream}
+	t := &remoteTerminal{client: client, id: id, stream: stream, outCredit: ptyWindow}
 	t.cond = sync.NewCond(&t.mu)
 	return t
 }
 
-func (t *remoteTerminal) push(p []byte) {
+func (t *remoteTerminal) setStart(id execenv.TerminalID, start, inputWindow uint64) {
 	t.mu.Lock()
-	if !t.closed && t.dead == nil {
-		t.buf = append(t.buf, p...)
+	t.terminal = id
+	t.start = start
+	t.inWindow = inputWindow
+	t.inCredit = inputWindow
+	if len(t.segments) > 0 {
+		t.offset = t.segments[0].offset
+	} else {
+		t.offset = start
+	}
+	t.cond.Broadcast()
+	t.mu.Unlock()
+}
+
+// push buffers one frame. It reports false when the frame exceeds the
+// credit this side granted: the host broke flow control.
+func (t *remoteTerminal) push(offset uint64, p []byte) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if uint64(len(p)) > t.outCredit {
+		return false
+	}
+	t.outCredit -= uint64(len(p))
+	if t.closed || t.dead != nil || t.ended != nil {
+		return true
+	}
+	t.segments = append(t.segments, ptySegment{offset: offset, data: append([]byte(nil), p...)})
+	t.buffered += len(p)
+	t.cond.Broadcast()
+	return true
+}
+
+// grantInput adds host credit. It reports false when the grant would
+// exceed the window: the host returned bytes it was never sent.
+func (t *remoteTerminal) grantInput(n uint64) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if n > t.inWindow-t.inCredit {
+		return false
+	}
+	t.inCredit += n
+	t.cond.Broadcast()
+	return true
+}
+
+func (t *remoteTerminal) finish(err error) {
+	t.mu.Lock()
+	if t.ended == nil && t.dead == nil {
+		t.ended = err
 		t.cond.Broadcast()
 	}
 	t.mu.Unlock()
@@ -471,61 +479,142 @@ func (t *remoteTerminal) hangup(err error) {
 	t.mu.Unlock()
 }
 
-func (t *remoteTerminal) Read(p []byte) (int, error) {
+func (t *remoteTerminal) ID() execenv.TerminalID {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	for len(t.buf) == 0 && !t.closed && t.dead == nil {
-		t.cond.Wait()
-	}
-	if t.dead != nil && len(t.buf) == 0 {
-		return 0, execenv.Error("read", t.dead)
-	}
-	if len(t.buf) == 0 {
-		return 0, io.EOF
-	}
-	n := copy(p, t.buf)
-	t.buf = t.buf[n:]
-	return n, nil
+	return t.terminal
 }
 
-func (t *remoteTerminal) Write(p []byte) (int, error) {
+func (t *remoteTerminal) Start() uint64 {
 	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.start
+}
+
+func (t *remoteTerminal) Offset() uint64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.offset
+}
+
+// Read drains buffered output before reporting why the terminal ended.
+// Superseded and closed terminals stop at once. Once at least half the
+// window has been read, Read returns that credit to the host.
+func (t *remoteTerminal) Read(p []byte) (int, error) {
+	n, grant, err := t.read(p)
+	if grant > 0 {
+		// A failed send means the connection is gone; the read loop
+		// reports that.
+		_ = t.client.sess.Send(frame{Seq: grant, Kind: kindCredit, Grant: string(t.id), Stream: t.stream})
+	}
+	return n, err
+}
+
+func (t *remoteTerminal) read(p []byte) (int, uint64, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for len(t.segments) == 0 && !t.closed && t.dead == nil && t.ended == nil {
+		t.cond.Wait()
+	}
+	if t.closed {
+		return 0, 0, execenv.Error("read", execenv.ErrClosed)
+	}
+	if errors.Is(t.dead, execenv.ErrSuperseded) || errors.Is(t.dead, execenv.ErrRevoked) || errors.Is(t.dead, execenv.ErrLost) {
+		return 0, 0, execenv.Error("read", t.dead)
+	}
+	if len(t.segments) > 0 {
+		seg := &t.segments[0]
+		// A segment past the cursor is output the host skipped because this
+		// reader fell behind its history.
+		t.offset = max(t.offset, seg.offset)
+		n := copy(p, seg.data)
+		seg.data = seg.data[n:]
+		seg.offset += uint64(n)
+		t.offset += uint64(n)
+		t.buffered -= n
+		if len(seg.data) == 0 {
+			t.segments = t.segments[1:]
+		}
+		var grant uint64
+		t.outUsed += uint64(n)
+		if t.outUsed >= ptyWindow/2 && t.dead == nil && t.ended == nil {
+			grant = t.outUsed
+			t.outUsed = 0
+			t.outCredit += grant
+		}
+		return n, grant, nil
+	}
+	if t.dead != nil {
+		return 0, 0, execenv.Error("read", t.dead)
+	}
+	return 0, 0, t.ended
+}
+
+func (t *remoteTerminal) liveLocked() error {
+	if t.closed {
+		return execenv.ErrClosed
+	}
+	if t.dead != nil {
+		return t.dead
+	}
+	if t.ended != nil {
+		return execenv.ErrClosed
+	}
 	if t.frozen {
-		t.mu.Unlock()
-		return 0, execenv.ErrFrozen
+		return execenv.ErrFrozen
 	}
-	if t.closed || t.dead != nil {
-		err := t.dead
-		if err == nil {
-			err = execenv.ErrClosed
+	return nil
+}
+
+// Write sends p within the host's input credit, in frames of at most
+// mux.MaxPtyBytes. It blocks while the host has granted none and returns
+// once the terminal is closed, superseded, revoked, frozen or its
+// connection lost, reporting how much of p it sent.
+func (t *remoteTerminal) Write(p []byte) (int, error) {
+	t.writeMu.Lock()
+	defer t.writeMu.Unlock()
+	written := 0
+	for {
+		t.mu.Lock()
+		for {
+			if err := t.liveLocked(); err != nil {
+				t.mu.Unlock()
+				return written, execenv.Error("write", err)
+			}
+			if len(p) == 0 || t.inCredit > 0 {
+				break
+			}
+			t.cond.Wait()
 		}
-		t.mu.Unlock()
-		return 0, execenv.Error("write", err)
-	}
-	t.mu.Unlock()
-	// PTY octets travel as kindPty, not as an RPC, so a hangup does not
-	// take the control channel down with it.
-	err := t.client.sess.Send(frame{
-		Kind:   kindPty,
-		Grant:  string(t.id),
-		Stream: t.stream,
-		Extra:  append([]byte(nil), p...),
-	})
-	if err != nil {
-		if errors.Is(err, execenv.ErrTooLarge) {
-			return 0, execenv.Error("write", err)
+		if len(p) == 0 {
+			t.mu.Unlock()
+			return written, nil
 		}
-		return 0, execenv.Error("write", execenv.ErrClosed)
+		n := int(min(uint64(len(p)), t.inCredit, mux.MaxPtyBytes))
+		t.inCredit -= uint64(n)
+		t.mu.Unlock()
+		// PTY octets travel as kindPty, not as an RPC, so a hangup does
+		// not take the control channel down with it.
+		err := t.client.sess.Send(frame{
+			Kind:   kindPty,
+			Grant:  string(t.id),
+			Stream: t.stream,
+			Extra:  append([]byte(nil), p[:n]...),
+		})
+		if err != nil {
+			return written, execenv.Error("write", execenv.ErrConnection)
+		}
+		written += n
+		p = p[n:]
 	}
-	return len(p), nil
 }
 
 func (t *remoteTerminal) Resize(ctx context.Context, win execenv.Window) error {
 	t.mu.Lock()
-	frozen := t.frozen
+	err := t.liveLocked()
 	t.mu.Unlock()
-	if frozen {
-		return execenv.ErrFrozen
+	if err != nil {
+		return execenv.Error("resize", err)
 	}
 	extra, err := encodeExtra(resizeArgs{Window: win, Stream: t.stream})
 	if err != nil {
@@ -535,145 +624,49 @@ func (t *remoteTerminal) Resize(ctx context.Context, win execenv.Window) error {
 	return err
 }
 
+// Close detaches. The shell keeps running on the host for its grace.
 func (t *remoteTerminal) Close() error {
 	t.mu.Lock()
+	if t.closed {
+		t.mu.Unlock()
+		return nil
+	}
 	t.closed = true
 	t.cond.Broadcast()
 	t.mu.Unlock()
-	extra, encodeErr := encodeExtra(streamArgs{Stream: t.stream})
-	if encodeErr != nil {
-		return execenv.Error("detach", encodeErr)
+	return t.detach()
+}
+
+func (t *remoteTerminal) detach() error {
+	t.client.forget(t)
+	extra, err := encodeExtra(streamArgs{Stream: t.stream})
+	if err != nil {
+		return execenv.Error("detach", err)
 	}
-	_, err := t.client.call(context.Background(), methodDetach, string(t.id), extra)
-	t.client.mu.Lock()
-	if t.client.terms[t.id] == t {
-		delete(t.client.terms, t.id)
+	_, err = t.client.call(context.Background(), methodDetach, string(t.id), extra)
+	if errors.Is(err, execenv.ErrConnection) {
+		// The host detaches a lost connection's terminals itself.
+		return nil
 	}
-	t.client.mu.Unlock()
 	return err
 }
 
-type remoteObservation struct {
-	client *Client
-	id     execenv.ID
-	stream uint64
-	events chan execenv.Event
-	errc   chan error
-	once   sync.Once
-	mu     sync.Mutex
-	cursor execenv.Cursor
-	failed error
-}
-
-func newRemoteObservation(client *Client, id execenv.ID, stream uint64, cursor execenv.Cursor) *remoteObservation {
-	return &remoteObservation{
-		client: client,
-		id:     id,
-		stream: stream,
-		events: make(chan execenv.Event, watchBufferRemote),
-		errc:   make(chan error, 1),
-		cursor: cursor,
+// Hangup ends the shell on the host now.
+func (t *remoteTerminal) Hangup(ctx context.Context) error {
+	t.mu.Lock()
+	err := t.liveLocked()
+	t.mu.Unlock()
+	if err != nil && !errors.Is(err, execenv.ErrFrozen) {
+		return execenv.Error("hangup", err)
 	}
-}
-
-func (o *remoteObservation) Cursor() execenv.Cursor {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	return o.cursor
-}
-
-func (o *remoteObservation) setInitialCursor(cursor, after execenv.Cursor) {
-	o.mu.Lock()
-	if o.cursor == after {
-		o.cursor = cursor
+	extra, err := encodeExtra(streamArgs{Stream: t.stream})
+	if err != nil {
+		return execenv.Error("hangup", err)
 	}
-	o.mu.Unlock()
-}
-
-const watchBufferRemote = 64
-
-func (o *remoteObservation) push(ev execenv.Event) {
-	o.mu.Lock()
-	if o.failed != nil {
-		o.mu.Unlock()
-		return
+	if _, err := t.client.call(ctx, methodHangup, string(t.id), extra); err != nil {
+		return err
 	}
-	overflow := false
-	select {
-	case o.events <- ev:
-	default:
-		overflow = true
-	}
-	o.mu.Unlock()
-	if overflow {
-		o.abort(execenv.ErrLagged)
-	}
-}
-
-func (o *remoteObservation) abort(err error) {
-	o.client.finishObservation(o.id, o, err)
-	go func() {
-		extra, encodeErr := encodeExtra(streamArgs{Stream: o.stream})
-		if encodeErr == nil {
-			_, _ = o.client.call(context.Background(), methodUnwatch, string(o.id), extra)
-		}
-	}()
-}
-
-func (o *remoteObservation) fail(err error) {
-	o.once.Do(func() {
-		o.mu.Lock()
-		o.failed = err
-		o.mu.Unlock()
-		o.errc <- err
-		close(o.events)
-	})
-}
-
-func (o *remoteObservation) Next(ctx context.Context) (execenv.Event, error) {
-	o.mu.Lock()
-	failed := o.failed
-	o.mu.Unlock()
-	if failed != nil {
-		return execenv.Event{}, execenv.Error("watch", failed)
-	}
-	select {
-	case <-ctx.Done():
-		return execenv.Event{}, execenv.Error("watch", ctx.Err())
-	case ev, ok := <-o.events:
-		if ok {
-			o.mu.Lock()
-			if o.failed != nil {
-				err := o.failed
-				o.mu.Unlock()
-				return execenv.Event{}, execenv.Error("watch", err)
-			}
-			o.cursor = ev.Cursor
-			o.mu.Unlock()
-			return ev, nil
-		}
-	}
-	// events is closed after fail. Prefer the recorded cause (lag, revoke,
-	// connection) over a generic closed so the caller knows to resync.
-	select {
-	case err := <-o.errc:
-		return execenv.Event{}, execenv.Error("watch", err)
-	default:
-		return execenv.Event{}, execenv.Error("watch", execenv.ErrClosed)
-	}
-}
-
-func (o *remoteObservation) Close() error {
-	o.fail(execenv.ErrClosed)
-	extra, encodeErr := encodeExtra(streamArgs{Stream: o.stream})
-	if encodeErr != nil {
-		return execenv.Error("unwatch", encodeErr)
-	}
-	_, err := o.client.call(context.Background(), methodUnwatch, string(o.id), extra)
-	o.client.mu.Lock()
-	if o.client.obs[o.id] == o {
-		delete(o.client.obs, o.id)
-	}
-	o.client.mu.Unlock()
-	return err
+	t.client.forget(t)
+	t.hangup(execenv.ErrClosed)
+	return nil
 }

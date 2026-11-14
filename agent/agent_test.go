@@ -4,220 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/agent"
 )
-
-func TestReplaceTreeThenOpen(t *testing.T) {
-	t.Parallel()
-	cli, home := startAgent(t)
-	err := cli.ReplaceTree(t.Context(), execenv.Tree{{
-		Path:    "src/main.go",
-		Kind:    execenv.KindFile,
-		Version: "v1",
-		Data:    []byte("package main\n"),
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := os.ReadFile(filepath.Join(home, "src", "main.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "package main\n" {
-		t.Fatal("home did not receive the projected file")
-	}
-	body, err := cli.Open(t.Context(), "src/main.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, err := io.ReadAll(body)
-	_ = body.Close()
-	if err != nil || string(raw) != "package main\n" {
-		t.Fatalf("Open() = %q err = %v", raw, err)
-	}
-}
-
-func TestReplaceTreeKeepsVersion(t *testing.T) {
-	t.Parallel()
-	cli, _ := startAgent(t)
-	first := execenv.Tree{{Path: "a.txt", Kind: execenv.KindFile, Version: "v1", Data: []byte("one")}}
-	if err := cli.ReplaceTree(t.Context(), first); err != nil {
-		t.Fatal(err)
-	}
-	skip := execenv.Tree{{Path: "a.txt", Kind: execenv.KindFile, Version: "v1"}}
-	if err := cli.ReplaceTree(t.Context(), skip); err != nil {
-		t.Fatal(err)
-	}
-	missing := execenv.Tree{{Path: "a.txt", Kind: execenv.KindFile, Version: "v2"}}
-	if err := cli.ReplaceTree(t.Context(), missing); !errors.Is(err, execenv.ErrInvalid) {
-		t.Fatalf("missing body error = %v, want ErrInvalid", err)
-	}
-}
-
-func TestApplyLeavesGuestFile(t *testing.T) {
-	t.Parallel()
-	cli, home := startAgent(t)
-	if err := cli.Apply(t.Context(), execenv.Batch{Mutations: []execenv.Mutation{{
-		Op:      execenv.OpCreate,
-		Path:    "a.txt",
-		Kind:    execenv.KindFile,
-		Version: "v1",
-		Data:    []byte("one"),
-	}}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(home, "guest.txt"), []byte("hi"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := cli.Apply(t.Context(), execenv.Batch{Mutations: []execenv.Mutation{{
-		Op:   execenv.OpReplace,
-		Path: "a.txt",
-		Kind: execenv.KindFile,
-		Data: []byte("two"),
-	}}}); err != nil {
-		t.Fatal(err)
-	}
-	got, err := os.ReadFile(filepath.Join(home, "guest.txt"))
-	if err != nil || string(got) != "hi" {
-		t.Fatalf("guest file after Apply = %q err = %v", got, err)
-	}
-}
-
-func TestApplyFailureRestoresHome(t *testing.T) {
-	t.Parallel()
-	cli, home := startAgent(t)
-	if err := cli.ReplaceTree(t.Context(), execenv.Tree{{
-		Path:    "blocked",
-		Kind:    execenv.KindFile,
-		Version: "v1",
-		Data:    []byte("old"),
-	}}); err != nil {
-		t.Fatal(err)
-	}
-	err := cli.Apply(t.Context(), execenv.Batch{Mutations: []execenv.Mutation{
-		{
-			Op:   execenv.OpReplace,
-			Path: "blocked",
-			Kind: execenv.KindFile,
-			Data: []byte("new"),
-		},
-		{
-			Op:   execenv.OpCreate,
-			Path: "blocked/nested.txt",
-			Kind: execenv.KindFile,
-			Data: []byte("nope"),
-		},
-	}})
-	if err == nil {
-		t.Fatal("Apply() succeeded with a file parent")
-	}
-	got, err := os.ReadFile(filepath.Join(home, "blocked"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "old" {
-		t.Fatalf("home after failed Apply = %q, want old", got)
-	}
-}
-
-func TestApplyReplaceDoesNotLeaveStash(t *testing.T) {
-	t.Parallel()
-	cli, home := startAgent(t)
-	if err := cli.ReplaceTree(t.Context(), execenv.Tree{{
-		Path: "a.txt", Kind: execenv.KindFile, Version: "v1", Data: []byte("one"),
-	}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := cli.Apply(t.Context(), execenv.Batch{Mutations: []execenv.Mutation{{
-		Op: execenv.OpReplace, Path: "a.txt", Kind: execenv.KindFile, Data: []byte("two"),
-	}}}); err != nil {
-		t.Fatal(err)
-	}
-	entries, err := os.ReadDir(home)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 || entries[0].Name() != "a.txt" {
-		t.Fatalf("home entries = %v, want only a.txt", names(entries))
-	}
-}
-
-func names(entries []os.DirEntry) []string {
-	out := make([]string, 0, len(entries))
-	for _, ent := range entries {
-		out = append(out, ent.Name())
-	}
-	return out
-}
-
-func TestTouchInPtyBecomesWatch(t *testing.T) {
-	t.Parallel()
-	cli, _ := startAgent(t)
-	obs, err := cli.Watch(t.Context(), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = obs.Close() })
-	term, err := cli.Attach(t.Context(), execenv.Window{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = term.Close() })
-	if _, err := term.Write([]byte("touch seen.txt\n")); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	if !waitEvent(t, ctx, obs, execenv.OpCreate, "seen.txt") {
-		t.Fatal("Watch did not see touch seen.txt")
-	}
-	body, err := cli.Open(t.Context(), "seen.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = body.Close()
-}
-
-func TestWatchReplaysChangesMadeWhileDetached(t *testing.T) {
-	cli, home := startAgent(t)
-	first, err := cli.Watch(t.Context(), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	cursor := first.Cursor()
-	if err := first.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(home, "offline.txt"), []byte("kept"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// Let the guest-side watcher record the change before resuming, which also
-	// exercises delivery of replay frames sent before the Watch response.
-	time.Sleep(2 * pollIntervalForTest)
-	resumed, err := cli.Watch(t.Context(), cursor)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = resumed.Close() })
-	event, err := resumed.Next(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if event.Path != "offline.txt" || event.Cursor == "" {
-		t.Fatalf("replayed event = %+v", event)
-	}
-}
-
-const pollIntervalForTest = 50 * time.Millisecond
 
 func TestClosePtyIsHangup(t *testing.T) {
 	t.Parallel()
@@ -229,13 +26,8 @@ func TestClosePtyIsHangup(t *testing.T) {
 	if err := term.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := cli.ReplaceTree(t.Context(), execenv.Tree{{
-		Path:    "still.txt",
-		Kind:    execenv.KindFile,
-		Version: "v1",
-		Data:    []byte("ok"),
-	}}); err != nil {
-		t.Fatalf("ReplaceTree after hangup: %v", err)
+	if err := cli.Verify(t.Context()); err != nil {
+		t.Fatalf("link lost on hangup: %v", err)
 	}
 	again, err := cli.Attach(t.Context(), execenv.Window{})
 	if err != nil {
@@ -244,7 +36,7 @@ func TestClosePtyIsHangup(t *testing.T) {
 	_ = again.Close()
 }
 
-func TestFreezeStopsIO(t *testing.T) {
+func TestQuiesceStopsIO(t *testing.T) {
 	t.Parallel()
 	cli, _ := startAgent(t)
 	term, err := cli.Attach(t.Context(), execenv.Window{})
@@ -252,16 +44,16 @@ func TestFreezeStopsIO(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = term.Close() })
-	if err := cli.Freeze(t.Context()); err != nil {
+	if err := cli.Quiesce(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := term.Write([]byte("x")); !errors.Is(err, execenv.ErrFrozen) {
-		t.Fatalf("Write after freeze = %v, want ErrFrozen", err)
+		t.Fatalf("Write after quiesce = %v, want ErrFrozen", err)
 	}
 	if _, err := cli.Attach(t.Context(), execenv.Window{}); !errors.Is(err, execenv.ErrFrozen) {
-		t.Fatalf("Attach after freeze = %v, want ErrFrozen", err)
+		t.Fatalf("Attach after quiesce = %v, want ErrFrozen", err)
 	}
-	if err := cli.Thaw(t.Context()); err != nil {
+	if err := cli.Reopen(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := term.Write([]byte("echo retained\n")); err != nil {
@@ -296,7 +88,7 @@ func startAgent(t *testing.T) (*agent.Client, string) {
 	t.Cleanup(cancel)
 	errc := make(chan error, 1)
 	go func() {
-		errc <- agent.Serve(ctx, guest, agent.Config{Home: home})
+		errc <- agent.Serve(ctx, guest, agent.Config{Home: home, Barrier: quiescent{}, Processes: newFakeProcesses()})
 	}()
 	t.Cleanup(func() {
 		_ = host.Close()
@@ -308,20 +100,65 @@ func startAgent(t *testing.T) (*agent.Client, string) {
 	return agent.NewClient(host), home
 }
 
-func waitEvent(t *testing.T, ctx context.Context, obs execenv.Observation, op execenv.Op, path string) bool {
-	t.Helper()
-	for {
-		ev, err := obs.Next(ctx)
-		if err != nil {
-			return false
-		}
-		if ev.Op == op && ev.Path == path {
-			return true
-		}
+// quiescent is a test write barrier. The shell in these tests is the only
+// writer and the tests wait for its output before observing.
+type quiescent struct{}
+
+func (quiescent) Stopped(ctx context.Context, fn func() error) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
+	return fn()
 }
 
-func TestFreezeThawPreservesShellProcessAndState(t *testing.T) {
+// waitObservation polls Observe until an observation of op at path appears.
+func waitObservation(t *testing.T, cli *agent.Client, fence execenv.ProjectionFence, op execenv.ObservationOperation, path string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		page, err := cli.Observe(t.Context(), fence, 0, 128)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range page.Observations {
+			if event.Operation == op && event.Path == path {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("no %s observation of %s", op, path)
+}
+
+// initialize opens the journal with an empty projection.
+func initialize(t *testing.T, cli *agent.Client) execenv.ProjectionFence {
+	t.Helper()
+	if err := cli.Verify(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	fence := execenv.ProjectionFence{ExecutionGrantID: "grant", EnvironmentEpoch: "epoch", FenceRevision: 1}
+	if _, err := cli.InitializeProjection(t.Context(), execenv.ProjectionInitialization{Fence: fence, MutationID: "init"}); err != nil {
+		t.Fatal(err)
+	}
+	return fence
+}
+
+func TestTouchInPtyBecomesObservation(t *testing.T) {
+	t.Parallel()
+	cli, _ := startAgent(t)
+	fence := initialize(t, cli)
+	term, err := cli.Attach(t.Context(), execenv.Window{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = term.Close() })
+	if _, err := term.Write([]byte("touch seen.txt\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitObservation(t, cli, fence, execenv.ObservationCreateFile, "seen.txt")
+}
+
+func TestQuiesceReopenPreservesShellProcessAndState(t *testing.T) {
 	cli, home := startAgent(t)
 	if err := cli.Verify(t.Context()); err != nil {
 		t.Fatal(err)
@@ -337,10 +174,10 @@ func TestFreezeThawPreservesShellProcessAndState(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := waitFile(t, filepath.Join(home, "before-pid"))
-	if err := cli.Freeze(t.Context()); err != nil {
+	if err := cli.Quiesce(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if err := cli.Thaw(t.Context()); err != nil {
+	if err := cli.Reopen(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := term.Write([]byte("printf '%s:%s' \"$$\" \"$retained\" > after-state\n")); err != nil {
@@ -371,13 +208,13 @@ func waitFile(t *testing.T, path string) []byte {
 	}
 }
 
-func TestCloseWhileFrozenIsDeferredUntilThaw(t *testing.T) {
+func TestCloseWhileQuiescedIsDeferredUntilReopen(t *testing.T) {
 	cli, _ := startAgent(t)
 	term, err := cli.Attach(t.Context(), execenv.Window{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := cli.Freeze(t.Context()); err != nil {
+	if err := cli.Quiesce(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	started := time.Now()
@@ -387,7 +224,7 @@ func TestCloseWhileFrozenIsDeferredUntilThaw(t *testing.T) {
 	if time.Since(started) > time.Second {
 		t.Fatal("closing paused terminal waited for guest RPC")
 	}
-	if err := cli.Thaw(t.Context()); err != nil {
+	if err := cli.Reopen(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	replacement, err := cli.Attach(t.Context(), execenv.Window{})
@@ -403,57 +240,17 @@ func TestCloseWhileFrozenIsDeferredUntilThaw(t *testing.T) {
 	}
 }
 
-func TestFrozenObservationClosesWithoutRPCAndResumesItsCursor(t *testing.T) {
-	cli, home := startAgent(t)
-	if err := cli.ReplaceTree(t.Context(), execenv.Tree{{Path: "file", Kind: execenv.KindFile, Version: "v1", Data: []byte("old")}}); err != nil {
-		t.Fatal(err)
-	}
-	obs, err := cli.Watch(t.Context(), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	cursor := obs.Cursor()
-	if err := cli.Freeze(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-	defer cancel()
-	if _, err := obs.Next(ctx); !errors.Is(err, execenv.ErrFrozen) {
-		t.Fatalf("frozen watch: %v", err)
-	}
-	if err := obs.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := cli.Thaw(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	resumed, err := cli.Watch(t.Context(), cursor)
-	if err != nil {
-		t.Fatalf("retained cursor: %v", err)
-	}
-	defer resumed.Close()
-	if err := os.WriteFile(filepath.Join(home, "file"), []byte("new"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	event, err := resumed.Next(ctx)
-	if err != nil || event.Path != "file" || event.Op != execenv.OpReplace {
-		t.Fatalf("resumed observation: %+v %v", event, err)
-	}
-}
-
-func TestShellHomeIsScratchOutsideWatchedTree(t *testing.T) {
+func TestShellHomeIsScratchOutsideProjectedTree(t *testing.T) {
 	home, scratch := t.TempDir(), t.TempDir()
 	host, guest := net.Pipe()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	go func() { _ = agent.Serve(ctx, guest, agent.Config{Home: home, Scratch: scratch}) }()
+	go func() {
+		_ = agent.Serve(ctx, guest, agent.Config{Home: home, Scratch: scratch, Barrier: quiescent{}, Processes: newFakeProcesses()})
+	}()
 	t.Cleanup(func() { _ = host.Close() })
 	cli := agent.NewClient(host)
-	obs, err := cli.Watch(t.Context(), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = obs.Close() })
+	fence := initialize(t, cli)
 	term, err := cli.Attach(t.Context(), execenv.Window{})
 	if err != nil {
 		t.Fatal(err)
@@ -462,11 +259,7 @@ func TestShellHomeIsScratchOutsideWatchedTree(t *testing.T) {
 	if _, err := term.Write([]byte("mkdir -p \"$HOME/.cache\" && echo cached > \"$HOME/.cache/x\" && printf '%s\\n%s\\n' \"$HOME\" \"$(pwd -P)\" > where.txt\n")); err != nil {
 		t.Fatal(err)
 	}
-	ctxWait, cancelWait := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancelWait()
-	if !waitEvent(t, ctxWait, obs, execenv.OpCreate, "where.txt") {
-		t.Fatal("where.txt not observed")
-	}
+	waitObservation(t, cli, fence, execenv.ObservationCreateFile, "where.txt")
 	body := strings.Split(strings.TrimSpace(string(waitFile(t, filepath.Join(home, "where.txt")))), "\n")
 	realHome, _ := filepath.EvalSymlinks(home)
 	if len(body) != 2 || body[0] != scratch || body[1] != realHome {
@@ -478,4 +271,111 @@ func TestShellHomeIsScratchOutsideWatchedTree(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(home, ".cache")); !os.IsNotExist(err) {
 		t.Fatalf("cache leaked into projected tree: %v", err)
 	}
+	page, err := cli.Observe(t.Context(), fence, 0, 128)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range page.Observations {
+		if strings.HasPrefix(event.Path, ".cache") {
+			t.Fatalf("scratch HOME observed: %+v", event)
+		}
+	}
+}
+
+func TestHelperWithoutJournalIsRefused(t *testing.T) {
+	t.Parallel()
+	host, guest := net.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = agent.Serve(ctx, guest, agent.Config{Home: t.TempDir(), Processes: newFakeProcesses()}) }()
+	t.Cleanup(func() { _ = host.Close() })
+	if err := agent.NewClient(host).Verify(t.Context()); !errors.Is(err, execenv.ErrUnavailable) {
+		t.Fatalf("helper without a journal accepted: %v", err)
+	}
+}
+
+func TestHelperWithoutProcessLogIsRefused(t *testing.T) {
+	t.Parallel()
+	host, guest := net.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = agent.Serve(ctx, guest, agent.Config{Home: t.TempDir(), Barrier: quiescent{}}) }()
+	t.Cleanup(func() { _ = host.Close() })
+	if err := agent.NewClient(host).Verify(t.Context()); !errors.Is(err, execenv.ErrUnavailable) {
+		t.Fatalf("helper without a process log accepted: %v", err)
+	}
+}
+
+// The helper sends each event as it is taken and bounds every source's
+// command lines; the host retains and sequences them.
+func TestProcessEventsReachTheHostBounded(t *testing.T) {
+	t.Parallel()
+	source := newFakeProcesses()
+	host, guest := net.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() {
+		_ = agent.Serve(ctx, guest, agent.Config{Home: t.TempDir(), Barrier: quiescent{}, Processes: source})
+	}()
+	t.Cleanup(func() { _ = host.Close() })
+	cli := agent.NewClient(host)
+	if err := cli.Verify(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	long := make([]string, 80)
+	for i := range long {
+		long[i] = "arg"
+	}
+	code := 0
+	source.events <- execenv.ProcessEvent{Kind: execenv.ProcessStarted, PID: 7, ParentPID: 1, Argv: long, At: time.Now()}
+	source.events <- execenv.ProcessEvent{Kind: execenv.ProcessExited, PID: 7, ExitCode: &code, At: time.Now()}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		page, err := cli.ObserveProcesses(t.Context(), 0, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Events) == 2 {
+			started := page.Events[0]
+			if started.Sequence != 1 || len(started.Argv) != execenv.MaxProcessArgs || !started.Truncated || page.Events[1].Kind != execenv.ProcessExited || page.Next != 2 {
+				t.Fatalf("events: %+v", page.Events)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("events never arrived: %+v", page)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := cli.AcknowledgeProcesses(t.Context(), 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cli.ObserveProcesses(t.Context(), 1, 10); !errors.Is(err, execenv.ErrLagged) {
+		t.Fatalf("acknowledged prefix: %v", err)
+	}
+}
+
+// fakeProcesses is a test process source fed by the test.
+type fakeProcesses struct {
+	events chan execenv.ProcessEvent
+	done   chan struct{}
+	once   sync.Once
+}
+
+func newFakeProcesses() *fakeProcesses {
+	return &fakeProcesses{events: make(chan execenv.ProcessEvent), done: make(chan struct{})}
+}
+
+func (f *fakeProcesses) Next() (execenv.ProcessEvent, error) {
+	select {
+	case event := <-f.events:
+		return event, nil
+	case <-f.done:
+		return execenv.ProcessEvent{}, execenv.ErrClosed
+	}
+}
+
+func (f *fakeProcesses) Close() error {
+	f.once.Do(func() { close(f.done) })
+	return nil
 }

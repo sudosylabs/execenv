@@ -12,15 +12,7 @@ import (
 	"github.com/sudosylabs/execenv"
 )
 
-func (c *Client) JournalEnabled() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.journal && !c.closed
-}
 func (c *Client) journalCall(ctx context.Context, method string, args any) ([]byte, error) {
-	if !c.JournalEnabled() {
-		return nil, execenv.ErrUnavailable
-	}
 	if err := c.ioGuard(); err != nil {
 		return nil, err
 	}

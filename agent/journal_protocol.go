@@ -22,9 +22,13 @@ const (
 	journalChunkBytes         = 64 << 10
 )
 
+// helloResult is the guest's handshake. Journal reports native journal
+// support and Processes a recording process log; a host refuses a guest
+// without either.
 type helloResult struct {
-	Version int
-	Journal bool
+	Version   int
+	Journal   bool
+	Processes bool
 }
 type journalArgs struct {
 	Fence      execenv.ProjectionFence

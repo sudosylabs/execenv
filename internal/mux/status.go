@@ -20,6 +20,10 @@ func StatusOf(err error) string {
 		return "unknown_image"
 	case errors.Is(err, execenv.ErrCapacity):
 		return "capacity"
+	case errors.Is(err, execenv.ErrDraining):
+		return "draining"
+	case errors.Is(err, execenv.ErrLost):
+		return "lost"
 	case errors.Is(err, execenv.ErrConflict):
 		return "conflict"
 	case errors.Is(err, execenv.ErrUnavailable):
@@ -30,6 +34,8 @@ func StatusOf(err error) string {
 		return "revoked"
 	case errors.Is(err, execenv.ErrBusy):
 		return "busy"
+	case errors.Is(err, execenv.ErrSuperseded):
+		return "superseded"
 	case errors.Is(err, execenv.ErrClosed):
 		return "closed"
 	case errors.Is(err, execenv.ErrNotFound):
@@ -60,6 +66,10 @@ func ErrorFromStatus(status string) error {
 		return execenv.ErrUnknownImage
 	case "capacity":
 		return execenv.ErrCapacity
+	case "draining":
+		return execenv.ErrDraining
+	case "lost":
+		return execenv.ErrLost
 	case "conflict":
 		return execenv.ErrConflict
 	case "unavailable":
@@ -70,6 +80,8 @@ func ErrorFromStatus(status string) error {
 		return execenv.ErrRevoked
 	case "busy":
 		return execenv.ErrBusy
+	case "superseded":
+		return execenv.ErrSuperseded
 	case "closed":
 		return execenv.ErrClosed
 	case "not_found":

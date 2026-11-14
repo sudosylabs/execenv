@@ -12,8 +12,6 @@ import (
 	"github.com/sudosylabs/execenv"
 )
 
-var _ execenv.SemanticEnv = (*remoteEnv)(nil)
-
 const (
 	methodObservationConfirm     = "semantic_confirm"
 	methodObserve                = "semantic_observe"
@@ -35,9 +33,6 @@ type semanticArgs struct {
 }
 
 func (e *remoteEnv) semanticCall(ctx context.Context, method string, args semanticArgs) ([]byte, error) {
-	if !e.client.Capabilities().SemanticObservations {
-		return nil, execenv.ErrUnavailable
-	}
 	if err := e.projectionGuard(args.Fence); err != nil {
 		return nil, err
 	}
@@ -159,16 +154,9 @@ func (sc *serverConn) semantic(ctx context.Context, f frame) ([]byte, error) {
 		if decodeExtra(f.Extra, &binding) != nil || execenv.ValidateObservationProjection(binding) != nil {
 			return nil, execenv.ErrInvalid
 		}
-		if !sc.inner.Capabilities().SemanticObservations {
-			return nil, execenv.ErrUnavailable
-		}
-		projected, err := sc.projectionEnvironment(ctx, f.Grant, binding.Fence)
+		env, err := sc.projectionEnvironment(ctx, f.Grant, binding.Fence)
 		if err != nil {
 			return nil, err
-		}
-		env, ok := projected.(execenv.SemanticEnv)
-		if !ok {
-			return nil, execenv.ErrUnavailable
 		}
 		return nil, env.ConfirmObservationProjection(ctx, binding)
 	}
@@ -182,16 +170,9 @@ func (sc *serverConn) semantic(ctx context.Context, f frame) ([]byte, error) {
 	if f.Method == methodObservationClose {
 		return nil, sc.downloads.remove(sc, args.Fence, args.DownloadID)
 	}
-	if !sc.inner.Capabilities().SemanticObservations {
-		return nil, execenv.ErrUnavailable
-	}
-	projected, err := sc.projectionEnvironment(ctx, f.Grant, args.Fence)
+	env, err := sc.projectionEnvironment(ctx, f.Grant, args.Fence)
 	if err != nil {
 		return nil, err
-	}
-	env, ok := projected.(execenv.SemanticEnv)
-	if !ok {
-		return nil, execenv.ErrUnavailable
 	}
 	switch f.Method {
 	case methodObserve:
@@ -246,9 +227,6 @@ func (sc *serverConn) semantic(ctx context.Context, f frame) ([]byte, error) {
 }
 
 func (e *remoteEnv) ConfirmObservationProjection(ctx context.Context, binding execenv.ObservationProjection) error {
-	if !e.client.Capabilities().SemanticObservations {
-		return execenv.ErrUnavailable
-	}
 	if err := e.projectionGuard(binding.Fence); err != nil {
 		return err
 	}

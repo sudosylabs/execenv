@@ -3,23 +3,23 @@ package memory
 
 import (
 	"context"
-	"io"
+	"errors"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/internal/control"
 	"github.com/sudosylabs/execenv/internal/guesttree"
 	"github.com/sudosylabs/execenv/internal/observations"
 	"github.com/sudosylabs/execenv/internal/projection"
+	"github.com/sudosylabs/execenv/internal/terminal"
 	"github.com/sudosylabs/execenv/internal/tree"
-	"github.com/sudosylabs/execenv/internal/watchlog"
 )
 
 var (
-	_ execenv.Host     = (*Host)(nil)
-	_ execenv.Env      = (*environment)(nil)
-	_ execenv.Terminal = (*terminal)(nil)
+	_ execenv.Host = (*Host)(nil)
+	_ execenv.Env  = (*environment)(nil)
 )
 
 // Config constructs an in-memory host.
@@ -27,6 +27,9 @@ type Config struct {
 	Images   []execenv.Image
 	Slots    int
 	Unusable bool
+	// TerminalGrace is how long a detached shell keeps running. Zero uses
+	// execenv.DefaultTerminalGrace.
+	TerminalGrace time.Duration
 }
 
 // Host is an in-process execenv.Host. It is not isolated.
@@ -35,7 +38,13 @@ type Host struct {
 	images   []execenv.Image
 	slots    int
 	unusable bool
+	grace    time.Duration
 	grants   map[execenv.ID]*environment
+	// lost holds grants whose environment ended without a revoke until the
+	// caller revokes them.
+	lost      map[execenv.ID]*environment
+	lostCount int
+	draining  bool
 }
 
 type environment struct {
@@ -51,22 +60,11 @@ type environment struct {
 	host            *Host
 	frozen          bool
 	revoked         bool
-	term            *terminal
+	lost            bool
+	terminal        *terminal.Manager
+	processes       *processLog
 	// files is the current projection. Paths are already-validated.
 	files tree.Snapshot
-	obs   *observation
-	log   *watchlog.Log
-}
-
-type terminal struct {
-	env    *environment
-	mu     sync.Mutex
-	cond   *sync.Cond
-	buf    []byte
-	win    execenv.Window
-	closed bool
-	frozen bool
-	dead   error
 }
 
 // New returns an inert in-memory host.
@@ -79,13 +77,47 @@ func New(cfg Config) (*Host, error) {
 		images:   append([]execenv.Image(nil), cfg.Images...),
 		slots:    slots,
 		unusable: cfg.Unusable,
+		grace:    cfg.TerminalGrace,
 		grants:   make(map[execenv.ID]*environment),
+		lost:     make(map[execenv.ID]*environment),
 	}, nil
 }
 
 // Capabilities reports adapter-kind facts.
 func (h *Host) Capabilities() execenv.Capabilities {
-	return execenv.Capabilities{Isolated: false, Freeze: true, OrderedControl: true, JournalProjection: true, SemanticObservations: true}
+	return execenv.Capabilities{Isolated: false}
+}
+
+// SetDraining starts or stops draining. A draining host keeps serving the
+// grants it holds, including Ensure of one of them, refuses new grants with
+// execenv.ErrDraining, and reports Usable false with
+// execenv.ReasonDraining. It is operator control, not part of the
+// execenv.Host contract.
+func (h *Host) SetDraining(on bool) {
+	h.mu.Lock()
+	h.draining = on
+	h.mu.Unlock()
+}
+
+// Lose ends a grant's environment as if its machine had died, without a
+// revoke: the slot is freed and every call on the occupancy fails with
+// execenv.ErrLost until the grant is revoked. It reports whether a live
+// grant was lost. It is a test hook; nothing else loses an in-memory grant.
+func (h *Host) Lose(id execenv.ID) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	env := h.grants[id]
+	if env == nil {
+		return false
+	}
+	lost, _ := env.control.Lose(context.Background(), func() error { return env.stop(execenv.ErrLost) })
+	if !lost {
+		return false
+	}
+	h.lostCount++
+	h.lost[id] = env
+	delete(h.grants, id)
+	return true
 }
 
 // Ready reports configured images and remaining slots.
@@ -99,8 +131,18 @@ func (h *Host) Ready(ctx context.Context) (execenv.Report, error) {
 	if free < 0 {
 		free = 0
 	}
+	usable, reason := !h.unusable, ""
+	switch {
+	case !usable:
+		reason = execenv.ReasonUnavailable
+	case h.draining:
+		usable, reason = false, execenv.ReasonDraining
+	}
 	return execenv.Report{
-		Usable:    !h.unusable,
+		Usable:    usable,
+		Reason:    reason,
+		Grants:    len(h.grants),
+		Lost:      h.lostCount,
 		Images:    append([]execenv.Image(nil), h.images...),
 		Networks:  []execenv.Network{execenv.NetworkNone, execenv.NetworkAllowlist},
 		Slots:     free,
@@ -122,11 +164,17 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 	if h.unusable {
 		return nil, execenv.Error("ensure", execenv.ErrUnavailable)
 	}
+	if _, lost := h.lost[spec.ID]; lost {
+		return nil, execenv.Error("ensure", execenv.ErrLost)
+	}
 	if env, ok := h.grants[spec.ID]; ok {
 		if env.image != spec.Image || env.network != spec.Network {
 			return nil, execenv.Error("ensure", execenv.ErrConflict)
 		}
 		return env, nil
+	}
+	if h.draining {
+		return nil, execenv.Error("ensure", execenv.ErrDraining)
 	}
 	if !h.hasImage(spec.Image) {
 		return nil, execenv.Error("ensure", execenv.ErrUnknownImage)
@@ -142,8 +190,16 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		network:    spec.Network,
 		host:       h,
 		files:      make(tree.Snapshot),
-		log:        watchlog.New(watchlog.DefaultCapacity),
+		processes:  newProcessLog(),
 	}
+	// The in-memory shell is a stand-in, not a process; it starts with no
+	// window or isolation beyond the session machinery every adapter shares.
+	env.terminal = terminal.New(terminal.Config{
+		Grace: h.grace,
+		Start: func(_ context.Context, win execenv.Window) (terminal.Shell, error) {
+			return newShell(win, env.processes), nil
+		},
+	})
 	h.grants[spec.ID] = env
 	return env, nil
 }
@@ -155,6 +211,7 @@ func (h *Host) Revoke(ctx context.Context, id execenv.ID) error {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	delete(h.lost, id)
 	env := h.grants[id]
 	if env == nil {
 		return nil
@@ -172,6 +229,9 @@ func (h *Host) revokeExact(ctx context.Context, env *environment) error {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.lost[env.id] == env {
+		delete(h.lost, env.id)
+	}
 	if h.grants[env.id] != env {
 		return nil
 	}
@@ -188,28 +248,17 @@ func (h *Host) hasImage(want execenv.Image) bool {
 
 func (e *environment) ID() execenv.ID { return e.id }
 
-func (e *environment) Attach(ctx context.Context, win execenv.Window) (execenv.Terminal, error) {
+func (e *environment) Attach(ctx context.Context, request execenv.AttachRequest) (execenv.Terminal, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, execenv.Error("attach", err)
 	}
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.revoked {
-		return nil, execenv.Error("attach", execenv.ErrRevoked)
+	err := e.guard("attach")
+	e.mu.Unlock()
+	if err != nil {
+		return nil, err
 	}
-	if e.frozen {
-		return nil, execenv.Error("attach", execenv.ErrFrozen)
-	}
-	if e.term != nil && !e.term.finished() {
-		return nil, execenv.Error("attach", execenv.ErrBusy)
-	}
-	term := newTerminal(e, win)
-	e.term = term
-	return term, nil
-}
-
-func (e *environment) Freeze(ctx context.Context) error {
-	return e.control.Legacy(ctx, execenv.ControlFrozen, func() error { return e.freeze(ctx) })
+	return e.terminal.Attach(ctx, request)
 }
 
 func (e *environment) freeze(ctx context.Context) error {
@@ -219,18 +268,11 @@ func (e *environment) freeze(ctx context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.revoked {
-		return execenv.Error("freeze", execenv.ErrRevoked)
+		return e.guard("freeze")
 	}
 	e.frozen = true
-	if e.term != nil {
-		e.term.setFrozen(true)
-	}
-	e.failWatch(execenv.ErrFrozen)
+	e.terminal.Freeze()
 	return nil
-}
-
-func (e *environment) Thaw(ctx context.Context) error {
-	return e.control.Legacy(ctx, execenv.ControlRunning, func() error { return e.thaw(ctx) })
 }
 
 func (e *environment) thaw(ctx context.Context) error {
@@ -240,12 +282,10 @@ func (e *environment) thaw(ctx context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.revoked {
-		return execenv.Error("thaw", execenv.ErrRevoked)
+		return e.guard("thaw")
 	}
 	e.frozen = false
-	if e.term != nil {
-		e.term.setFrozen(false)
-	}
+	e.terminal.Thaw()
 	return nil
 }
 
@@ -257,121 +297,16 @@ func (e *environment) Revoke(ctx context.Context) error {
 }
 
 func (e *environment) revoke() error {
-	return e.control.Legacy(context.Background(), execenv.ControlRevoked, e.stop)
+	return e.control.Revoke(context.Background(), func() error { return e.stop(execenv.ErrRevoked) })
 }
 
-func (e *environment) stop() error {
+// stop ends the environment for cause, ErrRevoked or ErrLost.
+func (e *environment) stop(cause error) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.revoked = true
+	e.lost = errors.Is(cause, execenv.ErrLost) || e.lost
 	e.frozen = false
-	if e.term != nil {
-		e.term.kill(execenv.ErrRevoked)
-		e.term = nil
-	}
-	e.failWatch(execenv.ErrRevoked)
-	return nil
-}
-
-func newTerminal(env *environment, win execenv.Window) *terminal {
-	if win.Cols == 0 {
-		win.Cols = 80
-	}
-	if win.Rows == 0 {
-		win.Rows = 24
-	}
-	term := &terminal{env: env, win: win}
-	term.cond = sync.NewCond(&term.mu)
-	return term
-}
-
-func (t *terminal) setFrozen(frozen bool) {
-	t.mu.Lock()
-	t.frozen = frozen
-	t.cond.Broadcast()
-	t.mu.Unlock()
-}
-
-func (t *terminal) finished() bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.closed || t.dead != nil
-}
-
-func (t *terminal) kill(reason error) {
-	t.mu.Lock()
-	t.dead = reason
-	t.cond.Broadcast()
-	t.mu.Unlock()
-}
-
-func (t *terminal) Read(p []byte) (int, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	for (t.frozen || len(t.buf) == 0) && !t.closed && t.dead == nil {
-		t.cond.Wait()
-	}
-	if t.dead != nil {
-		return 0, execenv.Error("read", t.dead)
-	}
-	if len(t.buf) == 0 {
-		return 0, io.EOF
-	}
-	n := copy(p, t.buf)
-	t.buf = t.buf[n:]
-	return n, nil
-}
-
-func (t *terminal) Write(p []byte) (int, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.dead != nil {
-		return 0, execenv.Error("write", t.dead)
-	}
-	if t.frozen {
-		return 0, execenv.Error("terminal", execenv.ErrFrozen)
-	}
-	if t.closed {
-		return 0, execenv.Error("write", execenv.ErrClosed)
-	}
-	t.buf = append(t.buf, p...)
-	t.cond.Broadcast()
-	return len(p), nil
-}
-
-func (t *terminal) Resize(ctx context.Context, win execenv.Window) error {
-	if err := ctx.Err(); err != nil {
-		return execenv.Error("resize", err)
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.dead != nil {
-		return execenv.Error("resize", t.dead)
-	}
-	if t.frozen {
-		return execenv.Error("terminal", execenv.ErrFrozen)
-	}
-	if t.closed {
-		return execenv.Error("resize", execenv.ErrClosed)
-	}
-	if win.Cols == 0 {
-		win.Cols = 80
-	}
-	if win.Rows == 0 {
-		win.Rows = 24
-	}
-	t.win = win
-	return nil
-}
-
-func (t *terminal) Close() error {
-	t.mu.Lock()
-	if t.closed {
-		t.mu.Unlock()
-		return nil
-	}
-	t.closed = true
-	t.cond.Broadcast()
-	t.mu.Unlock()
+	e.terminal.End(cause)
 	return nil
 }

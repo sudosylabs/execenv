@@ -5,8 +5,6 @@ import (
 	"github.com/sudosylabs/execenv"
 )
 
-var _ execenv.ControlledEnv = (*remoteEnv)(nil)
-
 func (e *remoteEnv) Epoch() string { return e.epoch }
 func (e *remoteEnv) Control(ctx context.Context, request execenv.ControlRequest) (execenv.ControlReceipt, error) {
 	if request.Fence.ExecutionGrantID != e.id || request.Fence.EnvironmentEpoch != e.epoch {
@@ -64,11 +62,7 @@ func (sc *serverConn) control(ctx context.Context, f frame) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	controlled, ok := env.(execenv.ControlledEnv)
-	if !ok {
-		return nil, execenv.ErrUnavailable
-	}
-	receipt, err := controlled.Control(ctx, request)
+	receipt, err := env.Control(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -84,14 +78,10 @@ func (sc *serverConn) controlStatus(ctx context.Context, f frame) ([]byte, error
 	if err != nil {
 		return nil, err
 	}
-	controlled, ok := env.(execenv.ControlledEnv)
-	if !ok {
-		return nil, execenv.ErrUnavailable
-	}
-	if controlled.Epoch() != epoch {
+	if env.Epoch() != epoch {
 		return nil, execenv.ErrConflict
 	}
-	receipt, err := controlled.ControlStatus(ctx)
+	receipt, err := env.ControlStatus(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -107,18 +97,14 @@ func (sc *serverConn) revokeEpoch(ctx context.Context, f frame) error {
 	if err != nil {
 		return err
 	}
-	controlled, ok := env.(execenv.ControlledEnv)
-	if !ok {
-		return execenv.ErrUnavailable
-	}
-	if controlled.Epoch() != epoch {
+	if env.Epoch() != epoch {
 		return execenv.ErrConflict
 	}
 	return env.Revoke(ctx)
 }
 
-// All legacy environment effects still bind the captured epoch. Terminal
-// frames separately bind the connection's unique stream identity.
+// Attach binds the captured epoch. Terminal frames separately bind the
+// connection's unique stream identity; fenced effects carry their own fence.
 type epochArgs struct {
 	Epoch string
 	Body  []byte
@@ -136,7 +122,7 @@ func (e *remoteEnv) call(ctx context.Context, method, grant string, body []byte)
 }
 func epochMethod(method string) bool {
 	switch method {
-	case methodAttach, methodReplace, methodApply, methodWatch, methodOpen, methodFreeze, methodThaw:
+	case methodAttach:
 		return true
 	default:
 		return false
@@ -151,26 +137,15 @@ func (sc *serverConn) unwrapEpoch(f *frame) error {
 	if err != nil {
 		return err
 	}
-	if controlled, ok := env.(execenv.ControlledEnv); ok {
-		if args.Epoch != controlled.Epoch() {
-			return execenv.ErrConflict
-		}
-	} else if args.Epoch != "" {
+	if args.Epoch != env.Epoch() {
 		return execenv.ErrConflict
 	}
 	f.Extra = args.Body
 	return nil
 }
 func (e *remoteEnv) hangupTerm(err error) {
-	e.client.mu.Lock()
-	term := e.client.terms[e.id]
-	if term != nil && term.epoch == e.epoch {
-		delete(e.client.terms, e.id)
-	} else {
-		term = nil
-	}
-	e.client.mu.Unlock()
-	if term != nil {
+	for _, term := range e.terminals() {
+		e.client.forget(term)
 		term.hangup(err)
 	}
 }

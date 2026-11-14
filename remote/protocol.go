@@ -13,7 +13,7 @@ const (
 	kindRequest  = mux.KindRequest
 	kindResponse = mux.KindResponse
 	kindPty      = mux.KindPty
-	kindWatch    = mux.KindWatch
+	kindCredit   = mux.KindCredit
 )
 
 const (
@@ -32,15 +32,24 @@ const (
 	methodRevoke                 = "revoke"
 	methodAttach                 = "attach"
 	methodDetach                 = "detach"
+	methodHangup                 = "hangup"
 	methodResize                 = "resize"
-	methodFreeze                 = "freeze"
-	methodThaw                   = "thaw"
-	methodReplace                = "replace"
-	methodApply                  = "apply"
-	methodWatch                  = "watch"
-	methodUnwatch                = "unwatch"
-	methodOpen                   = "open"
 )
+
+// statusEOF ends a terminal stream whose shell exited. It is a PTY end
+// status only, never an RPC status.
+const statusEOF = "eof"
+
+// ptyWindow is the flow-control window each side grants per terminal
+// stream and direction in the attach exchange: the client for output in
+// attachArgs.Credit, the host for input in attachResult.Credit. A sender
+// never has more than the window of unacknowledged PTY bytes on a stream;
+// the receiver returns credit in kindCredit frames as its caller consumes,
+// once at least half the window is consumed.
+const ptyWindow = 256 << 10
+
+// maxPtyWindow bounds the window a peer may announce.
+const maxPtyWindow = 16 << 20
 
 var (
 	encodeExtra     = mux.EncodeExtra
@@ -49,7 +58,10 @@ var (
 	errorFromStatus = mux.ErrorFromStatus
 )
 
-const protocolVersion = 3
+// protocolVersion is the wire revision shared by New and Serve. Both refuse
+// a peer on any other revision. Bump it whenever a method, its arguments or
+// its meaning changes.
+const protocolVersion = 9
 
 type authResult struct {
 	Protocol     int
@@ -66,21 +78,24 @@ type ensureArgs struct {
 	Spec execenv.Spec
 }
 
-type replaceArgs struct {
-	Tree execenv.Tree
-}
-
-type applyArgs struct {
-	Batch execenv.Batch
-}
-
-type openArgs struct {
-	Path string
-}
-
+// attachArgs carries an execenv.AttachRequest and the connection's new
+// stream identity. Server PTY frames on that stream carry, in Seq, the
+// absolute terminal offset of their first byte. Credit is the output
+// window the client grants the host on the stream.
 type attachArgs struct {
-	Window execenv.Window
-	Stream uint64
+	Window   execenv.Window
+	Stream   uint64
+	Resume   *execenv.TerminalPosition
+	Takeover bool
+	Credit   uint64
+}
+
+// attachResult names the attached terminal. Credit is the input window
+// the host grants the client on the stream.
+type attachResult struct {
+	Terminal execenv.TerminalID
+	Start    uint64
+	Credit   uint64
 }
 
 type resizeArgs struct {
@@ -90,15 +105,6 @@ type resizeArgs struct {
 
 type streamArgs struct {
 	Stream uint64
-}
-
-type watchArgs struct {
-	After  execenv.Cursor
-	Stream uint64
-}
-
-type watchResult struct {
-	Cursor execenv.Cursor
 }
 
 func newSession(conn net.Conn) *mux.Session {
