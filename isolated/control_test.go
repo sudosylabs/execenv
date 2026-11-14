@@ -90,10 +90,19 @@ func TestFailedRevokeRetainsCapacityAndCanRetry(t *testing.T) {
 }
 
 func TestEnsureRefusesHelperWithoutJournal(t *testing.T) {
-	launch := &recordingLauncher{noJournal: true}
+	refusesHelper(t, &recordingLauncher{noJournal: true})
+}
+
+// A guest kernel without process events fails closed, like a missing journal.
+func TestEnsureRefusesHelperWithoutProcessLog(t *testing.T) {
+	refusesHelper(t, &recordingLauncher{noProcesses: true})
+}
+
+func refusesHelper(t *testing.T, launch *recordingLauncher) {
+	t.Helper()
 	host := testHost(t, func() error { return nil }, launch)
-	if _, err := host.Ensure(t.Context(), execenv.Spec{ID: "journal-required", Image: "default"}); !errors.Is(err, execenv.ErrUnavailable) {
-		t.Fatalf("helper without a journal accepted: %v", err)
+	if _, err := host.Ensure(t.Context(), execenv.Spec{ID: "helper-refused", Image: "default"}); !errors.Is(err, execenv.ErrUnavailable) {
+		t.Fatalf("incapable helper accepted: %v", err)
 	}
 	inst := launch.instances[0]
 	inst.mu.Lock()

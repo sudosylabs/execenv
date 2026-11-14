@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/agent"
@@ -23,6 +24,8 @@ type stubInstance struct {
 	scratch   string
 	ln        net.Listener
 	cancel    context.CancelFunc
+	// processes simulates the guest kernel's view of the workload.
+	processes *stubProcesses
 }
 
 func (s *stubInstance) Pause(context.Context) error {
@@ -88,6 +91,8 @@ type recordingLauncher struct {
 	fail      error
 	// noJournal serves a helper that advertises no native journal.
 	noJournal bool
+	// noProcesses serves a helper whose kernel has no process events.
+	noProcesses bool
 }
 
 type blockingLauncher struct {
@@ -113,7 +118,7 @@ func (l *recordingLauncher) Start(ctx context.Context, req startRequest) (instan
 	if l.fail != nil {
 		return nil, l.fail
 	}
-	inst, err := startStubAgent(ctx, req, !l.noJournal)
+	inst, err := startStubAgent(ctx, req, !l.noJournal, !l.noProcesses)
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +139,7 @@ func (quiescentBarrier) Stopped(ctx context.Context, fn func() error) error {
 	return fn()
 }
 
-func startStubAgent(_ context.Context, req startRequest, journal bool) (*stubInstance, error) {
+func startStubAgent(_ context.Context, req startRequest, journal, processLog bool) (*stubInstance, error) {
 	if err := os.MkdirAll(req.TreeDir, 0o700); err != nil {
 		return nil, err
 	}
@@ -157,14 +162,66 @@ func startStubAgent(_ context.Context, req startRequest, journal bool) (*stubIns
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	processes := newStubProcesses()
 	cfg := agent.Config{Home: req.TreeDir, Scratch: scratch}
 	if journal {
 		cfg.Barrier = quiescentBarrier{}
 	}
+	if processLog {
+		cfg.Processes = processes
+	}
 	go func() {
 		_ = agent.ListenAndServe(ctx, ln, cfg)
 	}()
-	return &stubInstance{sock: sock, scratch: scratch, ln: ln, cancel: cancel}, nil
+	return &stubInstance{sock: sock, scratch: scratch, ln: ln, cancel: cancel, processes: processes}, nil
+}
+
+// stubProcesses is the stub helper's process source. Run reports one
+// command as the guest kernel would see it start and exit, with a fresh PID.
+type stubProcesses struct {
+	events chan execenv.ProcessEvent
+	done   chan struct{}
+	once   sync.Once
+	mu     sync.Mutex
+	pid    int
+}
+
+func newStubProcesses() *stubProcesses {
+	return &stubProcesses{events: make(chan execenv.ProcessEvent), done: make(chan struct{}), pid: 100}
+}
+
+func (p *stubProcesses) Next() (execenv.ProcessEvent, error) {
+	select {
+	case event := <-p.events:
+		return event, nil
+	case <-p.done:
+		return execenv.ProcessEvent{}, execenv.ErrClosed
+	}
+}
+
+func (p *stubProcesses) Close() error {
+	p.once.Do(func() { close(p.done) })
+	return nil
+}
+
+func (p *stubProcesses) Run(ctx context.Context, argv []string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.pid++
+	code := 0
+	for _, event := range []execenv.ProcessEvent{
+		{Kind: execenv.ProcessStarted, PID: p.pid, ParentPID: 100, Argv: argv, At: time.Now()},
+		{Kind: execenv.ProcessExited, PID: p.pid, ExitCode: &code, At: time.Now()},
+	} {
+		select {
+		case p.events <- event:
+		case <-p.done:
+			return execenv.ErrClosed
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
 }
 
 // recordingAttacher is the test adapter for attach: it records dests and

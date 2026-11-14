@@ -265,3 +265,21 @@ func waitLiveContent(t *testing.T, env execenv.Env, fence execenv.ProjectionFenc
 	}
 	t.Fatalf("%s = %q, want %q", path, got, want)
 }
+
+// TestLiveProcessConformance runs the process log suite through the real
+// guest kernel's process events: the shell types real commands, and only
+// the contained workload's programs are recorded.
+func TestLiveProcessConformance(t *testing.T) {
+	requireLive(t)
+	execenvtest.RunProcesses(t, func(t *testing.T) execenvtest.Traced {
+		t.Helper()
+		host := liveHost(t, 1, "")
+		t.Cleanup(func() { revokeAll(host) })
+		env, err := host.Ensure(t.Context(), execenv.Spec{ID: "traced", Image: "default"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		fence := runningFence(t, env)
+		return execenvtest.Traced{Env: env, Fence: fence, Workload: execenvtest.TerminalWorkload(t, env)}
+	})
+}

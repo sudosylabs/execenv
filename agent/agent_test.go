@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -87,7 +88,7 @@ func startAgent(t *testing.T) (*agent.Client, string) {
 	t.Cleanup(cancel)
 	errc := make(chan error, 1)
 	go func() {
-		errc <- agent.Serve(ctx, guest, agent.Config{Home: home, Barrier: quiescent{}})
+		errc <- agent.Serve(ctx, guest, agent.Config{Home: home, Barrier: quiescent{}, Processes: newFakeProcesses()})
 	}()
 	t.Cleanup(func() {
 		_ = host.Close()
@@ -244,7 +245,9 @@ func TestShellHomeIsScratchOutsideProjectedTree(t *testing.T) {
 	host, guest := net.Pipe()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	go func() { _ = agent.Serve(ctx, guest, agent.Config{Home: home, Scratch: scratch, Barrier: quiescent{}}) }()
+	go func() {
+		_ = agent.Serve(ctx, guest, agent.Config{Home: home, Scratch: scratch, Barrier: quiescent{}, Processes: newFakeProcesses()})
+	}()
 	t.Cleanup(func() { _ = host.Close() })
 	cli := agent.NewClient(host)
 	fence := initialize(t, cli)
@@ -284,9 +287,95 @@ func TestHelperWithoutJournalIsRefused(t *testing.T) {
 	host, guest := net.Pipe()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	go func() { _ = agent.Serve(ctx, guest, agent.Config{Home: t.TempDir()}) }()
+	go func() { _ = agent.Serve(ctx, guest, agent.Config{Home: t.TempDir(), Processes: newFakeProcesses()}) }()
 	t.Cleanup(func() { _ = host.Close() })
 	if err := agent.NewClient(host).Verify(t.Context()); !errors.Is(err, execenv.ErrUnavailable) {
 		t.Fatalf("helper without a journal accepted: %v", err)
 	}
+}
+
+func TestHelperWithoutProcessLogIsRefused(t *testing.T) {
+	t.Parallel()
+	host, guest := net.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = agent.Serve(ctx, guest, agent.Config{Home: t.TempDir(), Barrier: quiescent{}}) }()
+	t.Cleanup(func() { _ = host.Close() })
+	if err := agent.NewClient(host).Verify(t.Context()); !errors.Is(err, execenv.ErrUnavailable) {
+		t.Fatalf("helper without a process log accepted: %v", err)
+	}
+}
+
+// The helper sends each event as it is taken and bounds every source's
+// command lines; the host retains and sequences them.
+func TestProcessEventsReachTheHostBounded(t *testing.T) {
+	t.Parallel()
+	source := newFakeProcesses()
+	host, guest := net.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() {
+		_ = agent.Serve(ctx, guest, agent.Config{Home: t.TempDir(), Barrier: quiescent{}, Processes: source})
+	}()
+	t.Cleanup(func() { _ = host.Close() })
+	cli := agent.NewClient(host)
+	if err := cli.Verify(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	long := make([]string, 80)
+	for i := range long {
+		long[i] = "arg"
+	}
+	code := 0
+	source.events <- execenv.ProcessEvent{Kind: execenv.ProcessStarted, PID: 7, ParentPID: 1, Argv: long, At: time.Now()}
+	source.events <- execenv.ProcessEvent{Kind: execenv.ProcessExited, PID: 7, ExitCode: &code, At: time.Now()}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		page, err := cli.ObserveProcesses(t.Context(), 0, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Events) == 2 {
+			started := page.Events[0]
+			if started.Sequence != 1 || len(started.Argv) != execenv.MaxProcessArgs || !started.Truncated || page.Events[1].Kind != execenv.ProcessExited || page.Next != 2 {
+				t.Fatalf("events: %+v", page.Events)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("events never arrived: %+v", page)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := cli.AcknowledgeProcesses(t.Context(), 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cli.ObserveProcesses(t.Context(), 1, 10); !errors.Is(err, execenv.ErrLagged) {
+		t.Fatalf("acknowledged prefix: %v", err)
+	}
+}
+
+// fakeProcesses is a test process source fed by the test.
+type fakeProcesses struct {
+	events chan execenv.ProcessEvent
+	done   chan struct{}
+	once   sync.Once
+}
+
+func newFakeProcesses() *fakeProcesses {
+	return &fakeProcesses{events: make(chan execenv.ProcessEvent), done: make(chan struct{})}
+}
+
+func (f *fakeProcesses) Next() (execenv.ProcessEvent, error) {
+	select {
+	case event := <-f.events:
+		return event, nil
+	case <-f.done:
+		return execenv.ProcessEvent{}, execenv.ErrClosed
+	}
+}
+
+func (f *fakeProcesses) Close() error {
+	f.once.Do(func() { close(f.done) })
+	return nil
 }

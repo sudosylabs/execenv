@@ -21,4 +21,7 @@
 // other streams, and a peer that sends past its credit, or grants credit
 // it was never owed, fails only that stream with ErrInvalid. File bodies
 // and PTY octets travel only in Extra, never in Status.
+//
+// The process log is paged and acknowledged by request under the same
+// fence as observations; the host keeps the retention.
 package remote

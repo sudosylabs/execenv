@@ -55,6 +55,7 @@ type environment struct {
 	frozen          bool
 	revoked         bool
 	terminal        *terminal.Manager
+	processes       *processLog
 	// files is the current projection. Paths are already-validated.
 	files tree.Snapshot
 }
@@ -133,13 +134,14 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		network:    spec.Network,
 		host:       h,
 		files:      make(tree.Snapshot),
+		processes:  newProcessLog(),
 	}
 	// The in-memory shell is a stand-in, not a process; it starts with no
 	// window or isolation beyond the session machinery every adapter shares.
 	env.terminal = terminal.New(terminal.Config{
 		Grace: h.grace,
 		Start: func(_ context.Context, win execenv.Window) (terminal.Shell, error) {
-			return newShell(win), nil
+			return newShell(win, env.processes), nil
 		},
 	})
 	h.grants[spec.ID] = env

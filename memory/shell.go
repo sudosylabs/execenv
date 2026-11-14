@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"io"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,7 +14,14 @@ import (
 // shell is the in-memory stand-in for a login shell behind a PTY. It echoes
 // input like a terminal in canonical mode and runs each line. It knows only
 // what tests need: NAME=value, echo with $NAME expansion and quote removal,
-// seq [FIRST] LAST, and exit. Anything else prints "not found".
+// seq [FIRST] LAST, true, and exit. A command is found by its last path
+// element, so /bin/true is true. Anything else prints "not found".
+//
+// It records itself in the process log as /bin/sh -l, and every command
+// line it runs as a start and exit pair: exit 0, or 127 when not found.
+// Unlike a real shell it records builtins too. Assignments and exit are not
+// commands; exit ends the shell with status 0, and a hangup ends it by
+// SIGHUP.
 type shell struct {
 	mu     sync.Mutex
 	cond   *sync.Cond
@@ -23,11 +31,14 @@ type shell struct {
 	win    execenv.Window
 	exited bool
 	closed bool
+	log    *processLog
+	pid    int
 }
 
-func newShell(win execenv.Window) *shell {
-	s := &shell{vars: make(map[string]string), win: win}
+func newShell(win execenv.Window, log *processLog) *shell {
+	s := &shell{vars: make(map[string]string), win: win, log: log}
 	s.cond = sync.NewCond(&s.mu)
+	s.pid = log.start(1, []string{"/bin/sh", "-l"})
 	return s
 }
 
@@ -84,6 +95,9 @@ func (s *shell) Resize(ctx context.Context, win execenv.Window) error {
 
 func (s *shell) Close() error {
 	s.mu.Lock()
+	if !s.closed && !s.exited {
+		s.log.killed(s.pid, 1)
+	}
 	s.closed = true
 	s.cond.Broadcast()
 	s.mu.Unlock()
@@ -99,9 +113,19 @@ func (s *shell) run(line string) {
 		s.vars[name] = s.expand(value)
 		return
 	}
-	switch words[0] {
-	case "exit":
+	if words[0] == "exit" {
 		s.exited = true
+		s.log.exit(s.pid, 0)
+		return
+	}
+	argv := make([]string, 0, len(words))
+	for _, word := range words {
+		argv = append(argv, s.expand(word))
+	}
+	pid := s.log.start(s.pid, argv)
+	code := 0
+	switch path.Base(words[0]) {
+	case "true":
 	case "echo":
 		expanded := make([]string, 0, len(words)-1)
 		for _, word := range words[1:] {
@@ -112,7 +136,9 @@ func (s *shell) run(line string) {
 		s.seq(words[1:])
 	default:
 		s.print("sh: " + words[0] + ": not found")
+		code = 127
 	}
+	s.log.exit(pid, code)
 }
 
 func (s *shell) seq(args []string) {

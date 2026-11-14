@@ -42,6 +42,11 @@ const (
 	// only bytes its caller has consumed, so a sender's available credit
 	// never exceeds the window agreed when the stream opened.
 	KindCredit
+	// KindEvent is an unsolicited record the peer neither requests nor
+	// answers. Method names the record and Extra carries it; Seq, Stream
+	// and Status are zero. Only the guest helper sends it, for its process
+	// log; the remote hop ignores it.
+	KindEvent
 )
 
 // Frame is the only encoded value. Status is a sentinel name.
@@ -224,7 +229,7 @@ func decodeFrame(payload []byte) (Frame, error) {
 }
 
 func validateFrame(f Frame) error {
-	if f.Kind < KindRequest || f.Kind > KindCredit || len(f.Method) > 64 || len(f.Grant) > 64 || len(f.Status) > 64 {
+	if f.Kind < KindRequest || f.Kind > KindEvent || len(f.Method) > 64 || len(f.Grant) > 64 || len(f.Status) > 64 {
 		return execenv.ErrInvalid
 	}
 	if !utf8.ValidString(f.Method) || !utf8.ValidString(f.Grant) || !utf8.ValidString(f.Status) {
@@ -237,6 +242,9 @@ func validateFrame(f Frame) error {
 		return execenv.ErrTooLarge
 	}
 	if f.Kind == KindCredit && (f.Seq == 0 || f.Stream == 0 || f.Method != "" || f.Status != "" || len(f.Extra) != 0) {
+		return execenv.ErrInvalid
+	}
+	if f.Kind == KindEvent && (f.Seq != 0 || f.Stream != 0 || f.Method == "" || f.Status != "") {
 		return execenv.ErrInvalid
 	}
 	return nil

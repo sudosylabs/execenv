@@ -323,7 +323,7 @@ func TestCheckKernelConfig(t *testing.T) {
 	dir := t.TempDir()
 	full := strings.Join([]string{
 		"CONFIG_VIRTIO_BLK=y", "CONFIG_EXT4_FS=y", "CONFIG_DEVTMPFS=y", "CONFIG_TMPFS=y",
-		"CONFIG_VSOCKETS=y", "CONFIG_VIRTIO_VSOCKETS=y", "CONFIG_CGROUPS=y", "CONFIG_UNIX98_PTYS=y",
+		"CONFIG_VSOCKETS=y", "CONFIG_VIRTIO_VSOCKETS=y", "CONFIG_CGROUPS=y", "CONFIG_UNIX98_PTYS=y", "CONFIG_CONNECTOR=y", "CONFIG_PROC_EVENTS=y",
 		"CONFIG_INOTIFY_USER=y", "CONFIG_MEMORY_BALLOON=y", "CONFIG_VIRTIO_BALLOON=y",
 		"CONFIG_PAGE_REPORTING=y", "CONFIG_BALLOON_COMPACTION=y", "CONFIG_VMGENID=y",
 	}, "\n") + "\n"
@@ -345,5 +345,9 @@ func TestCheckKernelConfig(t *testing.T) {
 	out, err = run(strings.Replace(full, "CONFIG_VIRTIO_BLK=y", "CONFIG_VIRTIO_BLK=m", 1))
 	if err == nil || !strings.Contains(out, "MISSING  VIRTIO_BLK") {
 		t.Fatalf("modular block driver should fail: %v\n%s", err, out)
+	}
+	out, err = run(strings.Replace(full, "CONFIG_PROC_EVENTS=y", "# CONFIG_PROC_EVENTS is not set", 1))
+	if err == nil || !strings.Contains(out, "MISSING  PROC_EVENTS") {
+		t.Fatalf("missing process events should fail: %v\n%s", err, out)
 	}
 }

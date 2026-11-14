@@ -33,7 +33,8 @@ var (
 	ErrNotFound = errors.New("execenv: not found")
 	// ErrLagged indicates the host can no longer report guest changes from
 	// the requested position, or could not capture one. The caller must
-	// resynchronize from its own journal.
+	// resynchronize from its own journal. For the process log it means the
+	// requested position was already acknowledged.
 	ErrLagged = errors.New("execenv: observation lagged")
 	// ErrTooLarge indicates a file or tree exceeds the documented limits.
 	ErrTooLarge = errors.New("execenv: too large")

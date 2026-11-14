@@ -20,4 +20,12 @@
 // gitignore patterns for paths Observe leaves out; held paths stay
 // observed. Losing a grant must not be treated as losing
 // caller state the caller already has.
+//
+// ObserveProcesses is the environment's process log: every program the
+// contained workload starts and how each process ends, in order, under the
+// same fence. The guest helper records it outside the workload and sends
+// each event as soon as it is taken, so the workload cannot see, alter or
+// suppress an event already recorded. The host retains events until the
+// caller acknowledges them; a full log counts what it cannot keep and
+// reports the count as one ProcessDropped event, never silently.
 package execenv

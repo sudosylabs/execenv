@@ -215,6 +215,8 @@ func (sc *serverConn) handle(f frame) {
 	switch f.Method {
 	case methodObserve, methodObservationAcknowledge, methodObservationOpen, methodObservationRead, methodObservationClose, methodObservationConfirm:
 		extra, err = sc.semantic(ctx, f)
+	case methodProcessObserve, methodProcessAcknowledge:
+		extra, err = sc.processes(ctx, f)
 	case methodProjectionInitialize:
 		extra, err = sc.initializeProjection(ctx, f)
 	case methodProjectionApply:

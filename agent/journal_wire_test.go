@@ -110,6 +110,7 @@ func journalWireFixture(t *testing.T) (*Client, string) {
 	hostConn, guestConn := net.Pipe()
 	ctx, cancel := context.WithCancel(t.Context())
 	server := &server{home: home, sess: newSession(guestConn), journal: newDiskJournal(home, &testWriteBarrier{}, nil)}
+	server.processes.Store(true)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

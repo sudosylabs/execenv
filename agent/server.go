@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sudosylabs/execenv"
@@ -34,6 +35,12 @@ type Config struct {
 	// Without either, the helper advertises no journal and every host
 	// refuses it.
 	Barrier WriteBarrier
+	// Processes records the workload's processes without a contained
+	// workload. Only tests supply one; Serve closes it when it returns. A
+	// contained workload always reads the guest kernel's process events
+	// and ignores this. A helper with neither advertises no process log,
+	// and every host refuses it.
+	Processes ProcessSource
 }
 
 // WriteBarrier stops every writer under Home while fn runs. An error from
@@ -90,6 +97,19 @@ func Serve(ctx context.Context, conn net.Conn, cfg Config) error {
 	if s.journal != nil {
 		defer s.journal.close()
 	}
+	// The process log must be recording before any workload process can
+	// start. Without the kernel's process events the helper says so in
+	// its handshake and the host refuses it.
+	source := cfg.Processes
+	if group != nil {
+		source = nil
+		if kernel, err := openKernelProcesses(group.Path(), cfg.Home, scratch); err == nil {
+			source = kernel
+		}
+	}
+	if source != nil {
+		s.pumpProcesses(ctx, source)
+	}
 	defer s.shutdown()
 	go func() {
 		<-ctx.Done()
@@ -121,6 +141,8 @@ type server struct {
 	journal       *diskJournal
 	journalUpload *journalUpload
 	sess          *mux.Session
+	// processes is whether the process log source is recording.
+	processes atomic.Bool
 
 	mu         sync.Mutex
 	frozen     bool
@@ -151,7 +173,7 @@ func (s *server) handle(ctx context.Context, f frame) {
 	case methodJournalUploadBegin, methodJournalUploadChunk, methodJournalUploadFinish, methodJournalUploadAbort, methodJournalInitialize, methodJournalApply, methodJournalObserve, methodJournalContent, methodJournalAcknowledge, methodJournalConfirm:
 		extra, err = s.journalCall(ctx, f)
 	case methodHello:
-		extra, err = encodeExtra(helloResult{Version: protocolVersion, Journal: s.journal != nil})
+		extra, err = encodeExtra(helloResult{Version: protocolVersion, Journal: s.journal != nil, Processes: s.processes.Load()})
 	case methodAttach:
 		err = s.attach(ctx, f)
 	case methodDetach:

@@ -95,8 +95,10 @@ type Host interface {
 // journal: upload immutable content, initialize once, then apply
 // consecutive journal mutations. Observe reports what the isolated
 // environment wrote, with its captured content, until the caller
-// acknowledges it. Every projection and observation call names the current
-// fence, and a stale fence performs no I/O.
+// acknowledges it. ObserveProcesses reports, in order, every program the
+// contained workload started and how each process ended, until the caller
+// acknowledges it. Every projection, observation and process log call
+// names the current fence, and a stale fence performs no I/O.
 type Env interface {
 	ID() ID
 	// Epoch is the opaque identity of this occupancy. It is never reused
@@ -112,6 +114,15 @@ type Env interface {
 	OpenObservationContent(ctx context.Context, fence ProjectionFence, content ContentReference) (io.ReadCloser, error)
 	ConfirmObservationProjection(ctx context.Context, binding ObservationProjection) error
 	AcknowledgeObservations(ctx context.Context, fence ProjectionFence, through uint64) error
+	// ObserveProcesses returns up to limit process log events after the
+	// given sequence. A position before the acknowledged prefix is
+	// ErrLagged; one beyond the events produced so far, or a limit outside
+	// 1..MaxProcessPage, is ErrInvalid.
+	ObserveProcesses(ctx context.Context, fence ProjectionFence, after uint64, limit int) (ProcessPage, error)
+	// AcknowledgeProcesses releases the retained events through a
+	// sequence. Acknowledging past the events produced is ErrInvalid; an
+	// older acknowledgement is a no-op.
+	AcknowledgeProcesses(ctx context.Context, fence ProjectionFence, through uint64) error
 	Revoke(ctx context.Context) error
 }
 

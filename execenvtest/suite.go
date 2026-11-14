@@ -3,7 +3,9 @@
 // Run covers occupancy, terminal sessions, fenced control, and the journal
 // projection. Guest-originated observations need a real or simulated guest:
 // RunIgnore covers IgnoreRules given a Guest that acts inside the
-// workspace, and the rest is covered by each adapter's own tests.
+// workspace, and the rest is covered by each adapter's own tests. The
+// process log needs a workload: RunProcesses covers it given a Workload,
+// and TerminalWorkload types commands into the environment's shell.
 //
 // Terminal subtests drive the shell with a small POSIX subset every adapter
 // supports: NAME=value, echo with $NAME and quotes, seq, and exit.

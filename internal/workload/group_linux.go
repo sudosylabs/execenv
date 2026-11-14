@@ -14,7 +14,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const uid = 65534
+const (
+	uid       = 65534
+	groupName = "execenv-workload"
+)
 
 // Group owns the single unprivileged workload in a dedicated guest. Controls
 // are root-owned and never delegated to the workload, including its descendants.
@@ -46,10 +49,10 @@ func Open() (*Group, error) {
 	}
 	// Refuse existing groups: after agent reconstruction a previous occupancy
 	// must never become usable under fresh in-memory projection/fence state.
-	if err := root.Mkdir("execenv-workload", 0700); err != nil {
+	if err := root.Mkdir(groupName, 0700); err != nil {
 		return nil, execenv.ErrUnavailable
 	}
-	dir, err := root.OpenRoot("execenv-workload")
+	dir, err := root.OpenRoot(groupName)
 	if err != nil {
 		return nil, err
 	}
@@ -92,6 +95,10 @@ func (g *Group) Configure(cmd *exec.Cmd) error {
 }
 
 func (g *Group) OwnHome(home string) error { return os.Lchown(home, uid, uid) }
+
+// Path is the workload's path in the unified hierarchy, as a process's
+// /proc/<pid>/cgroup names it. Every workload process is at or below it.
+func (g *Group) Path() string { return "/" + groupName }
 
 // Kill waits for the whole subtree, including detached descendants. The
 // caller must not reuse this occupancy after an uncertain result.

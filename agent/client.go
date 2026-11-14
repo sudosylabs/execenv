@@ -11,6 +11,7 @@ import (
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/internal/mux"
+	"github.com/sudosylabs/execenv/internal/processes"
 )
 
 // Client is the host side of one agent connection.
@@ -23,28 +24,32 @@ type Client struct {
 	term    *PTY
 	closed  bool
 	frozen  bool
+	// processes is the guest's process log, retained on the host until
+	// the caller acknowledges it.
+	processes *processes.Log
 }
 
 // NewClient takes an already-dialed guest link. It does not occupy a grant.
 func NewClient(conn net.Conn) *Client {
 	c := &Client{
-		sess:    newSession(conn),
-		pending: make(map[uint64]chan frame),
+		sess:      newSession(conn),
+		pending:   make(map[uint64]chan frame),
+		processes: processes.New(),
 	}
 	go c.readLoop()
 	return c
 }
 
-// Verify rejects a guest helper that speaks another protocol revision or
-// cannot serve the native journal. Host readiness must not infer capability
-// from its own binary.
+// Verify rejects a guest helper that speaks another protocol revision,
+// cannot serve the native journal, or is not recording the workload's
+// processes. Host readiness must not infer capability from its own binary.
 func (c *Client) Verify(ctx context.Context) error {
 	out, err := c.call(ctx, methodHello, nil)
 	if err != nil {
 		return execenv.Error("agent protocol", execenv.ErrUnavailable)
 	}
 	var result helloResult
-	if err := decodeExtra(out, &result); err != nil || result.Version != protocolVersion || !result.Journal {
+	if err := decodeExtra(out, &result); err != nil || result.Version != protocolVersion || !result.Journal || !result.Processes {
 		return execenv.Error("agent protocol", execenv.ErrUnavailable)
 	}
 	return nil
@@ -92,6 +97,8 @@ func (c *Client) readLoop() {
 			}
 		case kindPty:
 			c.deliverPty(f)
+		case mux.KindEvent:
+			c.deliverProcesses(f)
 		}
 	}
 }
