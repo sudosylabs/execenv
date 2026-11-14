@@ -11,8 +11,6 @@ import (
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/internal/mux"
-	"github.com/sudosylabs/execenv/internal/tree"
-	"github.com/sudosylabs/execenv/internal/watchlog"
 	"github.com/sudosylabs/execenv/internal/workload"
 )
 
@@ -22,13 +20,26 @@ type Config struct {
 	// The image root is not this directory and stays read-only.
 	Home string
 	// Scratch is the login shell's $HOME, outside the projected tree, so
-	// tool caches and virtual environments are neither watched nor
+	// tool caches and virtual environments are neither observed nor
 	// harvested. Empty uses Home (local development only).
 	Scratch string
 	// ContainWorkload requires a dedicated guest with a usable kernel write
 	// barrier and launches every workload process unprivileged. Unsupported
-	// configurations fail before serving or accepting a terminal.
+	// configurations fail before serving or accepting a terminal. It is how
+	// a real guest serves the journal.
 	ContainWorkload bool
+	// Barrier serves the journal without a contained workload. It must stop
+	// every writer under Home while its function runs. Only tests whose
+	// files are quiescent may supply one; a guest uses ContainWorkload.
+	// Without either, the helper advertises no journal and every host
+	// refuses it.
+	Barrier WriteBarrier
+}
+
+// WriteBarrier stops every writer under Home while fn runs. An error from
+// fn means the disk state is uncertain; the barrier stays closed after it.
+type WriteBarrier interface {
+	Stopped(ctx context.Context, fn func() error) error
 }
 
 // Serve handles one host connection. Closing the PTY or the connection is
@@ -65,15 +76,18 @@ func Serve(ctx context.Context, conn net.Conn, cfg Config) error {
 		}
 	}
 	s := &server{
-		workload:  group,
-		home:      cfg.Home,
-		scratch:   scratch,
-		projected: make(tree.Snapshot),
-		sess:      newSession(conn),
-		log:       watchlog.New(watchlog.DefaultCapacity),
+		workload: group,
+		home:     cfg.Home,
+		scratch:  scratch,
+		sess:     newSession(conn),
 	}
-	if group != nil {
+	switch {
+	case group != nil:
 		s.journal = newDiskJournal(cfg.Home, group, group.OwnHome)
+	case cfg.Barrier != nil:
+		s.journal = newDiskJournal(cfg.Home, cfg.Barrier, nil)
+	}
+	if s.journal != nil {
 		defer s.journal.close()
 	}
 	defer s.shutdown()
@@ -108,27 +122,15 @@ type server struct {
 	journalUpload *journalUpload
 	sess          *mux.Session
 
-	mu sync.Mutex
-	// projected is the last caller ReplaceTree/Apply, used only for
-	// version-skip. Open and Watch read Home on disk, including guest files.
-	projected   tree.Snapshot
-	frozen      bool
-	term        *shell
-	termStream  uint64
-	watching    bool
-	watchStream uint64
-	watchErr    error
-	snap        map[string]fileMeta
-	pollStop    chan struct{}
-	notify      notifier
-	kick        chan struct{}
-	log         *watchlog.Log
+	mu         sync.Mutex
+	frozen     bool
+	term       *shell
+	termStream uint64
 }
 
 func (s *server) shutdown() {
 	s.mu.Lock()
 	s.killShell()
-	s.stopPoll(execenv.ErrClosed)
 	s.mu.Unlock()
 	_ = s.sess.Close()
 }
@@ -150,16 +152,6 @@ func (s *server) handle(ctx context.Context, f frame) {
 		extra, err = s.journalCall(ctx, f)
 	case methodHello:
 		extra, err = encodeExtra(helloResult{Version: protocolVersion, Journal: s.journal != nil})
-	case methodReplace:
-		err = s.replace(ctx, f)
-	case methodApply:
-		err = s.apply(ctx, f)
-	case methodOpen:
-		extra, err = s.open(ctx, f)
-	case methodWatch:
-		extra, err = s.watch(ctx, f)
-	case methodUnwatch:
-		err = s.unwatch(f)
 	case methodAttach:
 		err = s.attach(ctx, f)
 	case methodDetach:
@@ -197,163 +189,6 @@ func (s *server) guard() error {
 	}
 	if s.frozen {
 		return execenv.ErrFrozen
-	}
-	return nil
-}
-
-func (s *server) replace(ctx context.Context, f frame) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	var args replaceArgs
-	if err := decodeExtra(f.Extra, &args); err != nil {
-		return execenv.ErrInvalid
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.journal != nil && s.journal.state.Initialized() {
-		return execenv.ErrConflict
-	}
-	if err := s.guard(); err != nil {
-		return err
-	}
-	next, err := tree.Replace(s.projected, args.Tree)
-	if err != nil {
-		return err
-	}
-	// Full snapshot: unlisted paths, including guest-created files, go.
-	if err := s.commitLegacy(ctx, nil, func() error { return rewriteHome(s.home, next) }); err != nil {
-		return err
-	}
-	s.projected = next
-	s.invalidateWatch(execenv.ErrLagged)
-	s.log.Reset()
-	s.resetSnap()
-	return nil
-}
-
-func (s *server) apply(ctx context.Context, f frame) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	var args applyArgs
-	if err := decodeExtra(f.Extra, &args); err != nil {
-		return execenv.ErrInvalid
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.journal != nil && s.journal.state.Initialized() {
-		return execenv.ErrConflict
-	}
-	if err := s.guard(); err != nil {
-		return err
-	}
-	next, err := tree.Apply(s.projected, args.Batch)
-	if err != nil {
-		return err
-	}
-	// A contained workload stays stopped through precondition checks, disk
-	// changes and ownership updates. A refused precondition does not poison it.
-	if err := s.commitLegacy(ctx, func() error { return checkProjectionDisk(s.home, s.projected, args.Batch) }, func() error { return applyHome(s.home, args.Batch) }); err != nil {
-		return err
-	}
-	s.projected = next
-	s.projectSnap(args.Batch)
-	return nil
-}
-
-func (s *server) open(ctx context.Context, f frame) ([]byte, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	var args openArgs
-	if err := decodeExtra(f.Extra, &args); err != nil {
-		return nil, execenv.ErrInvalid
-	}
-	if err := execenv.ValidatePath(args.Path); err != nil {
-		return nil, err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.guard(); err != nil {
-		return nil, err
-	}
-	full, err := execenv.ResolvePath(s.home, args.Path)
-	if err != nil {
-		return nil, err
-	}
-	info, err := os.Lstat(full)
-	if err != nil || !info.Mode().IsRegular() {
-		return nil, execenv.ErrNotFound
-	}
-	if info.Size() > execenv.MaxFileBytes {
-		return nil, execenv.ErrTooLarge
-	}
-	data, err := os.ReadFile(full)
-	if err != nil {
-		return nil, execenv.ErrNotFound
-	}
-	return encodeExtra(data)
-}
-
-func (s *server) watch(ctx context.Context, f frame) ([]byte, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	var args watchArgs
-	if err := decodeExtra(f.Extra, &args); err != nil || args.Stream == 0 {
-		return nil, execenv.ErrInvalid
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.journal != nil && s.journal.state.Initialized() {
-		return nil, execenv.ErrConflict
-	}
-	if err := s.guard(); err != nil {
-		return nil, err
-	}
-	if s.watching {
-		return nil, execenv.ErrBusy
-	}
-	s.preparePoll()
-	if !validScan(s.snap) {
-		s.discardPoll()
-		return nil, execenv.ErrLagged
-	}
-	cursor, replay, err := s.log.Since(args.After)
-	if err != nil {
-		s.discardPoll()
-		return nil, err
-	}
-	s.watching = true
-	s.watchStream = args.Stream
-	s.watchErr = nil
-	s.startPoll()
-	for _, event := range replay {
-		raw, err := encodeExtra(event)
-		if err != nil {
-			s.watching = false
-			return nil, execenv.ErrUnavailable
-		}
-		if err := s.sess.Send(frame{Kind: kindWatch, Stream: args.Stream, Extra: raw}); err != nil {
-			s.watching = false
-			return nil, execenv.ErrClosed
-		}
-	}
-	return encodeExtra(watchResult{Cursor: cursor})
-}
-
-func (s *server) unwatch(f frame) error {
-	var args streamArgs
-	if err := decodeExtra(f.Extra, &args); err != nil || args.Stream == 0 {
-		return execenv.ErrInvalid
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.watchStream == args.Stream {
-		s.watching = false
-		s.watchStream = 0
-		s.watchErr = execenv.ErrClosed
 	}
 	return nil
 }
@@ -480,7 +315,6 @@ func (s *server) freeze(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.frozen = true
-	s.invalidateWatch(execenv.ErrFrozen)
 	return nil
 }
 
@@ -496,7 +330,6 @@ func (s *server) thaw(ctx context.Context) error {
 		}
 	}
 	s.frozen = false
-	s.kickPoll()
 	return nil
 }
 
@@ -537,32 +370,4 @@ func (sh *shell) close() {
 		hangup(sh.cmd, sh.exited)
 	}
 	_ = sh.master.Close()
-}
-
-func (s *server) commitLegacy(ctx context.Context, validate, commit func() error) error {
-	if s.workload == nil {
-		if validate != nil {
-			if err := validate(); err != nil {
-				return err
-			}
-		}
-		return commit()
-	}
-	var refused error
-	err := s.workload.Stopped(ctx, func() error {
-		if validate != nil {
-			if err := validate(); err != nil {
-				refused = err
-				return nil
-			}
-		}
-		if err := commit(); err != nil {
-			return err
-		}
-		return s.journal.ownTree()
-	})
-	if err != nil {
-		return err
-	}
-	return refused
 }

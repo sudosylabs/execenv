@@ -1,10 +1,6 @@
 package execenv
 
-import (
-	"context"
-	"encoding/json"
-	"io"
-)
+import "encoding/json"
 
 type ObservationOperation string
 
@@ -39,17 +35,10 @@ type ObservationPage struct {
 	Observations           []ExecutionObservation `json:"observations"`
 }
 
-// SemanticEnv is a separate, explicit capability from journal projection.
-// Acknowledgement is allowed only after the caller durably records each outcome.
-// It releases retained event bytes and never implies that those bytes were
-// committed to the caller's authority or advances the projection baseline.
-type SemanticEnv interface {
-	ProjectionEnv
-	ConfirmObservationProjection(context.Context, ObservationProjection) error
-	Observe(context.Context, ProjectionFence, uint64, int) (ObservationPage, error)
-	OpenObservationContent(context.Context, ProjectionFence, ContentReference) (io.ReadCloser, error)
-	AcknowledgeObservations(context.Context, ProjectionFence, uint64) error
-}
+// Acknowledge observations only after the caller durably records each
+// outcome. Acknowledgement releases retained event bytes; it never implies
+// that those bytes were committed to the caller's authority, and it does not
+// advance the projection baseline.
 
 func ValidateExecutionObservation(event ExecutionObservation) error {
 	if ValidateProjectionFence(event.Fence) != nil || event.HostSequence == 0 || event.HostSequence > MaxProjectionCursor || event.BasedOnWorkspaceCursor > MaxProjectionCursor || validateName(event.NodeIdentity) != nil || ValidatePath(event.Path) != nil {
@@ -113,7 +102,8 @@ func ValidateExecutionObservation(event ExecutionObservation) error {
 // ObservationProjection binds a durably accepted guest outcome to the exact
 // resulting caller journal entry. Register it before acknowledging the retained
 // observation. It does not itself advance the projection or alter guest files.
-// Apply later validates that exact effect and suppresses only its known echo.
+// ApplyProjection later validates that exact effect and suppresses only its
+// known echo.
 type ObservationProjection struct {
 	Fence        ProjectionFence    `json:"fence"`
 	HostSequence uint64             `json:"host_sequence"`

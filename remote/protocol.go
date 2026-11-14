@@ -13,7 +13,6 @@ const (
 	kindRequest  = mux.KindRequest
 	kindResponse = mux.KindResponse
 	kindPty      = mux.KindPty
-	kindWatch    = mux.KindWatch
 )
 
 const (
@@ -33,13 +32,6 @@ const (
 	methodAttach                 = "attach"
 	methodDetach                 = "detach"
 	methodResize                 = "resize"
-	methodFreeze                 = "freeze"
-	methodThaw                   = "thaw"
-	methodReplace                = "replace"
-	methodApply                  = "apply"
-	methodWatch                  = "watch"
-	methodUnwatch                = "unwatch"
-	methodOpen                   = "open"
 )
 
 var (
@@ -49,7 +41,10 @@ var (
 	errorFromStatus = mux.ErrorFromStatus
 )
 
-const protocolVersion = 3
+// protocolVersion is the wire revision shared by New and Serve. Both refuse
+// a peer on any other revision. Bump it whenever a method, its arguments or
+// its meaning changes.
+const protocolVersion = 4
 
 type authResult struct {
 	Protocol     int
@@ -66,18 +61,6 @@ type ensureArgs struct {
 	Spec execenv.Spec
 }
 
-type replaceArgs struct {
-	Tree execenv.Tree
-}
-
-type applyArgs struct {
-	Batch execenv.Batch
-}
-
-type openArgs struct {
-	Path string
-}
-
 type attachArgs struct {
 	Window execenv.Window
 	Stream uint64
@@ -90,15 +73,6 @@ type resizeArgs struct {
 
 type streamArgs struct {
 	Stream uint64
-}
-
-type watchArgs struct {
-	After  execenv.Cursor
-	Stream uint64
-}
-
-type watchResult struct {
-	Cursor execenv.Cursor
 }
 
 func newSession(conn net.Conn) *mux.Session {

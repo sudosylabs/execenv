@@ -7,23 +7,16 @@ import (
 	"github.com/sudosylabs/execenv"
 )
 
-func TestReplaceKeepsVersionBody(t *testing.T) {
+func TestFromTreeRequiresFileBodies(t *testing.T) {
 	t.Parallel()
-	cur := Snapshot{
-		"a.txt": {Kind: execenv.KindFile, Version: "v1", Data: []byte("one")},
-	}
-	next, err := Replace(cur, execenv.Tree{{
-		Path: "a.txt", Kind: execenv.KindFile, Version: "v1",
-	}})
+	next, err := FromTree(execenv.Tree{{Path: "a.txt", Kind: execenv.KindFile, Version: "v1", Data: []byte("one")}, {Path: "empty", Kind: execenv.KindFile, Data: []byte{}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(next["a.txt"].Data) != "one" {
-		t.Fatalf("body = %q", next["a.txt"].Data)
+	if empty, ok := next["empty"]; string(next["a.txt"].Data) != "one" || !ok || len(empty.Data) != 0 {
+		t.Fatalf("snapshot = %+v", next)
 	}
-	if _, err := Replace(cur, execenv.Tree{{
-		Path: "a.txt", Kind: execenv.KindFile, Version: "v2",
-	}}); !errors.Is(err, execenv.ErrInvalid) {
+	if _, err := FromTree(execenv.Tree{{Path: "a.txt", Kind: execenv.KindFile, Version: "v1"}}); !errors.Is(err, execenv.ErrInvalid) {
 		t.Fatalf("missing body error = %v", err)
 	}
 }

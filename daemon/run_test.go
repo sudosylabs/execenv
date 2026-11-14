@@ -134,11 +134,16 @@ func TestOrdinaryLogsOmitSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := env.ReplaceTree(t.Context(), execenv.Tree{{
-		Path:    "secret.txt",
-		Kind:    execenv.KindFile,
-		Version: "v1",
-		Data:    []byte(tree),
+	fence := execenv.ProjectionFence{ExecutionGrantID: env.ID(), EnvironmentEpoch: env.Epoch(), FenceRevision: 1}
+	if _, err := env.Control(t.Context(), execenv.ControlRequest{Fence: fence, State: execenv.ControlRunning}); err != nil {
+		t.Fatal(err)
+	}
+	content, err := env.UploadProjectionContent(t.Context(), fence, strings.NewReader(tree))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.InitializeProjection(t.Context(), execenv.ProjectionInitialization{Fence: fence, MutationID: "init", Entries: []execenv.ProjectionEntry{
+		{EntryID: "secret", Kind: execenv.ProjectionFile, Path: "secret.txt", ContentVersion: "v1", Content: &content},
 	}}); err != nil {
 		t.Fatal(err)
 	}

@@ -20,6 +20,7 @@ type stubInstance struct {
 	stopErr   error
 	stopped   bool
 	sock      string
+	scratch   string
 	ln        net.Listener
 	cancel    context.CancelFunc
 }
@@ -62,6 +63,9 @@ func (s *stubInstance) Stop(context.Context) error {
 	if s.sock != "" {
 		_ = os.Remove(s.sock)
 	}
+	if s.scratch != "" {
+		_ = os.RemoveAll(s.scratch)
+	}
 	return nil
 }
 
@@ -82,6 +86,8 @@ type recordingLauncher struct {
 	instances []*stubInstance
 	last      startRequest
 	fail      error
+	// noJournal serves a helper that advertises no native journal.
+	noJournal bool
 }
 
 type blockingLauncher struct {
@@ -107,7 +113,7 @@ func (l *recordingLauncher) Start(ctx context.Context, req startRequest) (instan
 	if l.fail != nil {
 		return nil, l.fail
 	}
-	inst, err := startStubAgent(ctx, req)
+	inst, err := startStubAgent(ctx, req, !l.noJournal)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +123,18 @@ func (l *recordingLauncher) Start(ctx context.Context, req startRequest) (instan
 	return inst, nil
 }
 
-func startStubAgent(_ context.Context, req startRequest) (*stubInstance, error) {
+// quiescentBarrier serves the stub helper's journal. Unit tests write the
+// workspace only between calls, so nothing races a capture.
+type quiescentBarrier struct{}
+
+func (quiescentBarrier) Stopped(ctx context.Context, fn func() error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return fn()
+}
+
+func startStubAgent(_ context.Context, req startRequest, journal bool) (*stubInstance, error) {
 	if err := os.MkdirAll(req.TreeDir, 0o700); err != nil {
 		return nil, err
 	}
@@ -132,11 +149,22 @@ func startStubAgent(_ context.Context, req startRequest) (*stubInstance, error) 
 	if err != nil {
 		return nil, err
 	}
+	// The shell's HOME stays outside the grant directory, as on a real guest,
+	// so a hung-up shell writing its history cannot race grant removal.
+	scratch, err := os.MkdirTemp("", "execenv-scratch-")
+	if err != nil {
+		_ = ln.Close()
+		return nil, err
+	}
 	ctx, cancel := context.WithCancel(context.Background())
+	cfg := agent.Config{Home: req.TreeDir, Scratch: scratch}
+	if journal {
+		cfg.Barrier = quiescentBarrier{}
+	}
 	go func() {
-		_ = agent.ListenAndServe(ctx, ln, agent.Config{Home: req.TreeDir})
+		_ = agent.ListenAndServe(ctx, ln, cfg)
 	}()
-	return &stubInstance{sock: sock, ln: ln, cancel: cancel}, nil
+	return &stubInstance{sock: sock, scratch: scratch, ln: ln, cancel: cancel}, nil
 }
 
 // recordingAttacher is the test adapter for attach: it records dests and
@@ -161,5 +189,3 @@ func (a *recordingAttacher) Setup(id execenv.ID, dests []string) (*netAttach, er
 	a.last = &att
 	return &att, nil
 }
-
-func pipeConnForTest(r, w *os.File) net.Conn { return agent.NewPipeConn(r, w) }

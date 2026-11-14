@@ -22,11 +22,13 @@ var (
 	ErrRevoked = errors.New("execenv: grant revoked")
 	// ErrBusy indicates a terminal is already attached.
 	ErrBusy = errors.New("execenv: terminal busy")
-	// ErrClosed indicates the terminal or observation has been closed.
+	// ErrClosed indicates the terminal or content reader has been closed.
 	ErrClosed = errors.New("execenv: closed")
 	// ErrNotFound indicates a path does not exist in the projection.
 	ErrNotFound = errors.New("execenv: not found")
-	// ErrLagged indicates Watch dropped events and the caller must resync.
+	// ErrLagged indicates the host can no longer report guest changes from
+	// the requested position, or could not capture one. The caller must
+	// resynchronize from its own journal.
 	ErrLagged = errors.New("execenv: observation lagged")
 	// ErrTooLarge indicates a file or tree exceeds the documented limits.
 	ErrTooLarge = errors.New("execenv: too large")

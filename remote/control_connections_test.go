@@ -22,7 +22,7 @@ func TestControlHighWaterSurvivesIndependentConnections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	one, two := a.(execenv.ControlledEnv), b.(execenv.ControlledEnv)
+	one, two := a, b
 	if one.Epoch() != two.Epoch() {
 		t.Fatal("connection invented epoch")
 	}
@@ -39,7 +39,7 @@ func TestControlHighWaterSurvivesIndependentConnections(t *testing.T) {
 	if err != nil || receipt.Fence.FenceRevision != 100 || receipt.State != execenv.ControlFrozen || !receipt.Confirmed {
 		t.Fatalf("status %+v %v", receipt, err)
 	}
-	if first.Capabilities().Isolated || !first.Capabilities().OrderedControl {
+	if first.Capabilities().Isolated {
 		t.Fatalf("remote invented adapter capabilities: %+v", first.Capabilities())
 	}
 }

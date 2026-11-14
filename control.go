@@ -1,7 +1,5 @@
 package execenv
 
-import "context"
-
 // ProjectionFence identifies one authorized effect on an opaque grant/epoch.
 // Revision is caller-issued and monotonic within the grant. It carries no
 // interpretation of the caller's authorization or lifecycle model.
@@ -21,6 +19,9 @@ const (
 )
 
 // ControlRequest binds an exact state to a monotonically increasing fence.
+// Control is acknowledged and ordered. Implementations that lose fence state
+// must make the old epoch permanently unusable. Revoked is terminal for that
+// epoch.
 type ControlRequest struct {
 	Fence ProjectionFence `json:"fence"`
 	State ControlState    `json:"state"`
@@ -33,17 +34,6 @@ type ControlReceipt struct {
 	Fence     ProjectionFence `json:"fence"`
 	State     ControlState    `json:"state"`
 	Confirmed bool            `json:"confirmed"`
-}
-
-// ControlledEnv supports acknowledged, ordered execution control. An epoch is
-// never reused after reconstruction. Implementations that lose fence state must
-// make the old epoch permanently unusable. Revoke is terminal for that epoch.
-// Once Control is used, unfenced Freeze/Thaw are refused with ErrConflict.
-type ControlledEnv interface {
-	Env
-	Epoch() string
-	Control(context.Context, ControlRequest) (ControlReceipt, error)
-	ControlStatus(context.Context) (ControlReceipt, error)
 }
 
 // ValidateControl rejects malformed requests, including integers that cannot

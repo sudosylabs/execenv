@@ -92,6 +92,6 @@ universal Codespaces-class source, and the `default` catalog id is that
 multi-gigabyte disk. The release workflow already bakes only the slim
 per-language ids, with `default` published separately. The recommendation,
 documented in the README, is to keep `default` but treat the slim
-per-language ids as the default for exams and other high-concurrency use:
+per-language ids as the default for high-concurrency use:
 they shrink page-cache pressure, install size and, once restore exists,
 template size.

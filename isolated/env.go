@@ -43,13 +43,11 @@ func (e *environment) dial(ctx context.Context) error {
 		return err
 	}
 	client := agent.NewClient(conn)
+	// Verify refuses a helper that cannot serve the native journal, so Ensure
+	// fails and the caller's error path revokes the machine.
 	if err := client.Verify(ctx); err != nil {
 		_ = client.Close()
 		return err
-	}
-	if e.host.cfg.RequireJournal && !client.JournalEnabled() {
-		_ = client.Close()
-		return execenv.ErrUnavailable
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -72,12 +70,8 @@ func (e *environment) Attach(ctx context.Context, win execenv.Window) (execenv.T
 	return client.Attach(ctx, win)
 }
 
-// Freeze stops PTY and tree I/O and pauses the microVM. The instance is
-// kept so Thaw does not boot a new machine.
-func (e *environment) Freeze(ctx context.Context) error {
-	return e.control.Legacy(ctx, execenv.ControlFrozen, func() error { return e.freeze(ctx) })
-}
-
+// freeze stops PTY and journal I/O and pauses the microVM. The instance is
+// kept so thaw does not boot a new machine.
 func (e *environment) freeze(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return execenv.Error("freeze", err)
@@ -98,7 +92,7 @@ func (e *environment) freeze(ctx context.Context) error {
 	}
 	// Gate transport before stopping execution. Even an agent failure must not
 	// prevent attempting containment at the host boundary.
-	gateErr := client.Freeze(ctx)
+	gateErr := client.Quiesce(ctx)
 	pauseErr := inst.Pause(ctx)
 	if pauseErr != nil {
 		return execenv.Error("freeze", errors.Join(gateErr, pauseErr))
@@ -109,10 +103,6 @@ func (e *environment) freeze(ctx context.Context) error {
 	// A stopped instance is contained even if its agent link failed. Recovery
 	// still requires a successful agent acknowledgement before opening I/O.
 	return nil
-}
-
-func (e *environment) Thaw(ctx context.Context) error {
-	return e.control.Legacy(ctx, execenv.ControlRunning, func() error { return e.thaw(ctx) })
 }
 
 func (e *environment) thaw(ctx context.Context) error {
@@ -138,7 +128,7 @@ func (e *environment) thaw(ctx context.Context) error {
 	e.mu.Lock()
 	e.paused = false
 	e.mu.Unlock()
-	if err := client.Thaw(ctx); err != nil {
+	if err := client.Reopen(ctx); err != nil {
 		// A failed recovery never leaves a runnable guest behind an apparently
 		// closed gate. Use a separate bounded context if the caller timed out.
 		recoveryCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -163,7 +153,7 @@ func (e *environment) Revoke(ctx context.Context) error {
 }
 
 func (e *environment) revoke() error {
-	return e.control.Legacy(context.Background(), execenv.ControlRevoked, e.stop)
+	return e.control.Revoke(context.Background(), e.stop)
 }
 
 func (e *environment) stop() error {

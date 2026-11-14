@@ -15,16 +15,12 @@ import (
 	"github.com/sudosylabs/execenv/internal/tree"
 )
 
-type writeBarrier interface {
-	Stopped(context.Context, func() error) error
-}
-
 // diskJournal is serialized by the agent server, independently of any RPC
 // connection. Its barrier must contain every guest writer before capture and
 // commit. An uncertain disk mutation poisons the barrier until guest teardown.
 type diskJournal struct {
 	home     string
-	barrier  writeBarrier
+	barrier  WriteBarrier
 	state    *projection.State
 	log      *observations.Log
 	snapshot *guesttree.Snapshot
@@ -32,7 +28,7 @@ type diskJournal struct {
 	own      func(string) error
 }
 
-func newDiskJournal(home string, barrier writeBarrier, own func(string) error) *diskJournal {
+func newDiskJournal(home string, barrier WriteBarrier, own func(string) error) *diskJournal {
 	return &diskJournal{home: home, barrier: barrier, state: projection.New(), own: own}
 }
 func (j *diskJournal) close() { j.snapshot.Close() }
@@ -72,7 +68,7 @@ func (j *diskJournal) initialize(ctx context.Context, request execenv.Projection
 			if len(current.Nodes) != 0 {
 				return execenv.ErrConflict
 			}
-			next, err := tree.Replace(nil, snapshot)
+			next, err := tree.FromTree(snapshot)
 			if err != nil {
 				return err
 			}

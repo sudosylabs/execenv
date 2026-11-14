@@ -1,10 +1,8 @@
 package execenv
 
 import (
-	"context"
 	"encoding/hex"
 	"encoding/json"
-	"io"
 	"strings"
 )
 
@@ -88,16 +86,6 @@ type ProjectionInitialization struct {
 	MutationID      string            `json:"mutation_id"`
 	WorkspaceCursor uint64            `json:"workspace_cursor"`
 	Entries         []ProjectionEntry `json:"entries"`
-}
-
-// ProjectionEnv supports the fenced projection protocol. Capability discovery
-// is explicit; older or unsupported backends must return ErrUnavailable. It is
-// independent of legacy Apply/Watch and does not silently upgrade their guarantees.
-type ProjectionEnv interface {
-	ControlledEnv
-	UploadProjectionContent(context.Context, ProjectionFence, io.Reader) (ContentReference, error)
-	InitializeProjection(context.Context, ProjectionInitialization) (ProjectionReceipt, error)
-	ApplyProjection(context.Context, ProjectionApply) (ProjectionReceipt, error)
 }
 
 func ValidateProjectionFence(fence ProjectionFence) error {

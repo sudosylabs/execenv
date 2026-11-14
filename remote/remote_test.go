@@ -160,11 +160,11 @@ func TestDifferentGrantsDoNotBlockEachOther(t *testing.T) {
 		t.Fatal(err)
 	}
 	errCh := make(chan error, 1)
-	go func() { errCh <- first.ReplaceTree(context.Background(), nil) }()
+	go func() { _, err := first.ControlStatus(context.Background()); errCh <- err }()
 	<-started
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
-	if err := second.Apply(ctx, execenv.Batch{}); err != nil {
+	if _, err := second.ControlStatus(ctx); err != nil {
 		t.Fatalf("second grant blocked behind first: %v", err)
 	}
 	close(release)
@@ -173,7 +173,7 @@ func TestDifferentGrantsDoNotBlockEachOther(t *testing.T) {
 	}
 }
 
-func TestWatchReplaysAcrossRemoteReconnect(t *testing.T) {
+func TestObservationsReplayAcrossRemoteReconnect(t *testing.T) {
 	inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Slots: 1})
 	if err != nil {
 		t.Fatal(err)
@@ -199,11 +199,13 @@ func TestWatchReplaysAcrossRemoteReconnect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstObs, err := firstEnv.Watch(t.Context(), "")
-	if err != nil {
+	fence := execenv.ProjectionFence{ExecutionGrantID: firstEnv.ID(), EnvironmentEpoch: firstEnv.Epoch(), FenceRevision: 1}
+	if _, err := firstEnv.Control(t.Context(), execenv.ControlRequest{Fence: fence, State: execenv.ControlRunning}); err != nil {
 		t.Fatal(err)
 	}
-	cursor := firstObs.Cursor()
+	if _, err := firstEnv.InitializeProjection(t.Context(), execenv.ProjectionInitialization{Fence: fence, MutationID: "init"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := firstClient.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -216,17 +218,21 @@ func TestWatchReplaysAcrossRemoteReconnect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resumed, err := secondEnv.Watch(t.Context(), cursor)
+	page, err := secondEnv.Observe(t.Context(), fence, 0, 128)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = resumed.Close() })
-	event, err := resumed.Next(t.Context())
+	if len(page.Observations) != 1 || page.Observations[0].Path != "offline.txt" || page.Observations[0].Operation != execenv.ObservationCreateFile {
+		t.Fatalf("replayed observations = %+v", page.Observations)
+	}
+	reader, err := secondEnv.OpenObservationContent(t.Context(), fence, *page.Observations[0].Content)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if event.Path != "offline.txt" || event.Cursor == "" {
-		t.Fatalf("replayed event = %+v", event)
+	body, err := io.ReadAll(reader)
+	_ = reader.Close()
+	if err != nil || string(body) != "kept" {
+		t.Fatalf("replayed content = %q %v", body, err)
 	}
 }
 
@@ -244,63 +250,16 @@ func TestDroppedPtyIsHangupNotRevoke(t *testing.T) {
 	if err := term.Close(); err != nil {
 		t.Fatal(err)
 	}
-	// Control and tree must still work on the same grant.
-	if err := env.ReplaceTree(t.Context(), execenv.Tree{{
-		Path:    "still.txt",
-		Kind:    execenv.KindFile,
-		Version: "v1",
-		Data:    []byte("ok"),
-	}}); err != nil {
-		t.Fatalf("ReplaceTree() after PTY close error = %v", err)
+	// Control must still work on the same grant.
+	receipt, err := env.ControlStatus(t.Context())
+	if err != nil || receipt.State != execenv.ControlRunning {
+		t.Fatalf("ControlStatus() after PTY close = %+v %v", receipt, err)
 	}
 	again, err := env.Attach(t.Context(), execenv.Window{})
 	if err != nil {
 		t.Fatalf("Attach() after hangup error = %v", err)
 	}
 	_ = again.Close()
-}
-
-func TestRemoteWatchHarvestsInnerGuestWrite(t *testing.T) {
-	t.Parallel()
-	inner, err := memory.New(memory.Config{
-		Images: []execenv.Image{"default", "alt"},
-		Slots:  2,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	client := serveInner(t, inner)
-	env, err := client.Ensure(t.Context(), execenv.Spec{ID: "grant-1", Image: "default"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	obs, err := env.Watch(t.Context(), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = obs.Close() })
-	if err := inner.WriteGuest(t.Context(), "grant-1", "out.txt", []byte("hi")); err != nil {
-		t.Fatal(err)
-	}
-	ev, err := obs.Next(t.Context())
-	if err != nil {
-		t.Fatalf("Next() error = %v", err)
-	}
-	if ev.Path != "out.txt" {
-		t.Fatalf("event path = %q", ev.Path)
-	}
-	body, err := env.Open(t.Context(), "out.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer body.Close()
-	got, err := io.ReadAll(body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "hi" {
-		t.Fatal("Open() returned unexpected bytes")
-	}
 }
 
 func startLoopback(t *testing.T) execenv.Host {
@@ -411,12 +370,12 @@ type blockingEnv struct {
 	once    *sync.Once
 }
 
-func (e blockingEnv) ReplaceTree(ctx context.Context, tree execenv.Tree) error {
+func (e blockingEnv) ControlStatus(ctx context.Context) (execenv.ControlReceipt, error) {
 	e.once.Do(func() { close(e.started) })
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return execenv.ControlReceipt{}, ctx.Err()
 	case <-e.release:
-		return e.Env.ReplaceTree(ctx, tree)
+		return e.Env.ControlStatus(ctx)
 	}
 }

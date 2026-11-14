@@ -275,7 +275,6 @@ func TestSaveRoundTripAllowAndResources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.RequireJournal = true
 	cfg.Network = "allowlist"
 	cfg.Allow = []string{"203.0.113.8"}
 	cfg.CPUMillis = 1000
@@ -288,7 +287,7 @@ func TestSaveRoundTripAllowAndResources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !again.RequireJournal || again.Token != "secret" || again.CPUMillis != 1000 || again.DiskBytes != 20<<30 {
+	if again.Token != "secret" || again.CPUMillis != 1000 || again.DiskBytes != 20<<30 {
 		t.Fatalf("round-trip = %+v", again)
 	}
 	if len(again.Allow) != 1 || again.Allow[0] != "203.0.113.8" || again.Network != "allowlist" {
@@ -370,24 +369,19 @@ func writeConfig(t *testing.T, body string) string {
 	return path
 }
 
-func TestLoadIsolationClass(t *testing.T) {
+func TestLoadReportsAdapterIsolation(t *testing.T) {
 	t.Parallel()
 	base := `"listen": "127.0.0.1:0", "token": "secret", "security": "insecure_local", "images": [], "slots": 1`
 	cases := []struct {
 		name string
 		body string
 		ok   bool
-		want string
+		want execenv.Isolation
 	}{
-		{"isolated defaults to vm", `"adapter": "isolated"`, true, "vm"},
-		{"explicit vm", `"adapter": "isolated", "isolation": "vm"`, true, "vm"},
-		{"explicit user-kernel", `"adapter": "isolated", "isolation": "USER-KERNEL"`, true, "user-kernel"},
-		{"unknown class", `"adapter": "isolated", "isolation": "container"`, false, ""},
-		{"memory names no class", `"adapter": "memory", "isolation": "vm"`, false, ""},
-		{"user-kernel refuses the journal", `"adapter": "isolated", "isolation": "user-kernel", "require_journal": true`, false, ""},
-		{"vm keeps the journal", `"adapter": "isolated", "require_journal": true`, true, "vm"},
+		{"isolated is vm", `"adapter": "isolated"`, true, execenv.IsolationVM},
+		{"memory is none", `"adapter": "memory"`, true, execenv.IsolationNone},
 		{"disk below minimum", `"adapter": "isolated", "disk_bytes": 1048576`, false, ""},
-		{"disk at minimum", `"adapter": "isolated", "disk_bytes": 67108864`, true, "vm"},
+		{"disk at minimum", `"adapter": "isolated", "disk_bytes": 67108864`, true, execenv.IsolationVM},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -402,10 +396,10 @@ func TestLoadIsolationClass(t *testing.T) {
 	}
 }
 
-func TestAdapterPassesIsolationAndDisk(t *testing.T) {
+func TestAdapterReportsVMIsolation(t *testing.T) {
 	t.Parallel()
 	cfg, err := Load(writeConfig(t, `{"listen": "127.0.0.1:0", "token": "secret", "security": "insecure_local",
-		"adapter": "isolated", "isolation": "user-kernel", "work_dir": "`+t.TempDir()+`", "images": [], "slots": 1, "disk_bytes": 134217728}`))
+		"adapter": "isolated", "work_dir": "`+t.TempDir()+`", "images": [], "slots": 1, "disk_bytes": 134217728}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -417,14 +411,14 @@ func TestAdapterPassesIsolationAndDisk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Isolation != execenv.IsolationUserKernel {
+	if report.Isolation != execenv.IsolationVM {
 		t.Fatalf("Ready().Isolation = %q", report.Isolation)
 	}
-	if !strings.Contains(cfg.redacted(), "isolation=user-kernel") {
+	if !strings.Contains(cfg.redacted(), "isolation=vm") {
 		t.Fatalf("redacted = %q", cfg.redacted())
 	}
 	if err := execenv.RequireIsolated(host); err != nil {
-		t.Fatalf("RequireIsolated(user-kernel) = %v", err)
+		t.Fatalf("RequireIsolated(vm) = %v", err)
 	}
 }
 

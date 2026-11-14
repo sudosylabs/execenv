@@ -13,9 +13,8 @@ import (
 )
 
 var (
-	_ execenv.Host        = (*Host)(nil)
-	_ execenv.Env         = (*environment)(nil)
-	_ execenv.GuestWriter = (*Host)(nil)
+	_ execenv.Host = (*Host)(nil)
+	_ execenv.Env  = (*environment)(nil)
 )
 
 // Image is one catalog entry. Kernel and Rootfs are local paths to the
@@ -28,32 +27,22 @@ type Image struct {
 	Hash   string
 }
 
-// Config constructs an isolated host.
+// Config constructs an isolated host. Each grant runs in a microVM, and the
+// host fails closed without usable virtualization hardware. A guest whose
+// helper cannot serve the native journal is refused.
 //
-// Isolation selects the boundary. IsolationVM (the default) runs each grant
-// in a microVM and fails closed without usable virtualization hardware.
-// IsolationUserKernel runs each grant in a user-space-kernel sandbox; it is
-// an explicit operator choice and never a fallback for a VM host.
-//
-// Device, Runtime, and Supervisor are operator paths to the isolation
-// device and the processes that supervise a grant. For IsolationVM these
-// are the virtualization device, the machine monitor, and its jail
-// supervisor. For IsolationUserKernel only Runtime is used: the sandbox
-// runtime. Empty values use platform defaults. Those defaults live in the
-// probe, not in this type.
+// Device, Runtime, and Supervisor are operator paths to the virtualization
+// device, the machine monitor, and its jail supervisor. Empty values use
+// platform defaults. Those defaults live in the probe, not in this type.
 type Config struct {
-	Isolation execenv.Isolation
-	// RequireJournal refuses guests that cannot prove native journal support.
-	// Leave disabled until the installed guest artifacts have been certified.
-	RequireJournal bool
-	Images         []Image
-	Slots          int
-	WorkDir        string
-	Device         string
-	Runtime        string
-	Supervisor     string
-	CPUMillis      int
-	MemoryBytes    int64
+	Images      []Image
+	Slots       int
+	WorkDir     string
+	Device      string
+	Runtime     string
+	Supervisor  string
+	CPUMillis   int
+	MemoryBytes int64
 	// DiskBytes sizes each grant's sparse writable workspace disk. Zero
 	// uses 2 GiB. The disk holds the projected tree and the shell's scratch
 	// home; it is removed on revoke and on stale-grant cleanup.
@@ -64,7 +53,7 @@ type Config struct {
 	// JailUIDBase is the first of 65536 host uids (and gids) handed to
 	// jailed microVM monitors, one per live grant. Zero uses 2000000000.
 	// Nothing else on the host may use the range: a restarted host kills
-	// every process running under it. Unused by IsolationUserKernel.
+	// every process running under it.
 	JailUIDBase int
 	// Allow is the host's IPv4 dests. Grants cannot add dests. Empty
 	// means this host does not offer NetworkAllowlist.
@@ -107,19 +96,6 @@ func New(cfg Config) (*Host, error) {
 	if _, err := parseAllow(cfg.Allow); err != nil {
 		return nil, execenv.Error("isolated", execenv.ErrInvalid)
 	}
-	switch cfg.Isolation {
-	case "":
-		cfg.Isolation = execenv.IsolationVM
-	case execenv.IsolationVM:
-	case execenv.IsolationUserKernel:
-		// The native journal relies on the guest's own kernel workload
-		// barrier, which this boundary does not certify.
-		if cfg.RequireJournal {
-			return nil, execenv.Error("isolated", execenv.ErrInvalid)
-		}
-	default:
-		return nil, execenv.Error("isolated", execenv.ErrInvalid)
-	}
 	if cfg.DiskBytes != 0 && cfg.DiskBytes < minDiskBytes {
 		return nil, execenv.Error("isolated", execenv.ErrInvalid)
 	}
@@ -133,14 +109,10 @@ func New(cfg Config) (*Host, error) {
 		}
 		images[image.ID] = newImageRecord(image)
 	}
-	probe, launch, attach := func() error { return probePlatform(cfg) }, newProcessLauncher(cfg), attacher(allowAttacher{})
-	if cfg.Isolation == execenv.IsolationUserKernel {
-		sandbox := newSandboxLauncher(cfg)
-		probe, launch, attach = func() error { return probeSandbox(cfg) }, sandbox, sandboxAttacher{}
-	}
+	probe, launch, attach := func() error { return probePlatform(cfg) }, launcher(newProcessLauncher(cfg)), attacher(allowAttacher{})
 	// Stale cleanup runs under the work directory lock, before the grants
 	// directory is cleared, so leftovers of a crashed daemon are released
-	// (sandboxes, mounts, namespaces) rather than merely unlinked.
+	// (jailed monitors, mounts, grant links) rather than merely unlinked.
 	var stale func() error
 	if cleaner, ok := launch.(staleCleaner); ok {
 		stale = cleaner.cleanStale
@@ -165,7 +137,7 @@ func New(cfg Config) (*Host, error) {
 
 // Capabilities reports that this adapter isolates grants.
 func (h *Host) Capabilities() execenv.Capabilities {
-	return execenv.Capabilities{Isolated: true, Freeze: true, OrderedControl: true, JournalProjection: h.cfg.RequireJournal, SemanticObservations: h.cfg.RequireJournal}
+	return execenv.Capabilities{Isolated: true}
 }
 
 // Ready fails closed (Usable=false) when isolation is missing. Images is
@@ -189,7 +161,7 @@ func (h *Host) Ready(ctx context.Context) (execenv.Report, error) {
 	if len(h.cfg.Allow) > 0 {
 		networks = append(networks, execenv.NetworkAllowlist)
 	}
-	return execenv.Report{Usable: usable, Images: verifiedIDs(images), Networks: networks, Slots: free, Release: execenv.Release, Isolation: h.cfg.Isolation}, nil
+	return execenv.Report{Usable: usable, Images: verifiedIDs(images), Networks: networks, Slots: free, Release: execenv.Release, Isolation: execenv.IsolationVM}, nil
 }
 
 // Ensure starts a microVM for a new grant or returns the existing occupancy.
@@ -388,14 +360,4 @@ func (h *Host) retireLocked(env *environment) error {
 	}
 	delete(h.grants, env.id)
 	return nil
-}
-
-func (h *Host) grant(id execenv.ID) (*environment, error) {
-	h.mu.Lock()
-	env, ok := h.grants[id]
-	h.mu.Unlock()
-	if !ok {
-		return nil, execenv.Error("guest", execenv.ErrRevoked)
-	}
-	return env, nil
 }

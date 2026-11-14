@@ -76,23 +76,18 @@ func (s *State) Execute(ctx context.Context, req execenv.ControlRequest, effect 
 	return s.receipt, err
 }
 
-// Legacy serializes old control calls and refuses their use after an epoch has
-// entered the fenced protocol. Revoke remains available as a fail-closed action.
-func (s *State) Legacy(ctx context.Context, state execenv.ControlState, effect func() error) error {
+// Revoke serializes an unfenced, terminal revoke with fenced control. It
+// records the epoch as revoked before destruction, so a failed effect still
+// fences every later request and can only be retried as a revoke.
+func (s *State) Revoke(ctx context.Context, effect func() error) error {
 	if err := s.acquire(ctx); err != nil {
 		return err
 	}
 	defer s.release()
-	if s.receipt.State == execenv.ControlRevoked && state != execenv.ControlRevoked {
-		return execenv.ErrRevoked
-	}
-	if state != execenv.ControlRevoked && s.receipt.Fence.FenceRevision != 0 {
-		return execenv.ErrConflict
-	}
-	if state == execenv.ControlRevoked && s.receipt.State == state && s.receipt.Confirmed {
+	if s.receipt.State == execenv.ControlRevoked && s.receipt.Confirmed {
 		return nil
 	}
-	s.receipt.State, s.receipt.Confirmed = state, false
+	s.receipt.State, s.receipt.Confirmed = execenv.ControlRevoked, false
 	err := effect()
 	s.receipt.Confirmed = err == nil
 	return err

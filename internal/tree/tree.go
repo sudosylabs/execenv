@@ -1,4 +1,4 @@
-// Package tree computes the next projected snapshot for ReplaceTree and Apply.
+// Package tree computes the next physical snapshot for a journal projection.
 //
 // Grant callers never import this package. Memory and the guest agent are
 // the adapters: they commit the snapshot to a map or to Home.
@@ -22,9 +22,9 @@ type Node struct {
 // Snapshot is the current projection keyed by validated relative path.
 type Snapshot map[string]Node
 
-// Replace returns a snapshot that matches tree exactly. Nil Data on a
-// file means keep the body already stored at that Path and Version.
-func Replace(current Snapshot, tree execenv.Tree) (Snapshot, error) {
+// FromTree returns a snapshot that matches tree exactly. Every file carries
+// its body; nil Data on a file is ErrInvalid.
+func FromTree(tree execenv.Tree) (Snapshot, error) {
 	if len(tree) > execenv.MaxTreeEntries {
 		return nil, execenv.ErrTooLarge
 	}
@@ -46,10 +46,10 @@ func Replace(current Snapshot, tree execenv.Tree) (Snapshot, error) {
 			}
 			next[item.Path] = Node{Kind: execenv.KindDirectory}
 		case execenv.KindFile:
-			body, err := resolveBody(current[item.Path], item)
-			if err != nil {
-				return nil, err
+			if item.Data == nil {
+				return nil, execenv.ErrInvalid
 			}
+			body := append([]byte(nil), item.Data...)
 			total += int64(len(body))
 			if int64(len(body)) > execenv.MaxFileBytes || total > execenv.MaxTreeBytes {
 				return nil, execenv.ErrTooLarge
@@ -63,16 +63,6 @@ func Replace(current Snapshot, tree execenv.Tree) (Snapshot, error) {
 		return nil, err
 	}
 	return next, nil
-}
-
-func resolveBody(existing Node, item execenv.Node) ([]byte, error) {
-	if item.Data != nil {
-		return append([]byte(nil), item.Data...), nil
-	}
-	if existing.Kind != execenv.KindFile || existing.Version == "" || existing.Version != item.Version {
-		return nil, execenv.ErrInvalid
-	}
-	return append([]byte(nil), existing.Data...), nil
 }
 
 // Apply returns a new snapshot with batch applied, or an error and the

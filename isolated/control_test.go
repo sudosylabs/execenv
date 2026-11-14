@@ -89,14 +89,21 @@ func TestFailedRevokeRetainsCapacityAndCanRetry(t *testing.T) {
 	}
 }
 
-func TestRequiredJournalRefusesUncontainedGuestHelper(t *testing.T) {
-	launch := &recordingLauncher{}
+func TestEnsureRefusesHelperWithoutJournal(t *testing.T) {
+	launch := &recordingLauncher{noJournal: true}
 	host := testHost(t, func() error { return nil }, launch)
-	host.cfg.RequireJournal = true
-	if !host.Capabilities().JournalProjection || !host.Capabilities().SemanticObservations {
-		t.Fatal("required contract not discoverable")
-	}
 	if _, err := host.Ensure(t.Context(), execenv.Spec{ID: "journal-required", Image: "default"}); !errors.Is(err, execenv.ErrUnavailable) {
-		t.Fatalf("uncontained helper accepted as journal capable: %v", err)
+		t.Fatalf("helper without a journal accepted: %v", err)
+	}
+	inst := launch.instances[0]
+	inst.mu.Lock()
+	stopped := inst.stopped
+	inst.mu.Unlock()
+	if !stopped {
+		t.Fatal("refused guest was left running")
+	}
+	report, err := host.Ready(t.Context())
+	if err != nil || report.Slots != host.slots {
+		t.Fatalf("refused guest kept its slot: %+v %v", report, err)
 	}
 }

@@ -3,8 +3,6 @@
 package daemon_test
 
 import (
-	"bytes"
-	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"io"
@@ -13,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,67 +26,67 @@ const harvestBody = "from-host\n"
 
 // TestCertifyRemoteHarvestsGuestFile is the certification path: a
 // bootstrapped host process, the client is remote.New, Attach is a guest
-// shell, and a guest-created file is harvested. Not an echo PTY.
+// shell, and a guest-created file is harvested as an observation with its
+// captured content. Not an echo PTY.
 func TestCertifyRemoteHarvestsGuestFile(t *testing.T) {
-	client := startCertifyHost(t, false)
+	client := startCertifyHost(t)
 
 	env, err := client.Ensure(t.Context(), execenv.Spec{ID: "grant-1", Image: "default"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = client.Revoke(t.Context(), "grant-1") })
-	if err := env.ReplaceTree(t.Context(), execenv.Tree{{
-		Path:    "hello.txt",
-		Kind:    execenv.KindFile,
-		Version: "v1",
-		Data:    []byte(harvestBody),
-	}}); err != nil {
+	fence := execenv.ProjectionFence{ExecutionGrantID: env.ID(), EnvironmentEpoch: env.Epoch(), FenceRevision: 1}
+	if _, err := env.Control(t.Context(), execenv.ControlRequest{Fence: fence, State: execenv.ControlRunning}); err != nil {
 		t.Fatal(err)
 	}
-	obs, err := env.Watch(t.Context(), "")
+	content, err := env.UploadProjectionContent(t.Context(), fence, strings.NewReader(harvestBody))
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = obs.Close() })
+	if _, err := env.InitializeProjection(t.Context(), execenv.ProjectionInitialization{Fence: fence, MutationID: "init", Entries: []execenv.ProjectionEntry{
+		{EntryID: "hello", Kind: execenv.ProjectionFile, Path: "hello.txt", ContentVersion: "v1", Content: &content},
+	}}); err != nil {
+		t.Fatal(err)
+	}
 	term, err := env.Attach(t.Context(), execenv.Window{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = term.Close() })
+	go func() { _, _ = io.Copy(io.Discard, term) }()
 	if _, err := term.Write([]byte("cat hello.txt > seen.txt\n")); err != nil {
 		t.Fatal(err)
 	}
 
-	deadline, cancel := context.WithTimeout(t.Context(), 15*time.Second)
-	defer cancel()
-	for {
-		ev, err := obs.Next(deadline)
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		page, err := env.Observe(t.Context(), fence, 0, 128)
 		if err != nil {
-			t.Fatalf("Watch did not see guest create: %v", err)
+			t.Fatal(err)
 		}
-		if ev.Path == "seen.txt" && (ev.Op == execenv.OpCreate || ev.Op == execenv.OpReplace) {
+		for i := len(page.Observations) - 1; i >= 0; i-- {
+			event := page.Observations[i]
+			if event.Path != "seen.txt" || event.Content == nil {
+				continue
+			}
+			reader, err := env.OpenObservationContent(t.Context(), fence, *event.Content)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := io.ReadAll(reader)
+			_ = reader.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) == harvestBody {
+				return
+			}
 			break
-		}
-	}
-	for deadline.Err() == nil {
-		body, err := env.Open(t.Context(), "seen.txt")
-		if err != nil {
-			time.Sleep(50 * time.Millisecond)
-			continue
-		}
-		got, readErr := io.ReadAll(body)
-		closeErr := body.Close()
-		if readErr != nil || closeErr != nil {
-			time.Sleep(50 * time.Millisecond)
-			continue
-		}
-		got = bytes.ReplaceAll(got, []byte("\r"), nil)
-		if string(got) == harvestBody {
-			return
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatal("Open did not harvest the guest-written body")
+	t.Fatal("the guest-written body was not harvested")
 }
 
 func freeLoopback(t *testing.T) string {
@@ -140,7 +139,7 @@ func harvestTLS(t *testing.T, certPath string) *tls.Config {
 	return &tls.Config{RootCAs: pool}
 }
 
-func startCertifyHost(t *testing.T, requireJournal bool) *remote.Client {
+func startCertifyHost(t *testing.T) *remote.Client {
 	t.Helper()
 	if os.Getenv("EXECENV_ISOLATION") != "1" {
 		t.Skip("set EXECENV_ISOLATION=1 on a machine with isolation hardware")
@@ -157,16 +156,6 @@ func startCertifyHost(t *testing.T, requireJournal bool) *remote.Client {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// EXECENV_ISOLATION_CLASS selects the boundary under certification:
-	// vm (default) or user-kernel. The journal is certified only for vm.
-	class := os.Getenv("EXECENV_ISOLATION_CLASS")
-	if class == "" {
-		class = string(execenv.IsolationVM)
-	}
-	if requireJournal && class != string(execenv.IsolationVM) {
-		t.Skip("the native journal is certified only for vm isolation")
-	}
-
 	root := t.TempDir()
 	stub := filepath.Join(root, "execenv")
 	build := exec.Command("go", "build", "-o", stub, "github.com/sudosylabs/execenv/cmd/execenv")
@@ -174,15 +163,14 @@ func startCertifyHost(t *testing.T, requireJournal bool) *remote.Client {
 		t.Fatalf("build execenv: %v\n%s", err, out)
 	}
 	opts := ctl.Options{
-		Prefix:    filepath.Join(root, "usr", "local"),
-		Sysconf:   filepath.Join(root, "etc", "execenv"),
-		State:     filepath.Join(root, "var", "lib", "execenv"),
-		Listen:    "127.0.0.1:0",
-		Slots:     1,
-		Execenv:   stub,
-		NoStart:   true,
-		NoFetch:   true,
-		Isolation: class,
+		Prefix:  filepath.Join(root, "usr", "local"),
+		Sysconf: filepath.Join(root, "etc", "execenv"),
+		State:   filepath.Join(root, "var", "lib", "execenv"),
+		Listen:  "127.0.0.1:0",
+		Slots:   1,
+		Execenv: stub,
+		NoStart: true,
+		NoFetch: true,
 	}
 	if err := ctl.Bootstrap(opts, io.Discard); err != nil {
 		t.Fatalf("bootstrap: %v", err)
@@ -194,7 +182,6 @@ func startCertifyHost(t *testing.T, requireJournal bool) *remote.Client {
 	}
 	addr := freeLoopback(t)
 	cfg.Listen = addr
-	cfg.RequireJournal = requireJournal
 	cfg.Images = []daemon.Image{{
 		ID:     "default",
 		Kernel: kernel,
@@ -220,8 +207,8 @@ func startCertifyHost(t *testing.T, requireJournal bool) *remote.Client {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = client.Close() })
-	if report, err := client.Ready(t.Context()); err != nil || string(report.Isolation) != class {
-		t.Fatalf("Ready() isolation = %q, %v; want %q", report.Isolation, err, class)
+	if report, err := client.Ready(t.Context()); err != nil || report.Isolation != execenv.IsolationVM {
+		t.Fatalf("Ready() isolation = %q, %v; want %q", report.Isolation, err, execenv.IsolationVM)
 	}
 
 	return client

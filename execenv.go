@@ -12,7 +12,7 @@ type Image string
 // read-only. GuestWorkspace is the projected tree and the shell's working
 // directory. GuestHome is the shell's $HOME: guest-local scratch for tool
 // caches, virtual environments and dotfiles. It is never projected or
-// watched, and nothing in it is harvested. Both live on the grant's
+// observed, and nothing in it is harvested. Both live on the grant's
 // writable workspace disk, not in guest memory.
 const (
 	GuestWorkspace = "/workspace"
@@ -35,19 +35,15 @@ const (
 )
 
 // Capabilities describes adapter-kind facts. They do not name a hypervisor.
+// Every adapter supports fenced control, journal projection and semantic
+// observations; only isolation differs.
 type Capabilities struct {
-	Isolated       bool
-	Freeze         bool
-	OrderedControl bool
-	// JournalProjection covers fenced Apply and content uploads, not semantic observation.
-	JournalProjection bool
-	// SemanticObservations includes immutable event content and explicit retention acknowledgement.
-	SemanticObservations bool
+	Isolated bool
 }
 
 // Isolation names the class of boundary a host puts between a grant and
 // the machine. It describes a property, not a product. Callers apply their
-// own policy, for example refusing high-stakes grants on a weaker class.
+// own policy, for example refusing IsolationNone in production.
 type Isolation string
 
 const (
@@ -57,11 +53,6 @@ const (
 	// IsolationVM runs each grant in a hardware-virtualized machine with
 	// its own guest kernel.
 	IsolationVM Isolation = "vm"
-	// IsolationUserKernel runs each grant against a user-space kernel that
-	// intercepts its system calls, inside host namespaces and seccomp. It
-	// needs no virtualization hardware and is weaker than IsolationVM: the
-	// boundary is a host process, not a hypervisor.
-	IsolationUserKernel Isolation = "user-kernel"
 )
 
 // Report is a point-in-time readiness snapshot.
@@ -71,9 +62,8 @@ type Report struct {
 	Networks []Network
 	Slots    int
 	Release  string
-	// Isolation is the boundary class this host provides. Empty means an
-	// older host that did not report it.
-	Isolation Isolation `json:",omitempty"`
+	// Isolation is the boundary class this host provides.
+	Isolation Isolation
 }
 
 // Spec asks a host to occupy a grant.
@@ -97,23 +87,30 @@ type Host interface {
 	Revoke(ctx context.Context, id ID) error
 }
 
-// Env is one grant's occupancy.
+// Env is one grant's occupancy for one epoch.
+//
+// Control is the only way to freeze, thaw or revoke under a fence; Revoke
+// is the unfenced, terminal teardown. The projection is a caller-owned
+// journal: upload immutable content, initialize once, then apply
+// consecutive journal mutations. Observe reports what the isolated
+// environment wrote, with its captured content, until the caller
+// acknowledges it. Every projection and observation call names the current
+// fence, and a stale fence performs no I/O.
 type Env interface {
 	ID() ID
+	// Epoch is the opaque identity of this occupancy. It is never reused
+	// after the grant is revoked or reconstructed.
+	Epoch() string
 	Attach(ctx context.Context, win Window) (Terminal, error)
-	// ReplaceTree makes the projection match tree exactly. Nodes whose
-	// Data is nil are kept only when the host already has that Path at
-	// Version; otherwise the call fails and the projection is unchanged.
-	ReplaceTree(ctx context.Context, tree Tree) error
-	// Apply applies an atomic batch of incremental mutations.
-	Apply(ctx context.Context, batch Batch) error
-	// Watch streams guest-originated filesystem events. One observation
-	// may be current. Overflow fails closed with ErrLagged.
-	Watch(ctx context.Context, after Cursor) (Observation, error)
-	// Open reads the current body of a projected file.
-	Open(ctx context.Context, path string) (io.ReadCloser, error)
-	Freeze(ctx context.Context) error
-	Thaw(ctx context.Context) error
+	Control(ctx context.Context, request ControlRequest) (ControlReceipt, error)
+	ControlStatus(ctx context.Context) (ControlReceipt, error)
+	UploadProjectionContent(ctx context.Context, fence ProjectionFence, body io.Reader) (ContentReference, error)
+	InitializeProjection(ctx context.Context, request ProjectionInitialization) (ProjectionReceipt, error)
+	ApplyProjection(ctx context.Context, request ProjectionApply) (ProjectionReceipt, error)
+	Observe(ctx context.Context, fence ProjectionFence, after uint64, limit int) (ObservationPage, error)
+	OpenObservationContent(ctx context.Context, fence ProjectionFence, content ContentReference) (io.ReadCloser, error)
+	ConfirmObservationProjection(ctx context.Context, binding ObservationProjection) error
+	AcknowledgeObservations(ctx context.Context, fence ProjectionFence, through uint64) error
 	Revoke(ctx context.Context) error
 }
 

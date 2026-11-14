@@ -10,8 +10,6 @@ import (
 	"github.com/sudosylabs/execenv/internal/tree"
 )
 
-var _ execenv.ProjectionEnv = (*environment)(nil)
-
 func (e *environment) UploadProjectionContent(ctx context.Context, fence execenv.ProjectionFence, reader io.Reader) (execenv.ContentReference, error) {
 	if reader == nil {
 		return execenv.ContentReference{}, execenv.ErrInvalid
@@ -47,12 +45,11 @@ func (e *environment) InitializeProjection(ctx context.Context, request execenv.
 			if e.term != nil && !e.term.finished() || len(e.files) != 0 {
 				return execenv.ErrConflict
 			}
-			next, err := tree.Replace(nil, snapshot)
+			next, err := tree.FromTree(snapshot)
 			if err != nil {
 				return err
 			}
 			e.files = next
-			e.failWatch(execenv.ErrLagged)
 			return nil
 		})
 		if err == nil && e.semantic == nil {

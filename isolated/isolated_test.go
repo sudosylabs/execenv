@@ -152,7 +152,17 @@ func TestEnsureConflictsOnImageChange(t *testing.T) {
 	}
 }
 
-func TestFreezePausesAndRevokeStops(t *testing.T) {
+// runningFence enters the fenced protocol at revision one.
+func runningFence(t *testing.T, env execenv.Env) execenv.ProjectionFence {
+	t.Helper()
+	fence := execenv.ProjectionFence{ExecutionGrantID: env.ID(), EnvironmentEpoch: env.Epoch(), FenceRevision: 1}
+	if _, err := env.Control(t.Context(), execenv.ControlRequest{Fence: fence, State: execenv.ControlRunning}); err != nil {
+		t.Fatal(err)
+	}
+	return fence
+}
+
+func TestFrozenControlPausesAndRevokeStops(t *testing.T) {
 	t.Parallel()
 	launch := &recordingLauncher{}
 	host := testHost(t, func() error { return nil }, launch)
@@ -160,7 +170,9 @@ func TestFreezePausesAndRevokeStops(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := env.Freeze(t.Context()); err != nil {
+	fence := runningFence(t, env)
+	fence.FenceRevision++
+	if _, err := env.Control(t.Context(), execenv.ControlRequest{Fence: fence, State: execenv.ControlFrozen}); err != nil {
 		t.Fatal(err)
 	}
 	launch.mu.Lock()
@@ -172,10 +184,11 @@ func TestFreezePausesAndRevokeStops(t *testing.T) {
 	if !paused || stopped {
 		t.Fatalf("after freeze paused=%v stopped=%v", paused, stopped)
 	}
-	if err := env.ReplaceTree(t.Context(), nil); !errors.Is(err, execenv.ErrFrozen) {
-		t.Fatalf("ReplaceTree() while frozen error = %v", err)
+	if _, err := env.UploadProjectionContent(t.Context(), fence, strings.NewReader("x")); !errors.Is(err, execenv.ErrFrozen) {
+		t.Fatalf("upload while frozen error = %v", err)
 	}
-	if err := env.Thaw(t.Context()); err != nil {
+	fence.FenceRevision++
+	if _, err := env.Control(t.Context(), execenv.ControlRequest{Fence: fence, State: execenv.ControlRunning}); err != nil {
 		t.Fatal(err)
 	}
 	if err := env.Revoke(t.Context()); err != nil {
@@ -192,20 +205,22 @@ func TestFreezePausesAndRevokeStops(t *testing.T) {
 	}
 }
 
-func TestReplaceTreeWritesWorkspaceMount(t *testing.T) {
+func TestInitializeProjectionWritesWorkspaceMount(t *testing.T) {
 	t.Parallel()
 	host := testHost(t, func() error { return nil }, &recordingLauncher{})
 	env, err := host.Ensure(t.Context(), execenv.Spec{ID: "grant-1", Image: "default"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = env.ReplaceTree(t.Context(), execenv.Tree{{
-		Path:    "src/main.go",
-		Kind:    execenv.KindFile,
-		Version: "v1",
-		Data:    []byte("package main\n"),
-	}})
+	fence := runningFence(t, env)
+	content, err := env.UploadProjectionContent(t.Context(), fence, strings.NewReader("package main\n"))
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.InitializeProjection(t.Context(), execenv.ProjectionInitialization{Fence: fence, MutationID: "init", Entries: []execenv.ProjectionEntry{
+		{EntryID: "src", Kind: execenv.ProjectionDirectory, Path: "src"},
+		{EntryID: "main", Kind: execenv.ProjectionFile, Path: "src/main.go", ContentVersion: "v1", Content: &content},
+	}}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(filepath.Join(host.cfg.WorkDir, "grants", "grant-1", workspaceName, "src", "main.go"))
@@ -224,18 +239,17 @@ func TestConformance(t *testing.T) {
 	})
 }
 
-func TestTouchInPtyBecomesWatch(t *testing.T) {
+func TestTouchInPtyBecomesObservation(t *testing.T) {
 	t.Parallel()
 	host := testHost(t, func() error { return nil }, &recordingLauncher{})
 	env, err := host.Ensure(t.Context(), execenv.Spec{ID: "grant-1", Image: "default"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	obs, err := env.Watch(t.Context(), "")
-	if err != nil {
+	fence := runningFence(t, env)
+	if _, err := env.InitializeProjection(t.Context(), execenv.ProjectionInitialization{Fence: fence, MutationID: "init"}); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = obs.Close() })
 	term, err := env.Attach(t.Context(), execenv.Window{})
 	if err != nil {
 		t.Fatal(err)
@@ -244,22 +258,20 @@ func TestTouchInPtyBecomesWatch(t *testing.T) {
 	if _, err := term.Write([]byte("touch seen.txt\n")); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	for {
-		ev, err := obs.Next(ctx)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		page, err := env.Observe(t.Context(), fence, 0, 128)
 		if err != nil {
-			t.Fatalf("Watch did not see touch: %v", err)
+			t.Fatal(err)
 		}
-		if ev.Op == execenv.OpCreate && ev.Path == "seen.txt" {
-			break
+		for _, event := range page.Observations {
+			if event.Operation == execenv.ObservationCreateFile && event.Path == "seen.txt" {
+				return
+			}
 		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	body, err := env.Open(t.Context(), "seen.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = body.Close()
+	t.Fatal("touch was not observed")
 }
 
 func TestExportedIdentifiersOmitHypervisorNames(t *testing.T) {
@@ -269,7 +281,8 @@ func TestExportedIdentifiersOmitHypervisorNames(t *testing.T) {
 		filepath.Join("isolated.go"),
 		filepath.Join("launch.go"),
 		filepath.Join("env.go"),
-		filepath.Join("tree.go"),
+		filepath.Join("control.go"),
+		filepath.Join("projection.go"),
 		filepath.Join("catalog.go"),
 	}
 	for _, name := range roots {

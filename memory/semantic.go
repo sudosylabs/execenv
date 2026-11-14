@@ -14,8 +14,6 @@ import (
 	"github.com/sudosylabs/execenv/internal/tree"
 )
 
-var _ execenv.SemanticEnv = (*environment)(nil)
-
 func (e *environment) refreshGuestProjection(mutations []execenv.ProjectionMutation) {
 	if e.guestTree == nil {
 		e.guestTree = &guesttree.Snapshot{Nodes: make(map[string]guesttree.Node)}
@@ -66,8 +64,8 @@ func (e *environment) recordGuest(next tree.Snapshot, movedFrom, movedTo string)
 			kind = execenv.ProjectionDirectory
 		}
 		candidate.Nodes[name] = guesttree.Node{Identity: identity, Kind: kind, Data: bytes.Clone(node.Data)}
-		// The strong protocol requires explicit directory identity, unlike legacy
-		// implicit parent entries. Refuse instead of inventing an unobserved parent.
+		// Every directory has an explicit identity. Refuse instead of inventing
+		// an unobserved parent.
 		if parent := path.Dir(name); parent != "." {
 			if entry, ok := next[parent]; !ok || entry.Kind != execenv.KindDirectory {
 				return execenv.ErrConflict

@@ -1,7 +1,6 @@
 package remote
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -26,7 +25,6 @@ type Client struct {
 	mu           sync.Mutex
 	pending      map[uint64]chan frame
 	terms        map[execenv.ID]*remoteTerminal
-	obs          map[execenv.ID]*remoteObservation
 	closed       bool
 }
 
@@ -59,7 +57,6 @@ func New(cfg Config) (*Client, error) {
 		sess:    newSession(conn),
 		pending: make(map[uint64]chan frame),
 		terms:   make(map[execenv.ID]*remoteTerminal),
-		obs:     make(map[execenv.ID]*remoteObservation),
 	}
 	go client.readLoop()
 	if err := client.authenticate(); err != nil {
@@ -114,8 +111,6 @@ func (c *Client) readLoop() {
 			}
 		case kindPty:
 			c.deliverPty(f)
-		case kindWatch:
-			c.deliverWatch(f)
 		}
 	}
 }
@@ -132,10 +127,6 @@ func (c *Client) failAll() {
 		term.hangup(execenv.ErrClosed)
 		delete(c.terms, id)
 	}
-	for id, obs := range c.obs {
-		obs.fail(execenv.ErrConnection)
-		delete(c.obs, id)
-	}
 }
 
 func (c *Client) deliverPty(f frame) {
@@ -150,38 +141,6 @@ func (c *Client) deliverPty(f frame) {
 		return
 	}
 	term.push(f.Extra)
-}
-
-func (c *Client) deliverWatch(f frame) {
-	c.mu.Lock()
-	obs := c.obs[execenv.ID(f.Grant)]
-	c.mu.Unlock()
-	if obs == nil || obs.stream != f.Stream {
-		return
-	}
-	if f.Status != "" {
-		c.finishObservation(execenv.ID(f.Grant), obs, errorFromStatus(f.Status))
-		return
-	}
-	var ev execenv.Event
-	if err := decodeExtra(f.Extra, &ev); err != nil {
-		c.finishObservation(execenv.ID(f.Grant), obs, execenv.ErrUnavailable)
-		return
-	}
-	if err := execenv.ValidateEvent(ev); err != nil {
-		c.finishObservation(execenv.ID(f.Grant), obs, execenv.ErrUnavailable)
-		return
-	}
-	obs.push(ev)
-}
-
-func (c *Client) finishObservation(id execenv.ID, obs *remoteObservation, err error) {
-	c.mu.Lock()
-	if c.obs[id] == obs {
-		delete(c.obs, id)
-	}
-	c.mu.Unlock()
-	obs.fail(err)
 }
 
 func (c *Client) call(ctx context.Context, method, grant string, extra []byte) ([]byte, error) {
@@ -231,8 +190,8 @@ func (c *Client) call(ctx context.Context, method, grant string, extra []byte) (
 	}
 }
 
-// Capabilities is local. A remote host is isolated; the wire does not name
-// how isolation is implemented.
+// Capabilities is what the served host reported at authentication. The wire
+// does not name how isolation is implemented.
 func (c *Client) Capabilities() execenv.Capabilities {
 	return c.capabilities
 }
@@ -315,87 +274,6 @@ func (e *remoteEnv) Attach(ctx context.Context, win execenv.Window) (execenv.Ter
 	return term, nil
 }
 
-func (e *remoteEnv) ReplaceTree(ctx context.Context, tree execenv.Tree) error {
-	extra, err := encodeExtra(replaceArgs{Tree: tree})
-	if err != nil {
-		return execenv.Error("replace", err)
-	}
-	_, err = e.call(ctx, methodReplace, string(e.id), extra)
-	return err
-}
-
-func (e *remoteEnv) Apply(ctx context.Context, batch execenv.Batch) error {
-	extra, err := encodeExtra(applyArgs{Batch: batch})
-	if err != nil {
-		return execenv.Error("apply", err)
-	}
-	_, err = e.call(ctx, methodApply, string(e.id), extra)
-	return err
-}
-
-func (e *remoteEnv) Watch(ctx context.Context, after execenv.Cursor) (execenv.Observation, error) {
-	stream := e.client.stream.Add(1)
-	extra, err := encodeExtra(watchArgs{After: after, Stream: stream})
-	if err != nil {
-		return nil, execenv.Error("watch", err)
-	}
-	obs := newRemoteObservation(e.client, e.id, stream, after)
-	e.client.mu.Lock()
-	if e.client.obs[e.id] != nil {
-		e.client.mu.Unlock()
-		return nil, execenv.Error("watch", execenv.ErrBusy)
-	}
-	e.client.obs[e.id] = obs
-	e.client.mu.Unlock()
-	out, err := e.call(ctx, methodWatch, string(e.id), extra)
-	if err != nil {
-		e.client.mu.Lock()
-		if e.client.obs[e.id] == obs {
-			delete(e.client.obs, e.id)
-		}
-		e.client.mu.Unlock()
-		obs.fail(err)
-		return nil, err
-	}
-	var result watchResult
-	if err := decodeExtra(out, &result); err != nil {
-		_ = obs.Close()
-		return nil, execenv.Error("watch", execenv.ErrUnavailable)
-	}
-	obs.setInitialCursor(result.Cursor, after)
-	return obs, nil
-}
-
-func (e *remoteEnv) Open(ctx context.Context, path string) (io.ReadCloser, error) {
-	extra, err := encodeExtra(openArgs{Path: path})
-	if err != nil {
-		return nil, execenv.Error("open", err)
-	}
-	out, err := e.call(ctx, methodOpen, string(e.id), extra)
-	if err != nil {
-		return nil, err
-	}
-	var body []byte
-	if err := decodeExtra(out, &body); err != nil {
-		return nil, execenv.Error("open", execenv.ErrUnavailable)
-	}
-	return io.NopCloser(bytes.NewReader(body)), nil
-}
-
-func (e *remoteEnv) Freeze(ctx context.Context) error {
-	_, err := e.call(ctx, methodFreeze, string(e.id), nil)
-	e.setTermFrozen(true)
-	return err
-}
-
-func (e *remoteEnv) Thaw(ctx context.Context) error {
-	_, err := e.call(ctx, methodThaw, string(e.id), nil)
-	if err == nil {
-		e.setTermFrozen(false)
-	}
-	return err
-}
-
 func (e *remoteEnv) Revoke(ctx context.Context) error {
 	extra, err := encodeExtra(e.epoch)
 	if err != nil {
@@ -407,16 +285,6 @@ func (e *remoteEnv) Revoke(ctx context.Context) error {
 		e.hangupTerm(execenv.ErrRevoked)
 	}
 	return err
-}
-
-func (c *Client) hangupTerm(id execenv.ID, err error) {
-	c.mu.Lock()
-	term := c.terms[id]
-	delete(c.terms, id)
-	c.mu.Unlock()
-	if term != nil {
-		term.hangup(err)
-	}
 }
 
 func (e *remoteEnv) setTermFrozen(frozen bool) {
@@ -550,130 +418,5 @@ func (t *remoteTerminal) Close() error {
 		delete(t.client.terms, t.id)
 	}
 	t.client.mu.Unlock()
-	return err
-}
-
-type remoteObservation struct {
-	client *Client
-	id     execenv.ID
-	stream uint64
-	events chan execenv.Event
-	errc   chan error
-	once   sync.Once
-	mu     sync.Mutex
-	cursor execenv.Cursor
-	failed error
-}
-
-func newRemoteObservation(client *Client, id execenv.ID, stream uint64, cursor execenv.Cursor) *remoteObservation {
-	return &remoteObservation{
-		client: client,
-		id:     id,
-		stream: stream,
-		events: make(chan execenv.Event, watchBufferRemote),
-		errc:   make(chan error, 1),
-		cursor: cursor,
-	}
-}
-
-func (o *remoteObservation) Cursor() execenv.Cursor {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	return o.cursor
-}
-
-func (o *remoteObservation) setInitialCursor(cursor, after execenv.Cursor) {
-	o.mu.Lock()
-	if o.cursor == after {
-		o.cursor = cursor
-	}
-	o.mu.Unlock()
-}
-
-const watchBufferRemote = 64
-
-func (o *remoteObservation) push(ev execenv.Event) {
-	o.mu.Lock()
-	if o.failed != nil {
-		o.mu.Unlock()
-		return
-	}
-	overflow := false
-	select {
-	case o.events <- ev:
-	default:
-		overflow = true
-	}
-	o.mu.Unlock()
-	if overflow {
-		o.abort(execenv.ErrLagged)
-	}
-}
-
-func (o *remoteObservation) abort(err error) {
-	o.client.finishObservation(o.id, o, err)
-	go func() {
-		extra, encodeErr := encodeExtra(streamArgs{Stream: o.stream})
-		if encodeErr == nil {
-			_, _ = o.client.call(context.Background(), methodUnwatch, string(o.id), extra)
-		}
-	}()
-}
-
-func (o *remoteObservation) fail(err error) {
-	o.once.Do(func() {
-		o.mu.Lock()
-		o.failed = err
-		o.mu.Unlock()
-		o.errc <- err
-		close(o.events)
-	})
-}
-
-func (o *remoteObservation) Next(ctx context.Context) (execenv.Event, error) {
-	o.mu.Lock()
-	failed := o.failed
-	o.mu.Unlock()
-	if failed != nil {
-		return execenv.Event{}, execenv.Error("watch", failed)
-	}
-	select {
-	case <-ctx.Done():
-		return execenv.Event{}, execenv.Error("watch", ctx.Err())
-	case ev, ok := <-o.events:
-		if ok {
-			o.mu.Lock()
-			if o.failed != nil {
-				err := o.failed
-				o.mu.Unlock()
-				return execenv.Event{}, execenv.Error("watch", err)
-			}
-			o.cursor = ev.Cursor
-			o.mu.Unlock()
-			return ev, nil
-		}
-	}
-	// events is closed after fail. Prefer the recorded cause (lag, revoke,
-	// connection) over a generic closed so the caller knows to resync.
-	select {
-	case err := <-o.errc:
-		return execenv.Event{}, execenv.Error("watch", err)
-	default:
-		return execenv.Event{}, execenv.Error("watch", execenv.ErrClosed)
-	}
-}
-
-func (o *remoteObservation) Close() error {
-	o.fail(execenv.ErrClosed)
-	extra, encodeErr := encodeExtra(streamArgs{Stream: o.stream})
-	if encodeErr != nil {
-		return execenv.Error("unwatch", encodeErr)
-	}
-	_, err := o.client.call(context.Background(), methodUnwatch, string(o.id), extra)
-	o.client.mu.Lock()
-	if o.client.obs[o.id] == o {
-		delete(o.client.obs, o.id)
-	}
-	o.client.mu.Unlock()
 	return err
 }

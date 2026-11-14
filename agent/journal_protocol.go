@@ -22,6 +22,8 @@ const (
 	journalChunkBytes         = 64 << 10
 )
 
+// helloResult is the guest's handshake. Journal reports native journal
+// support; a host refuses a guest without it.
 type helloResult struct {
 	Version int
 	Journal bool

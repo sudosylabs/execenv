@@ -6,7 +6,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"regexp"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,19 +20,16 @@ import (
 // This path requires the installed daemon, TLS remote client and a real guest
 // containing the current agent, kernel workload hierarchy and isolation hardware.
 func TestCertifyRemoteJournalPreservesLiveWork(t *testing.T) {
-	client := startCertifyHost(t, true)
-	if !client.Capabilities().Isolated || !client.Capabilities().JournalProjection || !client.Capabilities().SemanticObservations {
-		t.Fatal("native journal contract unavailable")
+	client := startCertifyHost(t)
+	if !client.Capabilities().Isolated {
+		t.Fatal("certified host is not isolated")
 	}
 	env, err := client.Ensure(t.Context(), execenv.Spec{ID: "journal-certify", Image: "default"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = env.Revoke(context.Background()) })
-	journal, ok := env.(execenv.SemanticEnv)
-	if !ok {
-		t.Fatal("advertised native contract missing")
-	}
+	journal := env
 	fence := execenv.ProjectionFence{ExecutionGrantID: env.ID(), EnvironmentEpoch: journal.Epoch(), FenceRevision: 1}
 	if _, err := journal.Control(t.Context(), execenv.ControlRequest{Fence: fence, State: execenv.ControlRunning}); err != nil {
 		t.Fatal(err)
@@ -45,19 +46,14 @@ func TestCertifyRemoteJournalPreservesLiveWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer term.Close()
-	if _, err := term.Write([]byte("kept=survives; printf '%s:%s\\n' \"$$\" \"$kept\" > before\n")); err != nil {
-		t.Fatal(err)
-	}
-	before := waitCertifiedFile(t, env, "before", nil)
+	shell := newCertifiedShell(t, term)
+	before := shell.state(t, "kept=survives")
 	page, err := journal.Observe(t.Context(), fence, 0, 128)
 	if err != nil {
 		t.Fatal(err)
 	}
 	cursor := page.HostCursor
-	if _, err := term.Write([]byte("printf 'guest-first' > guest\n")); err != nil {
-		t.Fatal(err)
-	}
-	waitCertifiedFile(t, env, "guest", []byte("guest-first"))
+	shell.run(t, "printf 'guest-first' > guest")
 	reference, err = journal.UploadProjectionContent(t.Context(), fence, bytes.NewBufferString("saved\n"))
 	if err != nil {
 		t.Fatal(err)
@@ -75,11 +71,8 @@ func TestCertifyRemoteJournalPreservesLiveWork(t *testing.T) {
 	if _, err := journal.ApplyProjection(t.Context(), save); err != nil {
 		t.Fatal(err)
 	}
-	waitCertifiedFile(t, env, "dir/file", []byte("saved\n"))
-	if _, err := term.Write([]byte("printf 'guest-later' > guest\n")); err != nil {
-		t.Fatal(err)
-	}
-	waitCertifiedFile(t, env, "guest", []byte("guest-later"))
+	shell.run(t, `test "$(cat dir/file)" = saved`)
+	shell.run(t, "printf 'guest-later' > guest")
 	reader, err := journal.OpenObservationContent(t.Context(), fence, *guest.Content)
 	if err != nil {
 		t.Fatal(err)
@@ -107,12 +100,9 @@ func TestCertifyRemoteJournalPreservesLiveWork(t *testing.T) {
 	if _, err := journal.ApplyProjection(t.Context(), execenv.ProjectionApply{Fence: fence, MutationID: "guest-outcome", FromWorkspaceCursor: 11, ThroughWorkspaceCursor: 12, ExpectedHostCursor: page.HostCursor, Mutations: []execenv.ProjectionMutation{accepted}}); err != nil {
 		t.Fatal(err)
 	}
-	waitCertifiedFile(t, env, "guest", []byte("guest-later"))
+	shell.run(t, `test "$(cat guest)" = guest-later`)
 	cursor = page.HostCursor
-	if _, err := term.Write([]byte("mv dir moved\n")); err != nil {
-		t.Fatal(err)
-	}
-	waitCertifiedFile(t, env, "moved/file", []byte("saved\n"))
+	shell.run(t, `mv dir moved && test "$(cat moved/file)" = saved`)
 	page, err = journal.Observe(t.Context(), fence, cursor, 128)
 	if err != nil || len(page.Observations) != 1 || page.Observations[0].Operation != execenv.ObservationMove || page.Observations[0].Kind != execenv.ProjectionDirectory || page.Observations[0].Path != "dir" || page.Observations[0].DestinationPath != "moved" {
 		t.Fatalf("directory move not semantic: %+v %v", page, err)
@@ -131,33 +121,72 @@ func TestCertifyRemoteJournalPreservesLiveWork(t *testing.T) {
 	if _, err := journal.Control(t.Context(), execenv.ControlRequest{Fence: recovered, State: execenv.ControlRunning}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := term.Write([]byte("printf '%s:%s\\n' \"$$\" \"$kept\" > after\n")); err != nil {
-		t.Fatalf("same PTY lost: %v", err)
-	}
-	after := waitCertifiedFile(t, env, "after", before)
-	if !bytes.Equal(before, after) || journal.Epoch() != fence.EnvironmentEpoch {
+	after := shell.state(t, "true")
+	if before != after || journal.Epoch() != fence.EnvironmentEpoch {
 		t.Fatal("save/freeze replaced the healthy shell or epoch")
 	}
 }
-func waitCertifiedFile(t *testing.T, env execenv.Env, name string, want []byte) []byte {
+
+// certifiedShell drives the guest shell and reads its PTY output. A command
+// is complete when its marker appears; the marker is split in the typed line
+// so the terminal echo of the command never matches it.
+type certifiedShell struct {
+	term execenv.Terminal
+	mu   sync.Mutex
+	out  bytes.Buffer
+	step int
+}
+
+func newCertifiedShell(t *testing.T, term execenv.Terminal) *certifiedShell {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
-	defer cancel()
-	ticker := time.NewTicker(25 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		reader, err := env.Open(ctx, name)
-		if err == nil {
-			body, readErr := io.ReadAll(reader)
-			_ = reader.Close()
-			if readErr == nil && (want == nil && len(body) > 0 || want != nil && bytes.Equal(body, want)) {
-				return body
+	shell := &certifiedShell{term: term}
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := term.Read(buf)
+			shell.mu.Lock()
+			shell.out.Write(buf[:n])
+			shell.mu.Unlock()
+			if err != nil {
+				return
 			}
 		}
-		select {
-		case <-ctx.Done():
-			t.Fatalf("guest file %s did not reach expected content", name)
-		case <-ticker.C:
-		}
+	}()
+	return shell
+}
+
+// run executes command in the guest shell and waits until it succeeded.
+func (s *certifiedShell) run(t *testing.T, command string) string {
+	t.Helper()
+	s.step++
+	marker := fmt.Sprintf("done-%d.", s.step)
+	if _, err := s.term.Write([]byte(fmt.Sprintf("%s && echo done-\"\"%d.\n", command, s.step))); err != nil {
+		t.Fatalf("same PTY lost: %v", err)
 	}
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		s.mu.Lock()
+		out := s.out.String()
+		s.mu.Unlock()
+		if strings.Contains(out, marker) {
+			return out
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("guest command %q did not succeed", command)
+	return ""
+}
+
+var shellState = regexp.MustCompile(`state=([0-9]+:[a-z]*)`)
+
+// state runs prefix, then prints the shell's PID and $kept. Equal results
+// prove the same shell process and its unexported state survived.
+func (s *certifiedShell) state(t *testing.T, prefix string) string {
+	t.Helper()
+	out := s.run(t, prefix+`; printf 'state=%s:%s\n' "$$" "$kept"`)
+	matches := shellState.FindAllStringSubmatch(out, -1)
+	if len(matches) == 0 {
+		t.Fatal("guest shell state not printed")
+	}
+	return matches[len(matches)-1][1]
 }

@@ -8,7 +8,7 @@ import (
 	"github.com/sudosylabs/execenv"
 )
 
-func TestVerifyRejectsHelperWithOldInitializationLimit(t *testing.T) {
+func TestVerifyRejectsOlderHelper(t *testing.T) {
 	clientConn, helperConn := net.Pipe()
 	client := NewClient(clientConn)
 	t.Cleanup(func() { _ = client.Close(); _ = helperConn.Close() })
@@ -20,7 +20,7 @@ func TestVerifyRejectsHelperWithOldInitializationLimit(t *testing.T) {
 			done <- err
 			return
 		}
-		extra, err := encodeExtra(helloResult{Version: 3, Journal: true})
+		extra, err := encodeExtra(helloResult{Version: protocolVersion - 1, Journal: true})
 		if err == nil {
 			err = helper.Send(frame{Kind: kindResponse, Seq: request.Seq, Extra: extra})
 		}
@@ -31,8 +31,5 @@ func TestVerifyRejectsHelperWithOldInitializationLimit(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatal(err)
-	}
-	if client.JournalEnabled() {
-		t.Fatal("old helper advertised current journal capability")
 	}
 }

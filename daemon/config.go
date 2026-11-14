@@ -23,26 +23,16 @@ const (
 	securityLocal   = "insecure_local"
 	networkNone     = "none"
 	networkAllow    = "allowlist"
-	// Isolation classes for the isolated adapter. vm is the default and
-	// fails closed without virtualization hardware. user-kernel is an
-	// explicit operator choice for hosts without it; it is never chosen
-	// automatically.
-	isolationVM         = string(execenv.IsolationVM)
-	isolationUserKernel = string(execenv.IsolationUserKernel)
-	minDiskBytes        = 64 << 20
+	minDiskBytes    = 64 << 20
 )
 
 // Config is the operator document that turns a machine into a host.
 // Token, file bodies, and PTY octets must never be logged.
 type Config struct {
-	RequireJournal bool   `json:"require_journal,omitempty"`
-	Listen         string `json:"listen"`
-	Token          string `json:"token"`
-	Security       string `json:"security"`
-	Adapter        string `json:"adapter"`
-	// Isolation selects the isolated adapter's boundary: "vm" (default)
-	// or "user-kernel". Memory hosts must leave it empty.
-	Isolation   string `json:"isolation,omitempty"`
+	Listen      string `json:"listen"`
+	Token       string `json:"token"`
+	Security    string `json:"security"`
+	Adapter     string `json:"adapter"`
 	TLSCert     string `json:"tls_cert,omitempty"`
 	TLSKey      string `json:"tls_key,omitempty"`
 	TLSClientCA string `json:"tls_client_ca,omitempty"`
@@ -171,7 +161,6 @@ func (cfg *Config) validate() error {
 	}
 	cfg.Security = strings.ToLower(cfg.Security)
 	cfg.Adapter = strings.ToLower(cfg.Adapter)
-	cfg.Isolation = strings.ToLower(cfg.Isolation)
 	if cfg.Network == "" {
 		cfg.Network = networkNone
 	}
@@ -194,21 +183,10 @@ func (cfg *Config) validate() error {
 	switch cfg.Adapter {
 	case adapterMemory:
 		// Production isolation cannot be the in-memory adapter.
-		if cfg.Security == securityTLS || cfg.Isolation != "" {
+		if cfg.Security == securityTLS {
 			return execenv.Error("config", execenv.ErrInvalid)
 		}
 	case adapterIsolated:
-		switch cfg.Isolation {
-		case "", isolationVM:
-		case isolationUserKernel:
-			// The native journal is certified only against a guest kernel's
-			// own workload barrier.
-			if cfg.RequireJournal {
-				return execenv.Error("config", execenv.ErrInvalid)
-			}
-		default:
-			return execenv.Error("config", execenv.ErrInvalid)
-		}
 		if cfg.JailUIDBase < 0 || cfg.JailUIDBase > 1<<31-1-65536 {
 			return execenv.Error("config", execenv.ErrInvalid)
 		}
@@ -257,16 +235,12 @@ func (cfg *Config) validate() error {
 	return nil
 }
 
-// isolation is the effective boundary class, for logs and the adapter.
-func (cfg Config) isolation() string {
-	switch {
-	case cfg.Adapter == adapterMemory:
-		return string(execenv.IsolationNone)
-	case cfg.Isolation == "":
-		return isolationVM
-	default:
-		return cfg.Isolation
+// isolation is the boundary class the configured adapter provides, for logs.
+func (cfg Config) isolation() execenv.Isolation {
+	if cfg.Adapter == adapterMemory {
+		return execenv.IsolationNone
 	}
+	return execenv.IsolationVM
 }
 
 func (cfg Config) security() remote.Security {

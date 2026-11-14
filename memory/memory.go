@@ -13,7 +13,6 @@ import (
 	"github.com/sudosylabs/execenv/internal/observations"
 	"github.com/sudosylabs/execenv/internal/projection"
 	"github.com/sudosylabs/execenv/internal/tree"
-	"github.com/sudosylabs/execenv/internal/watchlog"
 )
 
 var (
@@ -54,8 +53,6 @@ type environment struct {
 	term            *terminal
 	// files is the current projection. Paths are already-validated.
 	files tree.Snapshot
-	obs   *observation
-	log   *watchlog.Log
 }
 
 type terminal struct {
@@ -85,7 +82,7 @@ func New(cfg Config) (*Host, error) {
 
 // Capabilities reports adapter-kind facts.
 func (h *Host) Capabilities() execenv.Capabilities {
-	return execenv.Capabilities{Isolated: false, Freeze: true, OrderedControl: true, JournalProjection: true, SemanticObservations: true}
+	return execenv.Capabilities{Isolated: false}
 }
 
 // Ready reports configured images and remaining slots.
@@ -142,7 +139,6 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		network:    spec.Network,
 		host:       h,
 		files:      make(tree.Snapshot),
-		log:        watchlog.New(watchlog.DefaultCapacity),
 	}
 	h.grants[spec.ID] = env
 	return env, nil
@@ -208,10 +204,6 @@ func (e *environment) Attach(ctx context.Context, win execenv.Window) (execenv.T
 	return term, nil
 }
 
-func (e *environment) Freeze(ctx context.Context) error {
-	return e.control.Legacy(ctx, execenv.ControlFrozen, func() error { return e.freeze(ctx) })
-}
-
 func (e *environment) freeze(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return execenv.Error("freeze", err)
@@ -225,12 +217,7 @@ func (e *environment) freeze(ctx context.Context) error {
 	if e.term != nil {
 		e.term.setFrozen(true)
 	}
-	e.failWatch(execenv.ErrFrozen)
 	return nil
-}
-
-func (e *environment) Thaw(ctx context.Context) error {
-	return e.control.Legacy(ctx, execenv.ControlRunning, func() error { return e.thaw(ctx) })
 }
 
 func (e *environment) thaw(ctx context.Context) error {
@@ -257,7 +244,7 @@ func (e *environment) Revoke(ctx context.Context) error {
 }
 
 func (e *environment) revoke() error {
-	return e.control.Legacy(context.Background(), execenv.ControlRevoked, e.stop)
+	return e.control.Revoke(context.Background(), e.stop)
 }
 
 func (e *environment) stop() error {
@@ -269,7 +256,6 @@ func (e *environment) stop() error {
 		e.term.kill(execenv.ErrRevoked)
 		e.term = nil
 	}
-	e.failWatch(execenv.ErrRevoked)
 	return nil
 }
 

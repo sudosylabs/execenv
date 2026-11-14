@@ -16,8 +16,6 @@ import (
 	"testing"
 
 	"github.com/sudosylabs/execenv"
-	"github.com/sudosylabs/execenv/internal/tree"
-	"github.com/sudosylabs/execenv/internal/watchlog"
 )
 
 // This exercises the real guest wire and disk engine with quiescent test files.
@@ -39,9 +37,6 @@ func TestNativeJournalWireStreamsContentAndRetainsGuestEvents(t *testing.T) {
 	replay, err := client.InitializeProjection(ctx, initial)
 	if err != nil || receipt != replay {
 		t.Fatalf("initialization replay: %+v %v", replay, err)
-	}
-	if err := client.ReplaceTree(ctx, nil); !errors.Is(err, execenv.ErrConflict) {
-		t.Fatalf("legacy projection bypass: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(home, "guest"), bytes.Repeat([]byte("captured\n"), 20000), 0600); err != nil {
 		t.Fatal(err)
@@ -114,7 +109,7 @@ func journalWireFixture(t *testing.T) (*Client, string) {
 	home := t.TempDir()
 	hostConn, guestConn := net.Pipe()
 	ctx, cancel := context.WithCancel(t.Context())
-	server := &server{home: home, sess: newSession(guestConn), projected: make(tree.Snapshot), log: watchlog.New(watchlog.DefaultCapacity), journal: newDiskJournal(home, &testWriteBarrier{}, nil)}
+	server := &server{home: home, sess: newSession(guestConn), journal: newDiskJournal(home, &testWriteBarrier{}, nil)}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -124,7 +119,7 @@ func journalWireFixture(t *testing.T) (*Client, string) {
 	}()
 	client := NewClient(hostConn)
 	t.Cleanup(func() { cancel(); _ = client.Close(); _ = guestConn.Close(); <-done })
-	if err := client.Verify(ctx); err != nil || !client.JournalEnabled() {
+	if err := client.Verify(ctx); err != nil {
 		t.Fatalf("guest capability handshake: %v", err)
 	}
 	return client, home

@@ -113,20 +113,18 @@ func newAdapter(cfg Config) (execenv.Host, error) {
 			})
 		}
 		return isolated.New(isolated.Config{
-			Isolation:      execenv.Isolation(cfg.isolation()),
-			RequireJournal: cfg.RequireJournal,
-			Images:         images,
-			Slots:          cfg.Slots,
-			WorkDir:        cfg.WorkDir,
-			Device:         cfg.Device,
-			Runtime:        cfg.Runtime,
-			Supervisor:     cfg.Supervisor,
-			CPUMillis:      cfg.CPUMillis,
-			MemoryBytes:    cfg.MemoryBytes,
-			DiskBytes:      cfg.DiskBytes,
-			Mkfs:           cfg.Mkfs,
-			JailUIDBase:    cfg.JailUIDBase,
-			Allow:          append([]string(nil), cfg.Allow...),
+			Images:      images,
+			Slots:       cfg.Slots,
+			WorkDir:     cfg.WorkDir,
+			Device:      cfg.Device,
+			Runtime:     cfg.Runtime,
+			Supervisor:  cfg.Supervisor,
+			CPUMillis:   cfg.CPUMillis,
+			MemoryBytes: cfg.MemoryBytes,
+			DiskBytes:   cfg.DiskBytes,
+			Mkfs:        cfg.Mkfs,
+			JailUIDBase: cfg.JailUIDBase,
+			Allow:       append([]string(nil), cfg.Allow...),
 		})
 	default:
 		return nil, execenv.Error("adapter", execenv.ErrInvalid)

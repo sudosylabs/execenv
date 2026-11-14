@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/subtle"
 	"crypto/tls"
-	"io"
 	"net"
 	"sync"
 	"time"
@@ -16,7 +15,7 @@ import (
 const maxConnectionOperations = 128
 
 // Serve accepts connections on ln and serves inner. Each connection is one
-// client. Closing a PTY or Watch stream does not revoke grants on inner.
+// client. Closing a PTY or a connection does not revoke grants on inner.
 func Serve(ctx context.Context, ln net.Listener, inner execenv.Host, cfg ServerConfig) error {
 	if cfg.Security == SecurityTLS && cfg.TLS != nil {
 		cfg.TLS = cfg.TLS.Clone()
@@ -68,8 +67,6 @@ type serverConn struct {
 	envs        map[execenv.ID]execenv.Env
 	terms       map[execenv.ID]execenv.Terminal
 	termStreams map[execenv.ID]uint64
-	obs         map[execenv.ID]execenv.Observation
-	obsStreams  map[execenv.ID]uint64
 	tails       map[string]chan struct{}
 	inflight    chan struct{}
 }
@@ -89,8 +86,6 @@ func serveConn(parent context.Context, conn net.Conn, inner execenv.Host, cfg Se
 		envs:        make(map[execenv.ID]execenv.Env),
 		terms:       make(map[execenv.ID]execenv.Terminal),
 		termStreams: make(map[execenv.ID]uint64),
-		obs:         make(map[execenv.ID]execenv.Observation),
-		obsStreams:  make(map[execenv.ID]uint64),
 		tails:       make(map[string]chan struct{}),
 		inflight:    make(chan struct{}, maxConnectionOperations),
 	}
@@ -200,20 +195,11 @@ func (sc *serverConn) close() {
 	for _, term := range sc.terms {
 		terms = append(terms, term)
 	}
-	observations := make([]execenv.Observation, 0, len(sc.obs))
-	for _, obs := range sc.obs {
-		observations = append(observations, obs)
-	}
 	sc.terms = make(map[execenv.ID]execenv.Terminal)
 	sc.termStreams = make(map[execenv.ID]uint64)
-	sc.obs = make(map[execenv.ID]execenv.Observation)
-	sc.obsStreams = make(map[execenv.ID]uint64)
 	sc.mu.Unlock()
 	for _, term := range terms {
 		_ = term.Close()
-	}
-	for _, obs := range observations {
-		_ = obs.Close()
 	}
 	_ = sc.sess.Close()
 }
@@ -258,20 +244,6 @@ func (sc *serverConn) handle(f frame) {
 		err = sc.detach(f)
 	case methodResize:
 		err = sc.resize(ctx, f)
-	case methodFreeze:
-		err = sc.freeze(ctx, f)
-	case methodThaw:
-		err = sc.thaw(ctx, f)
-	case methodReplace:
-		err = sc.replace(ctx, f)
-	case methodApply:
-		err = sc.apply(ctx, f)
-	case methodWatch:
-		extra, err = sc.watch(ctx, f)
-	case methodUnwatch:
-		err = sc.unwatch(f)
-	case methodOpen:
-		extra, err = sc.open(ctx, f)
 	default:
 		err = execenv.ErrInvalid
 	}
@@ -337,11 +309,7 @@ func (sc *serverConn) ensure(ctx context.Context, f frame) ([]byte, error) {
 	}
 	sc.envs[args.Spec.ID] = env
 	sc.mu.Unlock()
-	var result ensureResult
-	if controlled, ok := env.(execenv.ControlledEnv); ok {
-		result.Epoch = controlled.Epoch()
-	}
-	return encodeExtra(result)
+	return encodeExtra(ensureResult{Epoch: env.Epoch()})
 }
 
 func (sc *serverConn) env(id execenv.ID) (execenv.Env, error) {
@@ -358,18 +326,12 @@ func (sc *serverConn) revoke(ctx context.Context, f frame) error {
 	id := execenv.ID(f.Grant)
 	sc.mu.Lock()
 	term := sc.terms[id]
-	obs := sc.obs[id]
 	delete(sc.terms, id)
 	delete(sc.termStreams, id)
-	delete(sc.obs, id)
-	delete(sc.obsStreams, id)
 	delete(sc.envs, id)
 	sc.mu.Unlock()
 	if term != nil {
 		_ = term.Close()
-	}
-	if obs != nil {
-		_ = obs.Close()
 	}
 	return sc.inner.Revoke(ctx, id)
 }
@@ -469,142 +431,4 @@ func (sc *serverConn) resize(ctx context.Context, f frame) error {
 		return execenv.ErrClosed
 	}
 	return term.Resize(ctx, args.Window)
-}
-
-func (sc *serverConn) freeze(ctx context.Context, f frame) error {
-	env, err := sc.env(execenv.ID(f.Grant))
-	if err != nil {
-		return err
-	}
-	return env.Freeze(ctx)
-}
-
-func (sc *serverConn) thaw(ctx context.Context, f frame) error {
-	env, err := sc.env(execenv.ID(f.Grant))
-	if err != nil {
-		return err
-	}
-	return env.Thaw(ctx)
-}
-
-func (sc *serverConn) replace(ctx context.Context, f frame) error {
-	var args replaceArgs
-	if err := decodeExtra(f.Extra, &args); err != nil {
-		return execenv.ErrInvalid
-	}
-	env, err := sc.env(execenv.ID(f.Grant))
-	if err != nil {
-		return err
-	}
-	return env.ReplaceTree(ctx, args.Tree)
-}
-
-func (sc *serverConn) apply(ctx context.Context, f frame) error {
-	var args applyArgs
-	if err := decodeExtra(f.Extra, &args); err != nil {
-		return execenv.ErrInvalid
-	}
-	env, err := sc.env(execenv.ID(f.Grant))
-	if err != nil {
-		return err
-	}
-	return env.Apply(ctx, args.Batch)
-}
-
-func (sc *serverConn) watch(ctx context.Context, f frame) ([]byte, error) {
-	var args watchArgs
-	if err := decodeExtra(f.Extra, &args); err != nil || args.Stream == 0 {
-		return nil, execenv.ErrInvalid
-	}
-	id := execenv.ID(f.Grant)
-	env, err := sc.env(id)
-	if err != nil {
-		return nil, err
-	}
-	obs, err := env.Watch(ctx, args.After)
-	if err != nil {
-		return nil, err
-	}
-	sc.mu.Lock()
-	if sc.closed {
-		sc.mu.Unlock()
-		_ = obs.Close()
-		return nil, execenv.ErrConnection
-	}
-	sc.obs[id] = obs
-	sc.obsStreams[id] = args.Stream
-	sc.mu.Unlock()
-	go sc.copyWatch(id, args.Stream, obs)
-	return encodeExtra(watchResult{Cursor: obs.Cursor()})
-}
-
-func (sc *serverConn) copyWatch(id execenv.ID, stream uint64, obs execenv.Observation) {
-	defer func() {
-		_ = obs.Close()
-		sc.mu.Lock()
-		if sc.obs[id] == obs {
-			delete(sc.obs, id)
-			delete(sc.obsStreams, id)
-		}
-		sc.mu.Unlock()
-	}()
-	for {
-		ev, err := obs.Next(sc.ctx)
-		if err != nil {
-			_ = sc.sess.Send(frame{Kind: kindWatch, Grant: string(id), Stream: stream, Status: statusOf(err)})
-			return
-		}
-		extra, err := encodeExtra(ev)
-		if err != nil {
-			return
-		}
-		if err := sc.sess.Send(frame{Kind: kindWatch, Grant: string(id), Stream: stream, Extra: extra}); err != nil {
-			return
-		}
-	}
-}
-
-func (sc *serverConn) unwatch(f frame) error {
-	var args streamArgs
-	if err := decodeExtra(f.Extra, &args); err != nil || args.Stream == 0 {
-		return execenv.ErrInvalid
-	}
-	id := execenv.ID(f.Grant)
-	sc.mu.Lock()
-	obs := sc.obs[id]
-	if sc.obsStreams[id] == args.Stream {
-		delete(sc.obs, id)
-		delete(sc.obsStreams, id)
-	} else {
-		obs = nil
-	}
-	sc.mu.Unlock()
-	if obs != nil {
-		return obs.Close()
-	}
-	return nil
-}
-
-func (sc *serverConn) open(ctx context.Context, f frame) ([]byte, error) {
-	var args openArgs
-	if err := decodeExtra(f.Extra, &args); err != nil {
-		return nil, execenv.ErrInvalid
-	}
-	env, err := sc.env(execenv.ID(f.Grant))
-	if err != nil {
-		return nil, err
-	}
-	body, err := env.Open(ctx, args.Path)
-	if err != nil {
-		return nil, err
-	}
-	defer body.Close()
-	data, err := io.ReadAll(io.LimitReader(body, execenv.MaxFileBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > execenv.MaxFileBytes {
-		return nil, execenv.ErrTooLarge
-	}
-	return encodeExtra(data)
 }

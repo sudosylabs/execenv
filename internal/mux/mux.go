@@ -36,7 +36,6 @@ const (
 	KindRequest Kind = iota + 1
 	KindResponse
 	KindPty
-	KindWatch
 )
 
 // Frame is the only encoded value. Status is a sentinel name.
@@ -217,7 +216,7 @@ func decodeFrame(payload []byte) (Frame, error) {
 }
 
 func validateFrame(f Frame) error {
-	if f.Kind < KindRequest || f.Kind > KindWatch || len(f.Method) > 64 || len(f.Grant) > 64 || len(f.Status) > 64 {
+	if f.Kind < KindRequest || f.Kind > KindPty || len(f.Method) > 64 || len(f.Grant) > 64 || len(f.Status) > 64 {
 		return execenv.ErrInvalid
 	}
 	if !utf8.ValidString(f.Method) || !utf8.ValidString(f.Grant) || !utf8.ValidString(f.Status) {
