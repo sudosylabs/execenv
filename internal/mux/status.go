@@ -20,6 +20,10 @@ func StatusOf(err error) string {
 		return "unknown_image"
 	case errors.Is(err, execenv.ErrCapacity):
 		return "capacity"
+	case errors.Is(err, execenv.ErrDraining):
+		return "draining"
+	case errors.Is(err, execenv.ErrLost):
+		return "lost"
 	case errors.Is(err, execenv.ErrConflict):
 		return "conflict"
 	case errors.Is(err, execenv.ErrUnavailable):
@@ -62,6 +66,10 @@ func ErrorFromStatus(status string) error {
 		return execenv.ErrUnknownImage
 	case "capacity":
 		return execenv.ErrCapacity
+	case "draining":
+		return execenv.ErrDraining
+	case "lost":
+		return execenv.ErrLost
 	case "conflict":
 		return execenv.ErrConflict
 	case "unavailable":

@@ -23,9 +23,64 @@ type stubInstance struct {
 	sock      string
 	scratch   string
 	ln        net.Listener
+	conns     *trackedConns
 	cancel    context.CancelFunc
 	// processes simulates the guest kernel's view of the workload.
 	processes *stubProcesses
+	// exited closes when the simulated machine ends: Stop, or die.
+	exited   chan struct{}
+	exitOnce sync.Once
+}
+
+func (s *stubInstance) Done() <-chan struct{} { return s.exited }
+
+// dropLink breaks the guest link while the simulated machine keeps
+// running, as a guest helper that died would.
+func (s *stubInstance) dropLink() { s.conns.closeAll() }
+
+// trackedConns lets a test sever the links the stub helper accepted.
+type trackedConns struct {
+	net.Listener
+	mu    sync.Mutex
+	conns []net.Conn
+}
+
+func (l *trackedConns) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err == nil {
+		l.mu.Lock()
+		l.conns = append(l.conns, conn)
+		l.mu.Unlock()
+	}
+	return conn, err
+}
+
+func (l *trackedConns) closeAll() {
+	l.mu.Lock()
+	conns := l.conns
+	l.conns = nil
+	l.mu.Unlock()
+	for _, conn := range conns {
+		_ = conn.Close()
+	}
+}
+
+// die ends the simulated machine on its own, as a killed monitor or a
+// crashed guest would: the guest helper and its link go away, then the
+// machine is reaped.
+func (s *stubInstance) die() {
+	s.dropLink()
+	s.mu.Lock()
+	if s.cancel != nil {
+		s.cancel()
+		s.cancel = nil
+	}
+	if s.ln != nil {
+		_ = s.ln.Close()
+		s.ln = nil
+	}
+	s.mu.Unlock()
+	s.exitOnce.Do(func() { close(s.exited) })
 }
 
 func (s *stubInstance) Pause(context.Context) error {
@@ -69,6 +124,7 @@ func (s *stubInstance) Stop(context.Context) error {
 	if s.scratch != "" {
 		_ = os.RemoveAll(s.scratch)
 	}
+	s.exitOnce.Do(func() { close(s.exited) })
 	return nil
 }
 
@@ -93,6 +149,7 @@ type recordingLauncher struct {
 	noJournal bool
 	// noProcesses serves a helper whose kernel has no process events.
 	noProcesses bool
+	byID        map[execenv.ID]*stubInstance
 }
 
 type blockingLauncher struct {
@@ -125,7 +182,18 @@ func (l *recordingLauncher) Start(ctx context.Context, req startRequest) (instan
 	l.starts++
 	l.last = req
 	l.instances = append(l.instances, inst)
+	if l.byID == nil {
+		l.byID = make(map[execenv.ID]*stubInstance)
+	}
+	l.byID[req.ID] = inst
 	return inst, nil
+}
+
+// instance returns the machine last started for id.
+func (l *recordingLauncher) instance(id execenv.ID) *stubInstance {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.byID[id]
 }
 
 // quiescentBarrier serves the stub helper's journal. Unit tests write the
@@ -170,10 +238,11 @@ func startStubAgent(_ context.Context, req startRequest, journal, processLog boo
 	if processLog {
 		cfg.Processes = processes
 	}
+	conns := &trackedConns{Listener: ln}
 	go func() {
-		_ = agent.ListenAndServe(ctx, ln, cfg)
+		_ = agent.ListenAndServe(ctx, conns, cfg)
 	}()
-	return &stubInstance{sock: sock, scratch: scratch, ln: ln, cancel: cancel, processes: processes}, nil
+	return &stubInstance{sock: sock, scratch: scratch, ln: ln, conns: conns, cancel: cancel, processes: processes, exited: make(chan struct{})}, nil
 }
 
 // stubProcesses is the stub helper's process source. Run reports one

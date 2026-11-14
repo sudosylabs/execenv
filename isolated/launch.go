@@ -30,12 +30,16 @@ type startRequest struct {
 
 // instance is one running isolated environment. Pause must not destroy it.
 // Connect is the guest link the host dials after Start; the public Host
-// type does not name the transport.
+// type does not name the transport. Done closes once the machine has
+// exited, whether Stop ended it or it ended on its own (its monitor died,
+// or the guest crashed and the machine reset). Stop still releases the
+// host resources of a machine that already exited.
 type instance interface {
 	Pause(context.Context) error
 	Resume(context.Context) error
 	Stop(context.Context) error
 	Connect(ctx context.Context) (net.Conn, error)
+	Done() <-chan struct{}
 }
 
 type launcher interface {

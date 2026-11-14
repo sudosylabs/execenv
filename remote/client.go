@@ -519,7 +519,7 @@ func (t *remoteTerminal) read(p []byte) (int, uint64, error) {
 	if t.closed {
 		return 0, 0, execenv.Error("read", execenv.ErrClosed)
 	}
-	if errors.Is(t.dead, execenv.ErrSuperseded) || errors.Is(t.dead, execenv.ErrRevoked) {
+	if errors.Is(t.dead, execenv.ErrSuperseded) || errors.Is(t.dead, execenv.ErrRevoked) || errors.Is(t.dead, execenv.ErrLost) {
 		return 0, 0, execenv.Error("read", t.dead)
 	}
 	if len(t.segments) > 0 {

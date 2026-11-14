@@ -54,3 +54,18 @@ func TestConformance(t *testing.T) {
 		return host
 	})
 }
+
+func TestLossConformance(t *testing.T) {
+	execenvtest.RunLoss(t, func(t *testing.T) execenvtest.Lossy {
+		t.Helper()
+		host, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Slots: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return execenvtest.Lossy{Host: host, Lose: func(t *testing.T, id execenv.ID) {
+			if !host.Lose(id) {
+				t.Fatalf("Lose(%s) found no live grant", id)
+			}
+		}}
+	})
+}

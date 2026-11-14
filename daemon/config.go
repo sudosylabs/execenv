@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -61,6 +62,10 @@ type Config struct {
 	// execenv.DefaultTerminalGrace (60s).
 	Grace     time.Duration `json:"-"`
 	GraceText string        `json:"grace,omitempty"`
+	// OperatorSocket is the absolute path of the Unix socket execenvctl
+	// uses to drain this daemon before a restart. Empty serves none, and
+	// execenvctl then cannot tell whether grants are live.
+	OperatorSocket string `json:"operator_socket,omitempty"`
 }
 
 // Image is one catalog entry. Memory only needs ID. Isolated grants use
@@ -226,6 +231,11 @@ func (cfg *Config) validate() error {
 		}
 	}
 	if cfg.Slots <= 0 {
+		return execenv.Error("config", execenv.ErrInvalid)
+	}
+	// The daemon's working directory is not the operator's, so the socket
+	// path must be absolute. A path too long to bind fails at startup.
+	if cfg.OperatorSocket != "" && !filepath.IsAbs(cfg.OperatorSocket) {
 		return execenv.Error("config", execenv.ErrInvalid)
 	}
 	if cfg.GraceText != "" {

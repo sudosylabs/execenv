@@ -8,7 +8,8 @@ import (
 	"github.com/sudosylabs/execenv"
 )
 
-// Status reports isolation device usability, unit state, and installed ids.
+// Status reports isolation device usability, unit state, the daemon's drain
+// state and live grant count, and installed ids.
 // It never prints the token or full hashes.
 func Status(opts Options, stdout io.Writer) error {
 	opts = opts.resolved()
@@ -32,6 +33,7 @@ func Status(opts Options, stdout io.Writer) error {
 		}
 		fmt.Fprintf(stdout, "mkfs=%s\n", mkfs)
 		fmt.Fprintf(stdout, "unit=%s\n", unit)
+		fmt.Fprintln(stdout, daemonSummary(opts))
 		fmt.Fprintf(stdout, "installed=%s\n", joinIDs(installedIDs(opts)))
 		fmt.Fprintf(stdout, "release=%s\n", stampRelease())
 	}

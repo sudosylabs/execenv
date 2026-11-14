@@ -5,7 +5,9 @@
 // RunIgnore covers IgnoreRules given a Guest that acts inside the
 // workspace, and the rest is covered by each adapter's own tests. The
 // process log needs a workload: RunProcesses covers it given a Workload,
-// and TerminalWorkload types commands into the environment's shell.
+// and TerminalWorkload types commands into the environment's shell. A lost
+// environment needs a way to end one without a revoke: RunLoss covers it
+// given a Lossy.
 //
 // Terminal subtests drive the shell with a small POSIX subset every adapter
 // supports: NAME=value, echo with $NAME and quotes, seq, and exit.

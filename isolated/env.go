@@ -29,9 +29,21 @@ type environment struct {
 	frozen   bool
 	paused   bool
 	revoked  bool
+	// lost is set when the machine ended without a revoke. It implies
+	// revoked: the environment is gone, but calls report ErrLost.
+	lost bool
+	// gone closes once the environment has been stopped, by revoke or loss.
+	gone     chan struct{}
+	goneOnce sync.Once
 }
 
 func (e *environment) ID() execenv.ID { return e.id }
+
+func (e *environment) isLost() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.lost
+}
 
 func (e *environment) dial(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
@@ -80,7 +92,68 @@ func (e *environment) startShell(ctx context.Context, win execenv.Window) (termi
 	if err != nil {
 		return nil, err
 	}
-	return client.Attach(ctx, win)
+	pty, err := client.Attach(ctx, win)
+	if err != nil {
+		return nil, err
+	}
+	return guestShell{Shell: pty, env: e}, nil
+}
+
+// guestShell reports why a shell's guest link broke. A broken link means
+// the machine is gone; the watcher decides moments later whether that was a
+// revoke or a loss, and the terminal session ends with that reason.
+type guestShell struct {
+	terminal.Shell
+	env *environment
+}
+
+// lossVerdict bounds how long a broken shell waits for the watcher.
+const lossVerdict = 10 * time.Second
+
+func (s guestShell) Read(p []byte) (int, error) {
+	n, err := s.Shell.Read(p)
+	if err != nil && errors.Is(err, execenv.ErrConnection) {
+		err = s.env.endCause(err)
+	}
+	return n, err
+}
+
+// endCause waits until the environment has been stopped and returns why:
+// ErrLost or ErrRevoked. It returns fallback if no verdict comes in time.
+func (e *environment) endCause(fallback error) error {
+	timer := time.NewTimer(lossVerdict)
+	defer timer.Stop()
+	select {
+	case <-e.gone:
+	case <-timer.C:
+		return fallback
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.lost {
+		return execenv.ErrLost
+	}
+	return execenv.ErrRevoked
+}
+
+// watch waits for the machine or its guest link to end. Either one ending
+// before a revoke is a loss: the guest link cannot be re-established
+// without losing the guest's terminal and process log, so the host does
+// not try.
+func (e *environment) watch() {
+	e.mu.Lock()
+	inst, client := e.inst, e.client
+	e.mu.Unlock()
+	if inst == nil || client == nil {
+		return
+	}
+	select {
+	case <-e.gone:
+		return
+	case <-inst.Done():
+	case <-client.Done():
+	}
+	e.host.lose(e)
 }
 
 // freeze stops PTY and journal I/O and pauses the microVM. The instance is
@@ -91,8 +164,9 @@ func (e *environment) freeze(ctx context.Context) error {
 	}
 	e.mu.Lock()
 	if e.revoked {
+		err := e.guard("freeze")
 		e.mu.Unlock()
-		return execenv.Error("freeze", execenv.ErrRevoked)
+		return err
 	}
 	e.frozen = true
 	client, inst, paused := e.client, e.inst, e.paused
@@ -125,8 +199,9 @@ func (e *environment) thaw(ctx context.Context) error {
 	}
 	e.mu.Lock()
 	if e.revoked {
+		err := e.guard("thaw")
 		e.mu.Unlock()
-		return execenv.Error("thaw", execenv.ErrRevoked)
+		return err
 	}
 	client, inst, frozen := e.client, e.inst, e.frozen
 	e.mu.Unlock()
@@ -168,21 +243,27 @@ func (e *environment) Revoke(ctx context.Context) error {
 }
 
 func (e *environment) revoke() error {
-	return e.control.Revoke(context.Background(), e.stop)
+	return e.control.Revoke(context.Background(), func() error { return e.stop(execenv.ErrRevoked) })
 }
 
-func (e *environment) stop() error {
+// stop ends the environment for cause, ErrRevoked or ErrLost, and releases
+// its machine. A failed release is retried by the next stop.
+func (e *environment) stop(cause error) error {
 	e.mu.Lock()
 	e.revoked = true
+	if errors.Is(cause, execenv.ErrLost) {
+		e.lost = true
+	}
 	e.frozen = false
 	client := e.client
 	e.client = nil
 	inst := e.inst
 	e.mu.Unlock()
+	e.goneOnce.Do(func() { close(e.gone) })
 	if client != nil {
-		client.Hangup(execenv.ErrRevoked)
+		client.Hangup(cause)
 	}
-	e.terminal.End(execenv.ErrRevoked)
+	e.terminal.End(cause)
 	if client != nil {
 		_ = client.Close()
 	}
@@ -212,6 +293,9 @@ func (e *environment) live(op string) (*agent.Client, error) {
 }
 
 func (e *environment) guard(op string) error {
+	if e.lost {
+		return execenv.Error(op, execenv.ErrLost)
+	}
 	if e.revoked {
 		return execenv.Error(op, execenv.ErrRevoked)
 	}

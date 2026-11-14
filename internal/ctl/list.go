@@ -105,6 +105,11 @@ func Remove(opts Options, id string, stdout io.Writer) error {
 		kept = append(kept, img)
 	}
 	if dropped != nil {
+		// Removing a disk restarts the daemon, so refuse before deleting
+		// anything a live grant may still boot from.
+		if err := opts.guardRestart(); err != nil {
+			return wrap("remove", err)
+		}
 		doc.Images = kept
 		if err := daemon.Save(opts.configPath(), doc); err != nil {
 			return err
@@ -125,7 +130,7 @@ func Remove(opts Options, id string, stdout io.Writer) error {
 			}
 		}
 		if err := opts.reloadUnit(); err != nil {
-			return err
+			return wrap("remove", fmt.Errorf("%s is out of host config but the daemon was not restarted: %w", id, err))
 		}
 	}
 	if stdout != nil {

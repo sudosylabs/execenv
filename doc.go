@@ -28,4 +28,15 @@
 // suppress an event already recorded. The host retains events until the
 // caller acknowledges them; a full log counts what it cannot keep and
 // reports the count as one ProcessDropped event, never silently.
+//
+// A grant's environment can end without a revoke, when its machine stops
+// or its guest crashes. The host notices on its own, frees the slot and
+// every resource the grant held, and fails every call on that occupancy
+// with ErrLost. Ensure of the same id fails with ErrLost too, until the
+// caller acknowledges the loss with Revoke; the next Ensure then occupies
+// the id under a new Epoch, so no fence of the lost epoch can apply to it.
+//
+// A host's operator can drain it before a restart. A draining host serves
+// the grants it holds, refuses new ones with ErrDraining, and reports
+// Usable false with ReasonDraining in Ready.
 package execenv

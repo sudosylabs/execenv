@@ -13,6 +13,12 @@ var (
 	ErrUnknownImage = errors.New("execenv: unknown image")
 	// ErrCapacity indicates the host has no remaining grant slots.
 	ErrCapacity = errors.New("execenv: no capacity")
+	// ErrDraining indicates the host's operator is draining it before a
+	// restart: it serves the grants it holds but occupies no new ones.
+	// Ensure of a grant the host already holds still returns it. A caller
+	// placing a new grant chooses another host, as for ErrCapacity, until
+	// Ready reports the host Usable again.
+	ErrDraining = errors.New("execenv: host draining")
 	// ErrConflict indicates a live grant was ensured with a different image or network.
 	ErrConflict = errors.New("execenv: grant conflict")
 	// ErrUnavailable indicates the host cannot occupy grants.
@@ -21,6 +27,15 @@ var (
 	ErrFrozen = errors.New("execenv: grant frozen")
 	// ErrRevoked indicates the grant no longer exists.
 	ErrRevoked = errors.New("execenv: grant revoked")
+	// ErrLost indicates the grant's environment ended without a revoke:
+	// its machine stopped, its guest crashed, or the host lost the guest
+	// link for good. The host has already released the grant's slot and
+	// every resource it held, and every call on that occupancy fails with
+	// ErrLost. Ensure of the same id also fails with ErrLost until the
+	// caller acknowledges the loss with Revoke; after that Ensure occupies
+	// the id afresh under a new Epoch. The caller rebuilds from its own
+	// journal, as after any new occupancy.
+	ErrLost = errors.New("execenv: grant lost")
 	// ErrBusy indicates a terminal is already attached.
 	ErrBusy = errors.New("execenv: terminal busy")
 	// ErrSuperseded indicates another client took over the terminal

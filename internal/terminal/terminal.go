@@ -481,6 +481,11 @@ func (a *attachment) liveLocked() error {
 		return execenv.ErrFrozen
 	}
 	if a.s.done {
+		// A shell that died with its environment reports why; one that
+		// exited, hung up or expired is simply closed.
+		if err := a.s.doneErr; err != nil && err != io.EOF && !errors.Is(err, execenv.ErrClosed) {
+			return err
+		}
 		return execenv.ErrClosed
 	}
 	return nil

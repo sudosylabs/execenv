@@ -31,6 +31,50 @@ func TestConformance(t *testing.T) {
 	})
 }
 
+// Loss crosses the wire: every call on a lost grant, and its terminal
+// stream, fail with ErrLost on the client.
+func TestLossConformance(t *testing.T) {
+	execenvtest.RunLoss(t, func(t *testing.T) execenvtest.Lossy {
+		t.Helper()
+		inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Slots: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return execenvtest.Lossy{Host: serveInner(t, inner), Lose: func(t *testing.T, id execenv.ID) {
+			if !inner.Lose(id) {
+				t.Fatalf("Lose(%s) found no live grant", id)
+			}
+		}}
+	})
+}
+
+func TestDrainingCrossesTheWire(t *testing.T) {
+	inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Slots: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := serveInner(t, inner)
+	held, err := host.Ensure(t.Context(), execenv.Spec{ID: "held", Image: "default"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner.SetDraining(true)
+	report, err := host.Ready(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Usable || report.Reason != execenv.ReasonDraining || report.Grants != 1 {
+		t.Fatalf("Ready() while draining = %+v", report)
+	}
+	if _, err := host.Ensure(t.Context(), execenv.Spec{ID: "new", Image: "default"}); !errors.Is(err, execenv.ErrDraining) {
+		t.Fatalf("Ensure() while draining error = %v, want ErrDraining", err)
+	}
+	again, err := host.Ensure(t.Context(), execenv.Spec{ID: "held", Image: "default"})
+	if err != nil || again.Epoch() != held.Epoch() {
+		t.Fatalf("Ensure() of a held grant while draining = %v", err)
+	}
+}
+
 func TestProductionRefusesCleartext(t *testing.T) {
 	t.Parallel()
 	_, err := remote.New(remote.Config{

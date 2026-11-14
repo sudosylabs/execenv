@@ -16,10 +16,15 @@ const checksumName = "SHA256SUMS"
 var upgradeNames = []string{execenvName, "execenvctl"}
 
 // Upgrade replaces execenvctl and execenv from this process's tagged
-// release, then reinstalls every catalog id already on the host so the
-// baked agent matches. The host token and TLS files are not touched.
+// release, reinstalls every catalog id already on the host so the baked
+// agent matches, then restarts a running daemon once. The host token and
+// TLS files are not touched. It refuses, before replacing anything, to
+// restart a daemon that holds grants unless opts.Force is set.
 func Upgrade(opts Options, stdout io.Writer) error {
 	opts = opts.resolved()
+	if err := opts.guardRestart(); err != nil {
+		return wrap("upgrade", err)
+	}
 	if err := os.MkdirAll(opts.binDir(), 0o755); err != nil {
 		return wrap("upgrade", err)
 	}
@@ -93,15 +98,13 @@ func Upgrade(opts Options, stdout io.Writer) error {
 		}
 		return nil
 	}
-	if len(replaced) > 0 {
-		if err := opts.reloadUnit(); err != nil {
+	for _, id := range ids {
+		if _, err := installImage(opts, id); err != nil {
 			return err
 		}
 	}
-	for _, id := range ids {
-		if err := Install(opts, id, io.Discard); err != nil {
-			return err
-		}
+	if err := opts.reloadUnit(); err != nil {
+		return wrap("upgrade", fmt.Errorf("files replaced but the daemon was not restarted: %w", err))
 	}
 	if stdout != nil {
 		fmt.Fprintf(stdout, "upgraded=%s\n", strings.Join(append(append([]string(nil), replaced...), ids...), ","))

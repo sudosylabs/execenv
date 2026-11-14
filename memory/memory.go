@@ -3,6 +3,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"sync"
 	"time"
@@ -39,6 +40,11 @@ type Host struct {
 	unusable bool
 	grace    time.Duration
 	grants   map[execenv.ID]*environment
+	// lost holds grants whose environment ended without a revoke until the
+	// caller revokes them.
+	lost      map[execenv.ID]*environment
+	lostCount int
+	draining  bool
 }
 
 type environment struct {
@@ -54,6 +60,7 @@ type environment struct {
 	host            *Host
 	frozen          bool
 	revoked         bool
+	lost            bool
 	terminal        *terminal.Manager
 	processes       *processLog
 	// files is the current projection. Paths are already-validated.
@@ -72,12 +79,45 @@ func New(cfg Config) (*Host, error) {
 		unusable: cfg.Unusable,
 		grace:    cfg.TerminalGrace,
 		grants:   make(map[execenv.ID]*environment),
+		lost:     make(map[execenv.ID]*environment),
 	}, nil
 }
 
 // Capabilities reports adapter-kind facts.
 func (h *Host) Capabilities() execenv.Capabilities {
 	return execenv.Capabilities{Isolated: false}
+}
+
+// SetDraining starts or stops draining. A draining host keeps serving the
+// grants it holds, including Ensure of one of them, refuses new grants with
+// execenv.ErrDraining, and reports Usable false with
+// execenv.ReasonDraining. It is operator control, not part of the
+// execenv.Host contract.
+func (h *Host) SetDraining(on bool) {
+	h.mu.Lock()
+	h.draining = on
+	h.mu.Unlock()
+}
+
+// Lose ends a grant's environment as if its machine had died, without a
+// revoke: the slot is freed and every call on the occupancy fails with
+// execenv.ErrLost until the grant is revoked. It reports whether a live
+// grant was lost. It is a test hook; nothing else loses an in-memory grant.
+func (h *Host) Lose(id execenv.ID) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	env := h.grants[id]
+	if env == nil {
+		return false
+	}
+	lost, _ := env.control.Lose(context.Background(), func() error { return env.stop(execenv.ErrLost) })
+	if !lost {
+		return false
+	}
+	h.lostCount++
+	h.lost[id] = env
+	delete(h.grants, id)
+	return true
 }
 
 // Ready reports configured images and remaining slots.
@@ -91,8 +131,18 @@ func (h *Host) Ready(ctx context.Context) (execenv.Report, error) {
 	if free < 0 {
 		free = 0
 	}
+	usable, reason := !h.unusable, ""
+	switch {
+	case !usable:
+		reason = execenv.ReasonUnavailable
+	case h.draining:
+		usable, reason = false, execenv.ReasonDraining
+	}
 	return execenv.Report{
-		Usable:    !h.unusable,
+		Usable:    usable,
+		Reason:    reason,
+		Grants:    len(h.grants),
+		Lost:      h.lostCount,
 		Images:    append([]execenv.Image(nil), h.images...),
 		Networks:  []execenv.Network{execenv.NetworkNone, execenv.NetworkAllowlist},
 		Slots:     free,
@@ -114,11 +164,17 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 	if h.unusable {
 		return nil, execenv.Error("ensure", execenv.ErrUnavailable)
 	}
+	if _, lost := h.lost[spec.ID]; lost {
+		return nil, execenv.Error("ensure", execenv.ErrLost)
+	}
 	if env, ok := h.grants[spec.ID]; ok {
 		if env.image != spec.Image || env.network != spec.Network {
 			return nil, execenv.Error("ensure", execenv.ErrConflict)
 		}
 		return env, nil
+	}
+	if h.draining {
+		return nil, execenv.Error("ensure", execenv.ErrDraining)
 	}
 	if !h.hasImage(spec.Image) {
 		return nil, execenv.Error("ensure", execenv.ErrUnknownImage)
@@ -155,6 +211,7 @@ func (h *Host) Revoke(ctx context.Context, id execenv.ID) error {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	delete(h.lost, id)
 	env := h.grants[id]
 	if env == nil {
 		return nil
@@ -172,6 +229,9 @@ func (h *Host) revokeExact(ctx context.Context, env *environment) error {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.lost[env.id] == env {
+		delete(h.lost, env.id)
+	}
 	if h.grants[env.id] != env {
 		return nil
 	}
@@ -208,7 +268,7 @@ func (e *environment) freeze(ctx context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.revoked {
-		return execenv.Error("freeze", execenv.ErrRevoked)
+		return e.guard("freeze")
 	}
 	e.frozen = true
 	e.terminal.Freeze()
@@ -222,7 +282,7 @@ func (e *environment) thaw(ctx context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.revoked {
-		return execenv.Error("thaw", execenv.ErrRevoked)
+		return e.guard("thaw")
 	}
 	e.frozen = false
 	e.terminal.Thaw()
@@ -237,14 +297,16 @@ func (e *environment) Revoke(ctx context.Context) error {
 }
 
 func (e *environment) revoke() error {
-	return e.control.Revoke(context.Background(), e.stop)
+	return e.control.Revoke(context.Background(), func() error { return e.stop(execenv.ErrRevoked) })
 }
 
-func (e *environment) stop() error {
+// stop ends the environment for cause, ErrRevoked or ErrLost.
+func (e *environment) stop(cause error) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.revoked = true
+	e.lost = errors.Is(cause, execenv.ErrLost) || e.lost
 	e.frozen = false
-	e.terminal.End(execenv.ErrRevoked)
+	e.terminal.End(cause)
 	return nil
 }

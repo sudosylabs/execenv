@@ -58,14 +58,37 @@ const (
 
 // Report is a point-in-time readiness snapshot.
 type Report struct {
-	Usable   bool
+	// Usable is whether the host occupies new grants now. A host that is
+	// not usable may still serve the grants it holds; Reason says why.
+	Usable bool
+	// Reason is a short operator-facing explanation when Usable is false,
+	// such as ReasonDraining. It is empty when Usable is true.
+	Reason   string
 	Images   []Image
 	Networks []Network
-	Slots    int
-	Release  string
+	// Slots is how many more grants the host has room for. A grant whose
+	// environment was lost no longer holds a slot.
+	Slots int
+	// Grants is how many grants the host holds now, including those still
+	// starting. Lost grants are not counted.
+	Grants int
+	// Lost is how many grants this host process has lost since it started:
+	// environments that ended without a revoke.
+	Lost    int
+	Release string
 	// Isolation is the boundary class this host provides.
 	Isolation Isolation
 }
+
+// Report reasons. Adapters may report other text; these are stable.
+const (
+	// ReasonDraining means the operator is draining the host: it serves
+	// the grants it holds and refuses new ones with ErrDraining.
+	ReasonDraining = "draining"
+	// ReasonUnavailable means the host cannot occupy grants at all, for
+	// example because its isolation is missing.
+	ReasonUnavailable = "unavailable"
+)
 
 // Spec asks a host to occupy a grant.
 type Spec struct {
@@ -81,6 +104,11 @@ type Window struct {
 }
 
 // Host occupies grants on exactly one machine.
+//
+// A grant's environment can end without a revoke: its machine stops or its
+// guest crashes. The host notices on its own, releases the grant's slot and
+// resources, and fails every later call on that occupancy, and Ensure of the
+// same id, with ErrLost until the caller calls Revoke for it.
 type Host interface {
 	Capabilities() Capabilities
 	Ready(ctx context.Context) (Report, error)
@@ -89,6 +117,10 @@ type Host interface {
 }
 
 // Env is one grant's occupancy for one epoch.
+//
+// Once the environment is lost (see ErrLost), every method except Revoke
+// fails with ErrLost, and so do the Read, Write and Resize of its terminal
+// attachments. Revoke acknowledges the loss and returns nil.
 //
 // Control is the only way to freeze, thaw or revoke under a fence; Revoke
 // is the unfenced, terminal teardown. The projection is a caller-owned

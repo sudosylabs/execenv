@@ -61,6 +61,12 @@ type Options struct {
 	ReleaseURL string
 	// Reload, if set, replaces the systemd reload after catalog changes.
 	Reload func() error
+	// Force restarts the daemon even while it holds grants, destroying
+	// them. Without it install, remove and upgrade refuse to restart a
+	// daemon that holds grants.
+	Force bool
+	// UnitActive, if set, replaces asking systemd whether the unit runs.
+	UnitActive func() bool
 }
 
 // Defaults returns the system-wide install layout.
@@ -345,6 +351,7 @@ func writeHostConfig(opts Options, mkfs string) error {
 	doc.Runtime = opts.runtimePath()
 	doc.Supervisor = opts.supervisorPath()
 	doc.Slots = opts.Slots
+	doc.OperatorSocket = opts.operatorSocket()
 	if doc.Adapter == "" {
 		doc.Adapter = adapterIsolated
 	}

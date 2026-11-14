@@ -76,7 +76,12 @@ type Host struct {
 	attach  attacher
 	grants  map[execenv.ID]*environment
 	pending map[execenv.ID]*ensureCall
-	lock    *os.File
+	// lost holds each grant whose environment ended without a revoke until
+	// the caller revokes it, so Ensure cannot silently start it afresh.
+	lost      map[execenv.ID]*environment
+	lostCount int
+	draining  bool
+	lock      *os.File
 }
 
 type ensureCall struct {
@@ -135,6 +140,7 @@ func New(cfg Config) (*Host, error) {
 		attach:  attach,
 		grants:  make(map[execenv.ID]*environment),
 		pending: make(map[execenv.ID]*ensureCall),
+		lost:    make(map[execenv.ID]*environment),
 		lock:    lock,
 	}
 	return h, nil
@@ -145,18 +151,44 @@ func (h *Host) Capabilities() execenv.Capabilities {
 	return execenv.Capabilities{Isolated: true}
 }
 
-// Ready fails closed (Usable=false) when isolation is missing. Images is
-// only the ids whose kernel and rootfs are on disk and whose Hash matches.
-// One bad file does not hide the rest of the catalog.
+// SetDraining starts or stops draining. A draining host keeps serving the
+// grants it holds, including Ensure of one of them, refuses new grants with
+// execenv.ErrDraining, and reports Usable false with
+// execenv.ReasonDraining. It is operator control for the daemon, not part
+// of the execenv.Host contract.
+func (h *Host) SetDraining(on bool) {
+	h.mu.Lock()
+	h.draining = on
+	h.mu.Unlock()
+}
+
+// Ready fails closed (Usable=false) when isolation is missing or the host
+// is draining. Images is only the ids whose kernel and rootfs are on disk
+// and whose Hash matches. One bad file does not hide the rest of the
+// catalog.
 func (h *Host) Ready(ctx context.Context) (execenv.Report, error) {
 	if err := ctx.Err(); err != nil {
 		return execenv.Report{}, execenv.Error("ready", err)
 	}
 	usable := h.probe() == nil
+	reason := ""
+	if !usable {
+		reason = execenv.ReasonUnavailable
+	}
 	h.mu.Lock()
 	images := h.snapshotImages()
 	free := h.slots - len(h.grants) - len(h.pending)
+	held := len(h.pending)
+	for _, env := range h.grants {
+		if !env.isLost() {
+			held++
+		}
+	}
+	lost, draining := h.lostCount, h.draining
 	h.mu.Unlock()
+	if usable && draining {
+		usable, reason = false, execenv.ReasonDraining
+	}
 	if free < 0 {
 		free = 0
 	}
@@ -166,7 +198,7 @@ func (h *Host) Ready(ctx context.Context) (execenv.Report, error) {
 	if len(h.cfg.Allow) > 0 {
 		networks = append(networks, execenv.NetworkAllowlist)
 	}
-	return execenv.Report{Usable: usable, Images: verifiedIDs(images), Networks: networks, Slots: free, Release: execenv.Release, Isolation: execenv.IsolationVM}, nil
+	return execenv.Report{Usable: usable, Reason: reason, Images: verifiedIDs(images), Networks: networks, Slots: free, Grants: held, Lost: lost, Release: execenv.Release, Isolation: execenv.IsolationVM}, nil
 }
 
 // Ensure starts a microVM for a new grant or returns the existing occupancy.
@@ -181,21 +213,15 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		return nil, execenv.Error("ensure", execenv.ErrUnavailable)
 	}
 	h.mu.Lock()
-	if env, exists := h.grants[spec.ID]; exists {
-		conflict := env.image.ID != spec.Image || env.network != spec.Network
+	if env, call, err := h.occupiedLocked(spec); env != nil || call != nil || err != nil {
 		h.mu.Unlock()
-		if conflict {
-			return nil, execenv.Error("ensure", execenv.ErrConflict)
+		if call != nil {
+			return waitEnsure(ctx, call)
+		}
+		if err != nil {
+			return nil, execenv.Error("ensure", err)
 		}
 		return env, nil
-	}
-	if call, exists := h.pending[spec.ID]; exists {
-		if call.spec.Image != spec.Image || call.spec.Network != spec.Network {
-			h.mu.Unlock()
-			return nil, execenv.Error("ensure", execenv.ErrConflict)
-		}
-		h.mu.Unlock()
-		return waitEnsure(ctx, call)
 	}
 	record, ok := h.images[spec.Image]
 	h.mu.Unlock()
@@ -211,21 +237,15 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 	h.mu.Lock()
 	// Catalog verification happens without Host.mu. Recheck occupancy before
 	// reserving because another caller may have completed in the meantime.
-	if env, exists := h.grants[spec.ID]; exists {
-		conflict := env.image.ID != spec.Image || env.network != spec.Network
+	if env, call, err := h.occupiedLocked(spec); env != nil || call != nil || err != nil {
 		h.mu.Unlock()
-		if conflict {
-			return nil, execenv.Error("ensure", execenv.ErrConflict)
+		if call != nil {
+			return waitEnsure(ctx, call)
+		}
+		if err != nil {
+			return nil, execenv.Error("ensure", err)
 		}
 		return env, nil
-	}
-	if call, exists := h.pending[spec.ID]; exists {
-		if call.spec.Image != spec.Image || call.spec.Network != spec.Network {
-			h.mu.Unlock()
-			return nil, execenv.Error("ensure", execenv.ErrConflict)
-		}
-		h.mu.Unlock()
-		return waitEnsure(ctx, call)
 	}
 	if spec.Network == execenv.NetworkAllowlist && len(h.cfg.Allow) == 0 {
 		h.mu.Unlock()
@@ -273,6 +293,7 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		return h.completeEnsure(call, nil, execenv.Error("ensure", err), treeDir)
 	}
 	env := &environment{
+		gone:    make(chan struct{}),
 		control: control.New(spec.ID),
 		id:      spec.ID,
 		image:   image,
@@ -287,6 +308,31 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		return h.completeEnsure(call, nil, execenv.Error("ensure", err), treeDir)
 	}
 	return h.completeEnsure(call, env, nil, treeDir)
+}
+
+// occupiedLocked resolves an Ensure that needs no new machine: the grant is
+// held (env), starting (call), lost, conflicting, or refused because the
+// host is draining (err). All nil means the caller may start one.
+func (h *Host) occupiedLocked(spec execenv.Spec) (*environment, *ensureCall, error) {
+	if _, lost := h.lost[spec.ID]; lost {
+		return nil, nil, execenv.ErrLost
+	}
+	if env, exists := h.grants[spec.ID]; exists {
+		if env.image.ID != spec.Image || env.network != spec.Network {
+			return nil, nil, execenv.ErrConflict
+		}
+		return env, nil, nil
+	}
+	if call, exists := h.pending[spec.ID]; exists {
+		if call.spec.Image != spec.Image || call.spec.Network != spec.Network {
+			return nil, nil, execenv.ErrConflict
+		}
+		return nil, call, nil
+	}
+	if h.draining {
+		return nil, nil, execenv.ErrDraining
+	}
+	return nil, nil, nil
 }
 
 func waitEnsure(ctx context.Context, call *ensureCall) (execenv.Env, error) {
@@ -311,8 +357,10 @@ func (h *Host) completeEnsure(call *ensureCall, env *environment, err error, tre
 	h.mu.Unlock()
 	if err != nil {
 		_ = os.RemoveAll(filepath.Dir(treeDir))
+		return nil, err
 	}
-	return env, err
+	go env.watch()
+	return env, nil
 }
 
 // Revoke stops the microVM and frees the slot.
@@ -336,6 +384,8 @@ func (h *Host) Revoke(ctx context.Context, id execenv.ID) error {
 		}
 	}
 	defer h.mu.Unlock()
+	// Revoke acknowledges a loss; the id can then be ensured afresh.
+	delete(h.lost, id)
 	env := h.grants[id]
 	if env == nil {
 		return nil
@@ -349,10 +399,38 @@ func (h *Host) revokeExact(ctx context.Context, env *environment) error {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.lost[env.id] == env {
+		delete(h.lost, env.id)
+	}
 	if h.grants[env.id] != env {
 		return nil
 	}
 	return h.retireLocked(env)
+}
+
+// lose retires env because its machine ended without a revoke. It frees the
+// slot and every host resource the grant held, as a revoke would, and keeps
+// the id lost until the caller revokes it. If release fails the slot stays
+// held, the grant stays lost, and the caller's Revoke retries the release.
+func (h *Host) lose(env *environment) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.grants[env.id] != env {
+		return
+	}
+	lost, err := env.control.Lose(context.Background(), func() error { return env.stop(execenv.ErrLost) })
+	if !lost {
+		return
+	}
+	h.lostCount++
+	h.lost[env.id] = env
+	if err != nil {
+		return
+	}
+	if err := os.RemoveAll(filepath.Join(h.cfg.WorkDir, "grants", string(env.id))); err != nil {
+		return
+	}
+	delete(h.grants, env.id)
 }
 
 // Keep the slot and identity reserved until destruction is acknowledged. This

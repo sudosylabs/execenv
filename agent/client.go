@@ -24,6 +24,8 @@ type Client struct {
 	term    *PTY
 	closed  bool
 	frozen  bool
+	// done closes once the guest link has failed or been closed.
+	done chan struct{}
 	// processes is the guest's process log, retained on the host until
 	// the caller acknowledges it.
 	processes *processes.Log
@@ -35,6 +37,7 @@ func NewClient(conn net.Conn) *Client {
 		sess:      newSession(conn),
 		pending:   make(map[uint64]chan frame),
 		processes: processes.New(),
+		done:      make(chan struct{}),
 	}
 	go c.readLoop()
 	return c
@@ -54,6 +57,11 @@ func (c *Client) Verify(ctx context.Context) error {
 	}
 	return nil
 }
+
+// Done is closed once the guest link is gone, whether the guest end failed
+// or Close hung it up. The link cannot be re-established: a new link would
+// be a new helper session without this one's terminal or process log.
+func (c *Client) Done() <-chan struct{} { return c.done }
 
 // Close hangs up the agent connection. The machine is not torn down.
 func (c *Client) Close() error {
@@ -84,6 +92,7 @@ func (c *Client) readLoop() {
 		f, err := c.sess.Recv()
 		if err != nil {
 			c.failAll()
+			close(c.done)
 			return
 		}
 		switch f.Kind {

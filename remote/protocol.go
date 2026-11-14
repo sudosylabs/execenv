@@ -61,7 +61,7 @@ var (
 // protocolVersion is the wire revision shared by New and Serve. Both refuse
 // a peer on any other revision. Bump it whenever a method, its arguments or
 // its meaning changes.
-const protocolVersion = 8
+const protocolVersion = 9
 
 type authResult struct {
 	Protocol     int

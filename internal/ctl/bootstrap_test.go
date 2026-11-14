@@ -271,6 +271,8 @@ func testOpts(t *testing.T, root string) Options {
 		NoStart:  true,
 		NoFetch:  true,
 		Insecure: true,
+		// No test restarts a real unit; never ask this machine's systemd.
+		UnitActive: func() bool { return false },
 	}
 }
 

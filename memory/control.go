@@ -20,7 +20,7 @@ func (e *environment) Control(ctx context.Context, request execenv.ControlReques
 		case execenv.ControlRunning:
 			return e.thaw(ctx)
 		case execenv.ControlRevoked:
-			return e.stop()
+			return e.stop(execenv.ErrRevoked)
 		default:
 			return execenv.ErrInvalid
 		}

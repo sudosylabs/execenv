@@ -45,13 +45,27 @@ func TestContainmentRequiresPauseAndRecoveryAcknowledgements(t *testing.T) {
 	inst.mu.Lock()
 	inst.resumeErr = nil
 	inst.mu.Unlock()
+	// A closed guest link is also a lost environment. Either the thaw sees
+	// the failed recovery first and pauses again, or the watcher already
+	// stopped the machine; neither leaves a runnable guest behind.
 	_ = e.client.Close()
 	receipt, err = e.Control(t.Context(), req)
 	inst.mu.Lock()
-	paused := inst.paused
+	paused, stopped := inst.paused, inst.stopped
 	inst.mu.Unlock()
-	if err == nil || receipt.Confirmed || !paused {
+	if errors.Is(err, execenv.ErrLost) {
+		if !stopped {
+			t.Fatal("lost machine was not stopped")
+		}
+	} else if err == nil || receipt.Confirmed || !paused {
 		t.Fatalf("failed agent recovery escaped containment: %+v %v paused=%v", receipt, err, paused)
+	}
+	waitLost(t, e)
+	inst.mu.Lock()
+	stopped = inst.stopped
+	inst.mu.Unlock()
+	if !stopped {
+		t.Fatal("lost machine was not stopped")
 	}
 }
 

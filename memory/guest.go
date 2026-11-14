@@ -164,6 +164,9 @@ func (e *environment) commitGuest(plan func() (execenv.Mutation, error), movedFr
 }
 
 func (e *environment) guard(op string) error {
+	if e.lost {
+		return execenv.Error(op, execenv.ErrLost)
+	}
 	if e.revoked {
 		return execenv.Error(op, execenv.ErrRevoked)
 	}
