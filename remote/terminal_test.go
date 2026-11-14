@@ -110,67 +110,6 @@ func TestLostConnectionThenResumeContinuesExactly(t *testing.T) {
 	rest.WaitFor("across-x")
 }
 
-func TestSlowRemoteReaderLagsThenResumes(t *testing.T) {
-	t.Parallel()
-	inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Slots: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	dial := serveDialer(t, inner)
-	spec := execenv.Spec{ID: "grant-1", Image: "default"}
-	env, err := dial().Ensure(t.Context(), spec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	term, err := env.Attach(t.Context(), execenv.AttachRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = term.Close() })
-	// Produce more than the client may buffer before reading any of it.
-	// Each burst fits the host's history, so the host never skips it; the
-	// client sees every byte and must overflow.
-	lagged := false
-	for range 200 {
-		if _, err := term.Write([]byte("seq 1 40000\n")); err != nil {
-			if !errors.Is(err, execenv.ErrLagged) {
-				t.Fatalf("Write() error = %v", err)
-			}
-			lagged = true
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if !lagged {
-		t.Fatal("client buffered without bound")
-	}
-	// The overfull client detaches itself; another connection sees the
-	// session free once it has.
-	probeEnv, err := dial().Ensure(t.Context(), spec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	probe := attachWhenDetached(t, probeEnv, execenv.AttachRequest{Resume: &execenv.TerminalPosition{Terminal: term.ID()}})
-	_ = probe.Close()
-	read, err := io.Copy(io.Discard, term)
-	if !errors.Is(err, execenv.ErrLagged) {
-		t.Fatalf("Read of an overfull client = %v after %d bytes, want ErrLagged", err, read)
-	}
-	// Offset may jump past Start+read: the host skips output a slow reader lost.
-	if read > 1<<20 || term.Offset() < term.Start()+uint64(read) {
-		t.Fatalf("drained %d bytes, Offset %d", read, term.Offset())
-	}
-	resumed := attachWhenDetached(t, env, execenv.AttachRequest{Resume: &execenv.TerminalPosition{Terminal: term.ID(), Offset: term.Offset()}})
-	if resumed.ID() != term.ID() || resumed.Start() < term.Offset() {
-		t.Fatalf("resume ID=%q Start=%d after Offset %d", resumed.ID(), resumed.Start(), term.Offset())
-	}
-	out := execenvtest.Watch(t, resumed)
-	if _, err := resumed.Write([]byte("echo resumed\"\"ok\n")); err != nil {
-		t.Fatal(err)
-	}
-	out.WaitFor("resumedok")
-}
-
 func TestRemoteHangupEndsSession(t *testing.T) {
 	t.Parallel()
 	host := startLoopback(t)

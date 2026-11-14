@@ -36,6 +36,12 @@ const (
 	KindRequest Kind = iota + 1
 	KindResponse
 	KindPty
+	// KindCredit returns flow-control credit for one PTY stream. Seq is the
+	// number of bytes granted and must be positive; Grant and Stream name
+	// the stream; Method, Status and Extra are empty. A receiver grants
+	// only bytes its caller has consumed, so a sender's available credit
+	// never exceeds the window agreed when the stream opened.
+	KindCredit
 )
 
 // Frame is the only encoded value. Status is a sentinel name.
@@ -53,7 +59,9 @@ type Frame struct {
 }
 
 // Session is one accepted or dialed connection. One reader owns Decode.
-// All writes take a lock so PTY and RPC frames stay sequenced.
+// All writes take a lock so PTY and RPC frames stay sequenced. The lock
+// is held only while one frame is written; flow control waits for credit
+// outside it, so a stream without credit never delays other frames.
 type Session struct {
 	conn         net.Conn
 	writeMu      sync.Mutex
@@ -216,7 +224,7 @@ func decodeFrame(payload []byte) (Frame, error) {
 }
 
 func validateFrame(f Frame) error {
-	if f.Kind < KindRequest || f.Kind > KindPty || len(f.Method) > 64 || len(f.Grant) > 64 || len(f.Status) > 64 {
+	if f.Kind < KindRequest || f.Kind > KindCredit || len(f.Method) > 64 || len(f.Grant) > 64 || len(f.Status) > 64 {
 		return execenv.ErrInvalid
 	}
 	if !utf8.ValidString(f.Method) || !utf8.ValidString(f.Grant) || !utf8.ValidString(f.Status) {
@@ -227,6 +235,9 @@ func validateFrame(f Frame) error {
 	}
 	if f.Kind == KindPty && len(f.Extra) > MaxPtyBytes {
 		return execenv.ErrTooLarge
+	}
+	if f.Kind == KindCredit && (f.Seq == 0 || f.Stream == 0 || f.Method != "" || f.Status != "" || len(f.Extra) != 0) {
+		return execenv.ErrInvalid
 	}
 	return nil
 }

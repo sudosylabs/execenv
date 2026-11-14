@@ -113,6 +113,8 @@ func (c *Client) readLoop() {
 			}
 		case kindPty:
 			c.deliverPty(f)
+		case kindCredit:
+			c.deliverCredit(f)
 		}
 	}
 }
@@ -133,19 +135,27 @@ func (c *Client) failAll() {
 	}
 }
 
-func (c *Client) deliverPty(f frame) {
+func (c *Client) termFor(f frame) *remoteTerminal {
 	c.mu.Lock()
 	term := c.terms[f.Stream]
 	c.mu.Unlock()
 	if term == nil || string(term.id) != f.Grant {
+		return nil
+	}
+	return term
+}
+
+// deliverPty never blocks the read loop: credit bounds what one terminal
+// buffers, so a caller that stops reading delays nothing else.
+func (c *Client) deliverPty(f frame) {
+	term := c.termFor(f)
+	if term == nil {
 		return
 	}
 	switch f.Status {
 	case "":
 		if !term.push(f.Seq, f.Extra) {
-			// The reader fell too far behind. Detach without blocking the
-			// read loop; the caller resumes from Offset.
-			go func() { _ = term.detach() }()
+			c.failStream(term)
 		}
 	case statusEOF:
 		c.forget(term)
@@ -154,6 +164,22 @@ func (c *Client) deliverPty(f frame) {
 		c.forget(term)
 		term.hangup(errorFromStatus(f.Status))
 	}
+}
+
+func (c *Client) deliverCredit(f frame) {
+	term := c.termFor(f)
+	if term != nil && !term.grantInput(f.Seq) {
+		c.failStream(term)
+	}
+}
+
+// failStream ends one terminal whose host broke flow control and detaches
+// it without blocking the read loop. The connection and other terminals
+// are unaffected.
+func (c *Client) failStream(term *remoteTerminal) {
+	c.forget(term)
+	term.hangup(execenv.ErrInvalid)
+	go func() { _ = term.detach() }()
 }
 
 func (c *Client) forget(term *remoteTerminal) {
@@ -264,7 +290,7 @@ func (e *remoteEnv) Attach(ctx context.Context, request execenv.AttachRequest) (
 		return nil, execenv.ErrRevoked
 	}
 	stream := e.client.stream.Add(1)
-	extra, err := encodeExtra(attachArgs{Window: request.Window, Stream: stream, Resume: request.Resume, Takeover: request.Takeover})
+	extra, err := encodeExtra(attachArgs{Window: request.Window, Stream: stream, Resume: request.Resume, Takeover: request.Takeover, Credit: ptyWindow})
 	if err != nil {
 		return nil, execenv.Error("attach", err)
 	}
@@ -277,7 +303,7 @@ func (e *remoteEnv) Attach(ctx context.Context, request execenv.AttachRequest) (
 	out, err := e.call(ctx, methodAttach, string(e.id), extra)
 	var result attachResult
 	if err == nil {
-		if decodeErr := decodeExtra(out, &result); decodeErr != nil || result.Terminal == "" {
+		if decodeErr := decodeExtra(out, &result); decodeErr != nil || result.Terminal == "" || result.Credit == 0 || result.Credit > maxPtyWindow {
 			err = execenv.Error("attach", execenv.ErrUnavailable)
 		}
 	}
@@ -286,7 +312,7 @@ func (e *remoteEnv) Attach(ctx context.Context, request execenv.AttachRequest) (
 		term.hangup(err)
 		return nil, err
 	}
-	term.setStart(result.Terminal, result.Start)
+	term.setStart(result.Terminal, result.Start, result.Credit)
 	// The host attached this stream; any earlier stream of this client for
 	// the grant is replaced, whatever frames are still in flight for it.
 	e.client.mu.Lock()
@@ -338,13 +364,18 @@ func (e *remoteEnv) setTermFrozen(frozen bool) {
 	}
 }
 
-// remoteTerminal buffers at most maxClientPtyBytes of output as segments
-// that remember their absolute terminal offsets.
+// remoteTerminal is one attached stream. It buffers at most ptyWindow
+// bytes of output as segments that remember their absolute terminal
+// offsets: the host sends no more than the credit this side granted, and
+// Read returns credit as the caller consumes. Write sends input only
+// within the host's credit.
 type remoteTerminal struct {
 	epoch  string
 	client *Client
 	id     execenv.ID
 	stream uint64
+	// writeMu keeps one Write's frames contiguous.
+	writeMu sync.Mutex
 
 	mu       sync.Mutex
 	cond     *sync.Cond
@@ -353,6 +384,13 @@ type remoteTerminal struct {
 	offset   uint64
 	segments []ptySegment
 	buffered int
+	// outCredit is output the host may still send; outUsed is output read
+	// and not yet granted back.
+	outCredit uint64
+	outUsed   uint64
+	// inCredit is input the host still accepts, at most inWindow.
+	inWindow uint64
+	inCredit uint64
 	closed   bool
 	frozen   bool
 	// ended is the shell's exit (io.EOF), delivered after the buffer drains.
@@ -369,38 +407,53 @@ type ptySegment struct {
 var _ execenv.Terminal = (*remoteTerminal)(nil)
 
 func newRemoteTerminal(client *Client, id execenv.ID, stream uint64) *remoteTerminal {
-	t := &remoteTerminal{client: client, id: id, stream: stream}
+	t := &remoteTerminal{client: client, id: id, stream: stream, outCredit: ptyWindow}
 	t.cond = sync.NewCond(&t.mu)
 	return t
 }
 
-func (t *remoteTerminal) setStart(id execenv.TerminalID, start uint64) {
+func (t *remoteTerminal) setStart(id execenv.TerminalID, start, inputWindow uint64) {
 	t.mu.Lock()
 	t.terminal = id
 	t.start = start
+	t.inWindow = inputWindow
+	t.inCredit = inputWindow
 	if len(t.segments) > 0 {
 		t.offset = t.segments[0].offset
 	} else {
 		t.offset = start
 	}
+	t.cond.Broadcast()
 	t.mu.Unlock()
 }
 
-// push buffers one frame. It reports false when the buffer is full; the
-// frame is dropped and the terminal fails with ErrLagged after draining.
+// push buffers one frame. It reports false when the frame exceeds the
+// credit this side granted: the host broke flow control.
 func (t *remoteTerminal) push(offset uint64, p []byte) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if uint64(len(p)) > t.outCredit {
+		return false
+	}
+	t.outCredit -= uint64(len(p))
 	if t.closed || t.dead != nil || t.ended != nil {
 		return true
 	}
-	if t.buffered+len(p) > maxClientPtyBytes {
-		t.dead = execenv.ErrLagged
-		t.cond.Broadcast()
-		return false
-	}
 	t.segments = append(t.segments, ptySegment{offset: offset, data: append([]byte(nil), p...)})
 	t.buffered += len(p)
+	t.cond.Broadcast()
+	return true
+}
+
+// grantInput adds host credit. It reports false when the grant would
+// exceed the window: the host returned bytes it was never sent.
+func (t *remoteTerminal) grantInput(n uint64) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if n > t.inWindow-t.inCredit {
+		return false
+	}
+	t.inCredit += n
 	t.cond.Broadcast()
 	return true
 }
@@ -445,18 +498,29 @@ func (t *remoteTerminal) Offset() uint64 {
 }
 
 // Read drains buffered output before reporting why the terminal ended.
-// Superseded and closed terminals stop at once.
+// Superseded and closed terminals stop at once. Once at least half the
+// window has been read, Read returns that credit to the host.
 func (t *remoteTerminal) Read(p []byte) (int, error) {
+	n, grant, err := t.read(p)
+	if grant > 0 {
+		// A failed send means the connection is gone; the read loop
+		// reports that.
+		_ = t.client.sess.Send(frame{Seq: grant, Kind: kindCredit, Grant: string(t.id), Stream: t.stream})
+	}
+	return n, err
+}
+
+func (t *remoteTerminal) read(p []byte) (int, uint64, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for len(t.segments) == 0 && !t.closed && t.dead == nil && t.ended == nil {
 		t.cond.Wait()
 	}
 	if t.closed {
-		return 0, execenv.Error("read", execenv.ErrClosed)
+		return 0, 0, execenv.Error("read", execenv.ErrClosed)
 	}
 	if errors.Is(t.dead, execenv.ErrSuperseded) || errors.Is(t.dead, execenv.ErrRevoked) {
-		return 0, execenv.Error("read", t.dead)
+		return 0, 0, execenv.Error("read", t.dead)
 	}
 	if len(t.segments) > 0 {
 		seg := &t.segments[0]
@@ -471,12 +535,19 @@ func (t *remoteTerminal) Read(p []byte) (int, error) {
 		if len(seg.data) == 0 {
 			t.segments = t.segments[1:]
 		}
-		return n, nil
+		var grant uint64
+		t.outUsed += uint64(n)
+		if t.outUsed >= ptyWindow/2 && t.dead == nil && t.ended == nil {
+			grant = t.outUsed
+			t.outUsed = 0
+			t.outCredit += grant
+		}
+		return n, grant, nil
 	}
 	if t.dead != nil {
-		return 0, execenv.Error("read", t.dead)
+		return 0, 0, execenv.Error("read", t.dead)
 	}
-	return 0, t.ended
+	return 0, 0, t.ended
 }
 
 func (t *remoteTerminal) liveLocked() error {
@@ -495,28 +566,47 @@ func (t *remoteTerminal) liveLocked() error {
 	return nil
 }
 
+// Write sends p within the host's input credit, in frames of at most
+// mux.MaxPtyBytes. It blocks while the host has granted none and returns
+// once the terminal is closed, superseded, revoked, frozen or its
+// connection lost, reporting how much of p it sent.
 func (t *remoteTerminal) Write(p []byte) (int, error) {
-	t.mu.Lock()
-	err := t.liveLocked()
-	t.mu.Unlock()
-	if err != nil {
-		return 0, execenv.Error("write", err)
-	}
-	// PTY octets travel as kindPty, not as an RPC, so a hangup does not
-	// take the control channel down with it.
-	err = t.client.sess.Send(frame{
-		Kind:   kindPty,
-		Grant:  string(t.id),
-		Stream: t.stream,
-		Extra:  append([]byte(nil), p...),
-	})
-	if err != nil {
-		if errors.Is(err, execenv.ErrTooLarge) {
-			return 0, execenv.Error("write", err)
+	t.writeMu.Lock()
+	defer t.writeMu.Unlock()
+	written := 0
+	for {
+		t.mu.Lock()
+		for {
+			if err := t.liveLocked(); err != nil {
+				t.mu.Unlock()
+				return written, execenv.Error("write", err)
+			}
+			if len(p) == 0 || t.inCredit > 0 {
+				break
+			}
+			t.cond.Wait()
 		}
-		return 0, execenv.Error("write", execenv.ErrConnection)
+		if len(p) == 0 {
+			t.mu.Unlock()
+			return written, nil
+		}
+		n := int(min(uint64(len(p)), t.inCredit, mux.MaxPtyBytes))
+		t.inCredit -= uint64(n)
+		t.mu.Unlock()
+		// PTY octets travel as kindPty, not as an RPC, so a hangup does
+		// not take the control channel down with it.
+		err := t.client.sess.Send(frame{
+			Kind:   kindPty,
+			Grant:  string(t.id),
+			Stream: t.stream,
+			Extra:  append([]byte(nil), p[:n]...),
+		})
+		if err != nil {
+			return written, execenv.Error("write", execenv.ErrConnection)
+		}
+		written += n
+		p = p[n:]
 	}
-	return len(p), nil
 }
 
 func (t *remoteTerminal) Resize(ctx context.Context, win execenv.Window) error {

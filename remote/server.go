@@ -4,8 +4,6 @@ import (
 	"context"
 	"crypto/subtle"
 	"crypto/tls"
-	"errors"
-	"io"
 	"net"
 	"sync"
 	"time"
@@ -65,32 +63,31 @@ type serverConn struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 
-	mu          sync.Mutex
-	closed      bool
-	envs        map[execenv.ID]execenv.Env
-	terms       map[execenv.ID]execenv.Terminal
-	termStreams map[execenv.ID]uint64
-	tails       map[string]chan struct{}
-	inflight    chan struct{}
+	mu     sync.Mutex
+	closed bool
+	envs   map[execenv.ID]execenv.Env
+	// streams holds the connection's current terminal stream per grant.
+	streams  map[execenv.ID]*serverStream
+	tails    map[string]chan struct{}
+	inflight chan struct{}
 }
 
 func serveConn(parent context.Context, conn net.Conn, inner execenv.Host, cfg ServerConfig, release string, uploads *projectionUploads, downloads *semanticDownloads) {
 	ctx, cancel := context.WithCancel(parent)
 	sc := &serverConn{
-		uploads:     uploads,
-		downloads:   downloads,
-		sess:        newSession(conn),
-		conn:        conn,
-		inner:       inner,
-		cfg:         cfg,
-		release:     release,
-		ctx:         ctx,
-		cancel:      cancel,
-		envs:        make(map[execenv.ID]execenv.Env),
-		terms:       make(map[execenv.ID]execenv.Terminal),
-		termStreams: make(map[execenv.ID]uint64),
-		tails:       make(map[string]chan struct{}),
-		inflight:    make(chan struct{}, maxConnectionOperations),
+		uploads:   uploads,
+		downloads: downloads,
+		sess:      newSession(conn),
+		conn:      conn,
+		inner:     inner,
+		cfg:       cfg,
+		release:   release,
+		ctx:       ctx,
+		cancel:    cancel,
+		envs:      make(map[execenv.ID]execenv.Env),
+		streams:   make(map[execenv.ID]*serverStream),
+		tails:     make(map[string]chan struct{}),
+		inflight:  make(chan struct{}, maxConnectionOperations),
 	}
 	defer sc.close()
 
@@ -119,26 +116,26 @@ func serveConn(parent context.Context, conn net.Conn, inner execenv.Host, cfg Se
 		if err != nil {
 			return
 		}
-		sc.dispatch(f)
+		// PTY input and credit never wait here and never count against
+		// the operation limit: each stream's credit bounds what it queues.
+		switch f.Kind {
+		case kindRequest:
+			sc.dispatch(f)
+		case kindPty:
+			sc.writePty(f)
+		case kindCredit:
+			sc.creditPty(f)
+		}
 	}
 }
 
 // dispatch admits a bounded number of operations, preserves arrival order
 // within one grant, and lets different grants progress independently.
 func (sc *serverConn) dispatch(f frame) {
-	if f.Kind != kindRequest && f.Kind != kindPty {
-		return
-	}
 	select {
 	case sc.inflight <- struct{}{}:
 	default:
-		if f.Kind == kindRequest {
-			_ = sc.reply(f, execenv.ErrBusy, nil)
-		} else {
-			// PTY input has no response frame. Close instead of silently
-			// dropping octets when the bounded dispatcher is saturated.
-			_ = sc.sess.Close()
-		}
+		_ = sc.reply(f, execenv.ErrBusy, nil)
 		return
 	}
 	key := f.Grant
@@ -172,10 +169,6 @@ func (sc *serverConn) dispatch(f frame) {
 				return
 			}
 		}
-		if f.Kind == kindPty {
-			sc.writePty(f)
-			return
-		}
 		sc.handle(f)
 	}()
 }
@@ -194,16 +187,16 @@ func (sc *serverConn) close() {
 		return
 	}
 	sc.closed = true
-	terms := make([]execenv.Terminal, 0, len(sc.terms))
-	for _, term := range sc.terms {
-		terms = append(terms, term)
+	streams := make([]*serverStream, 0, len(sc.streams))
+	for _, s := range sc.streams {
+		streams = append(streams, s)
 	}
-	sc.terms = make(map[execenv.ID]execenv.Terminal)
-	sc.termStreams = make(map[execenv.ID]uint64)
+	sc.streams = make(map[execenv.ID]*serverStream)
 	sc.mu.Unlock()
 	// A lost connection is a detach, never a hangup.
-	for _, term := range terms {
-		_ = term.Close()
+	for _, s := range streams {
+		s.shut(nil)
+		_ = s.term.Close()
 	}
 	_ = sc.sess.Close()
 }
@@ -245,7 +238,7 @@ func (sc *serverConn) handle(f frame) {
 	case methodAttach:
 		extra, err = sc.attach(ctx, f)
 	case methodDetach:
-		err = sc.detach(f)
+		err = sc.detach(ctx, f)
 	case methodHangup:
 		err = sc.hangup(ctx, f)
 	case methodResize:
@@ -331,20 +324,20 @@ func (sc *serverConn) env(id execenv.ID) (execenv.Env, error) {
 func (sc *serverConn) revoke(ctx context.Context, f frame) error {
 	id := execenv.ID(f.Grant)
 	sc.mu.Lock()
-	term := sc.terms[id]
-	delete(sc.terms, id)
-	delete(sc.termStreams, id)
+	s := sc.streams[id]
+	delete(sc.streams, id)
 	delete(sc.envs, id)
 	sc.mu.Unlock()
-	if term != nil {
-		_ = term.Close()
+	if s != nil {
+		s.shut(nil)
+		_ = s.term.Close()
 	}
 	return sc.inner.Revoke(ctx, id)
 }
 
 func (sc *serverConn) attach(ctx context.Context, f frame) ([]byte, error) {
 	var args attachArgs
-	if err := decodeExtra(f.Extra, &args); err != nil || args.Stream == 0 {
+	if err := decodeExtra(f.Extra, &args); err != nil || args.Stream == 0 || args.Credit == 0 || args.Credit > maxPtyWindow {
 		return nil, execenv.ErrInvalid
 	}
 	id := execenv.ID(f.Grant)
@@ -356,11 +349,12 @@ func (sc *serverConn) attach(ctx context.Context, f frame) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	extra, err := encodeExtra(attachResult{Terminal: term.ID(), Start: term.Start()})
+	extra, err := encodeExtra(attachResult{Terminal: term.ID(), Start: term.Start(), Credit: ptyWindow})
 	if err != nil {
 		_ = term.Close()
 		return nil, err
 	}
+	s := newServerStream(sc, id, args.Stream, term, args.Credit)
 	sc.mu.Lock()
 	if sc.closed {
 		sc.mu.Unlock()
@@ -368,79 +362,37 @@ func (sc *serverConn) attach(ctx context.Context, f frame) ([]byte, error) {
 		return nil, execenv.ErrConnection
 	}
 	// A takeover from this same connection replaces the stream; the inner
-	// host supersedes the previous Terminal, whose copy loop reports it.
-	sc.terms[id] = term
-	sc.termStreams[id] = args.Stream
+	// host supersedes the previous Terminal. Its pump may be waiting for
+	// credit the client will never send, so shut it here.
+	previous := sc.streams[id]
+	sc.streams[id] = s
 	sc.mu.Unlock()
-	go sc.copyPty(id, args.Stream, term)
+	if previous != nil {
+		previous.shut(execenv.ErrSuperseded)
+	}
+	go s.pumpOutput()
 	return extra, nil
 }
 
-// copyPty forwards output. Each frame's Seq is the absolute terminal offset
-// of its first byte, so the client's Offset follows any skip on the host.
-func (sc *serverConn) copyPty(id execenv.ID, stream uint64, term execenv.Terminal) {
-	defer func() {
-		sc.mu.Lock()
-		if sc.terms[id] == term {
-			delete(sc.terms, id)
-			delete(sc.termStreams, id)
-		}
-		sc.mu.Unlock()
-	}()
-	buf := make([]byte, 32*1024)
-	next := term.Start()
-	for {
-		n, err := term.Read(buf)
-		if n > 0 {
-			at := next
-			if offset := term.Offset(); offset >= uint64(n) && offset-uint64(n) > at {
-				at = offset - uint64(n)
-			}
-			next = at + uint64(n)
-			if sendErr := sc.sess.Send(frame{Seq: at, Kind: kindPty, Grant: string(id), Stream: stream, Extra: append([]byte(nil), buf[:n]...)}); sendErr != nil {
-				return
-			}
-		}
-		if err != nil {
-			status := statusOf(err)
-			if errors.Is(err, io.EOF) {
-				status = statusEOF
-			}
-			_ = sc.sess.Send(frame{Kind: kindPty, Grant: string(id), Stream: stream, Status: status})
-			return
-		}
-	}
-}
-
-func (sc *serverConn) writePty(f frame) {
-	sc.mu.Lock()
-	term := sc.terms[execenv.ID(f.Grant)]
-	stream := sc.termStreams[execenv.ID(f.Grant)]
-	sc.mu.Unlock()
-	if term != nil && stream == f.Stream {
-		_, _ = term.Write(f.Extra)
-	}
-}
-
-func (sc *serverConn) detach(f frame) error {
+// detach ends the stream after input it already received reaches the
+// terminal, so a client's last keystrokes are not lost to its own Close.
+func (sc *serverConn) detach(ctx context.Context, f frame) error {
 	var args streamArgs
 	if err := decodeExtra(f.Extra, &args); err != nil || args.Stream == 0 {
 		return execenv.ErrInvalid
 	}
 	id := execenv.ID(f.Grant)
 	sc.mu.Lock()
-	term := sc.terms[id]
-	if sc.termStreams[id] == args.Stream {
-		delete(sc.terms, id)
-		delete(sc.termStreams, id)
-	} else {
-		term = nil
+	s := sc.streams[id]
+	if s == nil || s.stream != args.Stream {
+		sc.mu.Unlock()
+		return nil
 	}
+	delete(sc.streams, id)
 	sc.mu.Unlock()
-	if term != nil {
-		return term.Close()
-	}
-	return nil
+	s.waitInputDrained(ctx)
+	s.shut(nil)
+	return s.term.Close()
 }
 
 // hangup ends the shell behind the connection's current stream for the grant.
@@ -449,17 +401,11 @@ func (sc *serverConn) hangup(ctx context.Context, f frame) error {
 	if err := decodeExtra(f.Extra, &args); err != nil || args.Stream == 0 {
 		return execenv.ErrInvalid
 	}
-	id := execenv.ID(f.Grant)
-	sc.mu.Lock()
-	term := sc.terms[id]
-	if sc.termStreams[id] != args.Stream {
-		term = nil
-	}
-	sc.mu.Unlock()
-	if term == nil {
+	s := sc.stream(frame{Grant: f.Grant, Stream: args.Stream})
+	if s == nil {
 		return execenv.ErrClosed
 	}
-	return term.Hangup(ctx)
+	return s.term.Hangup(ctx)
 }
 
 func (sc *serverConn) resize(ctx context.Context, f frame) error {
@@ -467,12 +413,9 @@ func (sc *serverConn) resize(ctx context.Context, f frame) error {
 	if err := decodeExtra(f.Extra, &args); err != nil || args.Stream == 0 {
 		return execenv.ErrInvalid
 	}
-	sc.mu.Lock()
-	term := sc.terms[execenv.ID(f.Grant)]
-	stream := sc.termStreams[execenv.ID(f.Grant)]
-	sc.mu.Unlock()
-	if term == nil || stream != args.Stream {
+	s := sc.stream(frame{Grant: f.Grant, Stream: args.Stream})
+	if s == nil {
 		return execenv.ErrClosed
 	}
-	return term.Resize(ctx, args.Window)
+	return s.term.Resize(ctx, args.Window)
 }

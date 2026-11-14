@@ -7,6 +7,7 @@ import (
 
 var (
 	// ErrInvalid indicates a grant id, image, or network value cannot be used.
+	// A remote Terminal whose peer broke flow control also fails with it.
 	ErrInvalid = errors.New("execenv: invalid")
 	// ErrUnknownImage indicates the host does not have the requested image.
 	ErrUnknownImage = errors.New("execenv: unknown image")
@@ -32,8 +33,7 @@ var (
 	ErrNotFound = errors.New("execenv: not found")
 	// ErrLagged indicates the host can no longer report guest changes from
 	// the requested position, or could not capture one. The caller must
-	// resynchronize from its own journal. A remote Terminal whose reader fell
-	// too far behind also fails with it; Resume from its Offset.
+	// resynchronize from its own journal.
 	ErrLagged = errors.New("execenv: observation lagged")
 	// ErrTooLarge indicates a file or tree exceeds the documented limits.
 	ErrTooLarge = errors.New("execenv: too large")
