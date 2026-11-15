@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/unixsock"
 )
 
 // The operator socket is how execenvctl on the same machine drains the
@@ -136,7 +137,7 @@ func listenOperator(path string) (net.Listener, error) {
 			return nil, execenv.Error("operator", err)
 		}
 	}
-	ln, err := net.Listen("unix", path)
+	ln, err := unixsock.Listen(path)
 	if err != nil {
 		return nil, execenv.Error("operator", err)
 	}
@@ -212,8 +213,7 @@ func Operate(ctx context.Context, path string, op OperatorOp) (OperatorReply, er
 	if path == "" {
 		return OperatorReply{}, execenv.Error("operator", execenv.ErrInvalid)
 	}
-	var d net.Dialer
-	conn, err := d.DialContext(ctx, "unix", path)
+	conn, err := unixsock.Dial(ctx, path)
 	if err != nil {
 		return OperatorReply{}, execenv.Error("operator", ErrNoOperator)
 	}

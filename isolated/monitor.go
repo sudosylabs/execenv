@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/unixsock"
 )
 
 // monitor is the machine monitor's API on its socket in the jail. This file
@@ -20,8 +21,7 @@ type monitor struct{ client *http.Client }
 func newMonitor(sock string) *monitor {
 	return &monitor{client: &http.Client{Transport: &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, "unix", sock)
+			return unixsock.Dial(ctx, sock)
 		},
 	}}}
 }
@@ -61,8 +61,7 @@ func (m *monitor) put(ctx context.Context, path string, body any) error {
 func waitSocket(ctx context.Context, sock string) error {
 	for {
 		if _, err := os.Stat(sock); err == nil {
-			var d net.Dialer
-			if conn, err := d.DialContext(ctx, "unix", sock); err == nil {
+			if conn, err := unixsock.Dial(ctx, sock); err == nil {
 				_ = conn.Close()
 				return nil
 			}

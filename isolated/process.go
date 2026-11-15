@@ -19,6 +19,7 @@ import (
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/agent"
+	"github.com/sudosylabs/execenv/internal/unixsock"
 )
 
 // processLauncher starts a supervised microVM. The public isolated types
@@ -78,8 +79,7 @@ func (p *processInstance) Connect(ctx context.Context) (net.Conn, error) {
 
 // dialGuest connects to port on the guest link.
 func dialGuest(ctx context.Context, sock string, port uint32) (net.Conn, error) {
-	var d net.Dialer
-	conn, err := d.DialContext(ctx, "unix", sock)
+	conn, err := unixsock.Dial(ctx, sock)
 	if err != nil {
 		return nil, err
 	}
