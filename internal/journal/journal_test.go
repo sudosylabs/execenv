@@ -1,6 +1,6 @@
 //go:build linux || darwin
 
-package agent
+package journal
 
 import (
 	"context"
@@ -33,23 +33,23 @@ func (b *testWriteBarrier) Stopped(ctx context.Context, fn func() error) error {
 	}
 	return nil
 }
-func journalFixture(t *testing.T) (*diskJournal, execenv.ProjectionFence, *testWriteBarrier) {
+func journalFixture(t *testing.T) (*Journal, execenv.ProjectionFence, *testWriteBarrier) {
 	t.Helper()
 	barrier := &testWriteBarrier{}
-	j := newDiskJournal(t.TempDir(), barrier, func(string) error {
+	j := New(t.TempDir(), barrier, func(string) error {
 		if !barrier.inside {
 			t.Fatal("disk ownership changed outside barrier")
 		}
 		return nil
 	})
-	t.Cleanup(j.close)
+	t.Cleanup(j.Close)
 	fence := execenv.ProjectionFence{ExecutionGrantID: "grant", EnvironmentEpoch: "epoch", FenceRevision: 1}
-	ref, err := j.upload(fence, []byte("base"))
+	ref, err := j.Upload(fence, []byte("base"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	request := execenv.ProjectionInitialization{Fence: fence, MutationID: "init", WorkspaceCursor: 10, Entries: []execenv.ProjectionEntry{{EntryID: "dir", Kind: execenv.ProjectionDirectory, Path: "dir"}, {EntryID: "file", Kind: execenv.ProjectionFile, Path: "dir/file", ContentVersion: "v1", Content: &ref}}}
-	if _, err := j.initialize(t.Context(), request); err != nil {
+	if _, err := j.Initialize(t.Context(), request); err != nil {
 		t.Fatal(err)
 	}
 	return j, fence, barrier
@@ -59,23 +59,23 @@ func TestDiskJournalPreservesUnrelatedGuestWriteAndExactReplay(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(j.home, "unrelated"), []byte("guest"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	ref, err := j.upload(fence, []byte("saved"))
+	ref, err := j.Upload(fence, []byte("saved"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	request := execenv.ProjectionApply{Fence: fence, MutationID: "save", FromWorkspaceCursor: 10, ThroughWorkspaceCursor: 11, Mutations: []execenv.ProjectionMutation{{JournalCursor: 11, EntryID: "file", Kind: execenv.ProjectionFile, Operation: execenv.ProjectionWrite, Path: "dir/file", ExpectedContentVersion: "v1", ResultingContentVersion: "v2", Content: &ref}}}
-	if _, err := j.apply(t.Context(), request); !errors.Is(err, execenv.ErrConflict) {
+	if _, err := j.Apply(t.Context(), request); !errors.Is(err, execenv.ErrConflict) {
 		t.Fatalf("unseen host cursor: %v", err)
 	}
 	if barrier.poisoned {
 		t.Fatal("safe cursor refusal destroyed resumable guest")
 	}
-	page, err := j.observe(t.Context(), fence, 0, 128)
+	page, err := j.Observe(t.Context(), fence, 0, 128)
 	if err != nil || len(page.Observations) != 1 {
 		t.Fatalf("pending guest change: %+v %v", page, err)
 	}
 	request.ExpectedHostCursor = page.HostCursor
-	receipt, err := j.apply(t.Context(), request)
+	receipt, err := j.Apply(t.Context(), request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,18 +86,18 @@ func TestDiskJournalPreservesUnrelatedGuestWriteAndExactReplay(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(j.home, "dir/file"), []byte("later guest"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	replay, err := j.apply(t.Context(), request)
+	replay, err := j.Apply(t.Context(), request)
 	if err != nil || receipt != replay {
 		t.Fatalf("exact retry: %+v %v", replay, err)
 	}
-	events, err := j.observe(t.Context(), fence, 0, 128)
+	events, err := j.Observe(t.Context(), fence, 0, 128)
 	if err != nil || len(events.Observations) != 2 {
 		t.Fatalf("projection echo or lost guest event: %+v %v", events, err)
 	}
 	if events.Observations[1].ExpectedContentVersion != "v2" || events.Observations[1].BasedOnWorkspaceCursor != 11 {
 		t.Fatal("guest event lost original projected baseline")
 	}
-	reader, err := j.content(fence, *events.Observations[0].Content)
+	reader, err := j.Content(fence, *events.Observations[0].Content)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestDiskJournalCapturesSemanticDirectoryMove(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(j.home, "moved/file"), []byte("edited"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	page, err := j.observe(t.Context(), fence, 0, 128)
+	page, err := j.Observe(t.Context(), fence, 0, 128)
 	if err != nil || len(page.Observations) != 2 {
 		t.Fatalf("directory move: %+v %v", page, err)
 	}
@@ -129,16 +129,16 @@ func TestDiskJournalRefusesSameFileConflictAndPoisonsUncertainCommit(t *testing.
 	if err := os.WriteFile(filepath.Join(j.home, "dir/file"), []byte("guest"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	page, err := j.observe(t.Context(), fence, 0, 128)
+	page, err := j.Observe(t.Context(), fence, 0, 128)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ref, err := j.upload(fence, []byte("save"))
+	ref, err := j.Upload(fence, []byte("save"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	request := execenv.ProjectionApply{Fence: fence, MutationID: "save", FromWorkspaceCursor: 10, ThroughWorkspaceCursor: 11, ExpectedHostCursor: page.HostCursor, Mutations: []execenv.ProjectionMutation{{JournalCursor: 11, EntryID: "file", Kind: execenv.ProjectionFile, Operation: execenv.ProjectionWrite, Path: "dir/file", ExpectedContentVersion: "v1", ResultingContentVersion: "v2", Content: &ref}}}
-	if _, err := j.apply(t.Context(), request); !errors.Is(err, execenv.ErrConflict) {
+	if _, err := j.Apply(t.Context(), request); !errors.Is(err, execenv.ErrConflict) {
 		t.Fatalf("guest overwritten: %v", err)
 	}
 	if barrier.poisoned {
@@ -148,7 +148,7 @@ func TestDiskJournalRefusesSameFileConflictAndPoisonsUncertainCommit(t *testing.
 	// ordinary operation to reuse uncertain state.
 	request.Mutations[0] = execenv.ProjectionMutation{JournalCursor: 11, EntryID: "other", Kind: execenv.ProjectionFile, Operation: execenv.ProjectionCreate, Path: "other", ResultingContentVersion: "v2", Content: &ref}
 	j.own = func(string) error { return errors.New("ownership write failed") }
-	if _, err := j.apply(t.Context(), request); err == nil {
+	if _, err := j.Apply(t.Context(), request); err == nil {
 		t.Fatal("uncertain commit acknowledged")
 	}
 	if !barrier.poisoned {
@@ -157,7 +157,7 @@ func TestDiskJournalRefusesSameFileConflictAndPoisonsUncertainCommit(t *testing.
 	if j.state.Cursor() != 10 {
 		t.Fatal("failed commit advanced acknowledged cursor")
 	}
-	if _, err := j.apply(t.Context(), request); !errors.Is(err, execenv.ErrUnavailable) {
+	if _, err := j.Apply(t.Context(), request); !errors.Is(err, execenv.ErrUnavailable) {
 		t.Fatalf("poisoned retry: %v", err)
 	}
 }
@@ -168,7 +168,7 @@ func TestNativeConfirmedGuestCreateDoesNotOverwriteLaterWrite(t *testing.T) {
 	if err := os.WriteFile(name, []byte("accepted"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	page, err := j.observe(t.Context(), fence, 0, 128)
+	page, err := j.Observe(t.Context(), fence, 0, 128)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,24 +176,24 @@ func TestNativeConfirmedGuestCreateDoesNotOverwriteLaterWrite(t *testing.T) {
 	if err := os.WriteFile(name, []byte("later"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	reference, err := j.upload(fence, []byte("accepted"))
+	reference, err := j.Upload(fence, []byte("accepted"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	mutation := execenv.ProjectionMutation{JournalCursor: 11, EntryID: "guest-entry", Kind: execenv.ProjectionFile, Operation: execenv.ProjectionCreate, Path: "guest", ResultingContentVersion: "v1", Content: &reference}
 	binding := execenv.ObservationProjection{Fence: fence, HostSequence: event.HostSequence, Mutation: mutation}
-	if err := j.confirm(binding); err != nil {
+	if err := j.Confirm(binding); err != nil {
 		t.Fatal(err)
 	}
-	if err := j.acknowledge(fence, event.HostSequence); err != nil {
+	if err := j.Acknowledge(fence, event.HostSequence); err != nil {
 		t.Fatal(err)
 	}
 	request := execenv.ProjectionApply{Fence: fence, MutationID: "accepted-guest", FromWorkspaceCursor: 10, ThroughWorkspaceCursor: 11, ExpectedHostCursor: 1, Mutations: []execenv.ProjectionMutation{mutation}}
-	if _, err := j.apply(t.Context(), request); !errors.Is(err, execenv.ErrConflict) {
+	if _, err := j.Apply(t.Context(), request); !errors.Is(err, execenv.ErrConflict) {
 		t.Fatalf("later unseen guest cursor: %v", err)
 	}
 	request.ExpectedHostCursor = 2
-	if _, err := j.apply(t.Context(), request); err != nil {
+	if _, err := j.Apply(t.Context(), request); err != nil {
 		t.Fatal(err)
 	}
 	body, err := os.ReadFile(name)
@@ -203,11 +203,11 @@ func TestNativeConfirmedGuestCreateDoesNotOverwriteLaterWrite(t *testing.T) {
 	if j.state.Nodes()["guest"].Identity != event.NodeIdentity {
 		t.Fatal("guest identity not adopted into projection")
 	}
-	page, err = j.observe(t.Context(), fence, 1, 128)
+	page, err = j.Observe(t.Context(), fence, 1, 128)
 	if err != nil || len(page.Observations) != 1 || page.Observations[0].Operation != execenv.ObservationWriteFile {
 		t.Fatalf("later original event lost: %+v %v", page, err)
 	}
-	if err := j.confirm(binding); err != nil {
+	if err := j.Confirm(binding); err != nil {
 		t.Fatalf("binding retry after acknowledgement: %v", err)
 	}
 }

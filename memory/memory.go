@@ -4,6 +4,7 @@ package memory
 import (
 	"context"
 	"errors"
+	"os"
 	"slices"
 	"sync"
 	"time"
@@ -11,12 +12,9 @@ import (
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/internal/capacity"
 	"github.com/sudosylabs/execenv/internal/control"
-	"github.com/sudosylabs/execenv/internal/guesttree"
+	"github.com/sudosylabs/execenv/internal/journal"
 	"github.com/sudosylabs/execenv/internal/lifetime"
-	"github.com/sudosylabs/execenv/internal/observations"
-	"github.com/sudosylabs/execenv/internal/projection"
 	"github.com/sudosylabs/execenv/internal/terminal"
-	"github.com/sudosylabs/execenv/internal/tree"
 )
 
 var (
@@ -38,6 +36,9 @@ type Config struct {
 	Defaults execenv.Resources
 	GrantMax execenv.Resources
 	Unusable bool
+	// WorkDir holds each grant's workspace directory. Empty uses the
+	// system's temporary directory.
+	WorkDir string
 	// TerminalGrace is how long a detached shell keeps running. Zero uses
 	// execenv.DefaultTerminalGrace.
 	TerminalGrace time.Duration
@@ -50,6 +51,7 @@ type Host struct {
 	pool     *capacity.Pool
 	unusable bool
 	grace    time.Duration
+	workDir  string
 	grants   map[execenv.ID]*environment
 	// lost holds grants whose environment ended without a revoke until the
 	// caller revokes them.
@@ -59,26 +61,27 @@ type Host struct {
 }
 
 type environment struct {
-	control         *control.State
-	projection      *projection.State
-	semantic        *observations.Log
-	guestTree       *guesttree.Snapshot
-	projectionFence execenv.ProjectionFence
-	mu              sync.Mutex
-	id              execenv.ID
-	spec            execenv.Spec
-	host            *Host
-	frozen          bool
-	revoked         bool
-	lost            bool
-	terminal        *terminal.Manager
-	processes       *processLog
-	limits          execenv.Limits
-	timer           *lifetime.Timer
+	control   *control.State
+	mu        sync.Mutex
+	id        execenv.ID
+	spec      execenv.Spec
+	host      *Host
+	frozen    bool
+	revoked   bool
+	lost      bool
+	terminal  *terminal.Manager
+	processes *processLog
+	limits    execenv.Limits
+	timer     *lifetime.Timer
 	// public is what callers hold: the environment, watched for activity.
 	public execenv.Env
-	// files is the current projection. Paths are already-validated.
-	files tree.Snapshot
+	// workspace is the grant's directory; journal projects into it.
+	// journalMu serializes journal calls; guestMu is the simulated guest,
+	// held by every guest write and by the journal's barrier.
+	workspace string
+	journal   *journal.Journal
+	journalMu sync.Mutex
+	guestMu   sync.Mutex
 }
 
 // New returns an inert in-memory host.
@@ -96,6 +99,7 @@ func New(cfg Config) (*Host, error) {
 		pool:     pool,
 		unusable: cfg.Unusable,
 		grace:    cfg.TerminalGrace,
+		workDir:  cfg.WorkDir,
 		grants:   make(map[execenv.ID]*environment),
 		lost:     make(map[execenv.ID]*environment),
 	}, nil
@@ -199,16 +203,21 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 	if err := h.pool.Reserve(spec.ID, spec.Resources); err != nil {
 		return nil, execenv.Error("ensure", err)
 	}
-	env := &environment{
-		control:    control.New(spec.ID),
-		projection: projection.New(),
-		id:         spec.ID,
-		spec:       spec,
-		host:       h,
-		files:      make(tree.Snapshot),
-		processes:  newProcessLog(),
-		limits:     spec.Limits,
+	workspace, err := os.MkdirTemp(h.workDir, "execenv-grant-")
+	if err != nil {
+		h.pool.Release(spec.ID)
+		return nil, execenv.Error("ensure", execenv.ErrUnavailable)
 	}
+	env := &environment{
+		control:   control.New(spec.ID),
+		id:        spec.ID,
+		spec:      spec,
+		host:      h,
+		processes: newProcessLog(),
+		limits:    spec.Limits,
+		workspace: workspace,
+	}
+	env.journal = journal.New(workspace, lockBarrier{&env.guestMu}, nil)
 	// The in-memory shell is a stand-in, not a process; it starts with no
 	// window or isolation beyond the session machinery every adapter shares.
 	env.terminal = terminal.New(terminal.Config{
@@ -356,5 +365,9 @@ func (e *environment) stop(cause error) error {
 	e.lost = errors.Is(cause, execenv.ErrLost) || e.lost
 	e.frozen = false
 	e.terminal.End(cause)
+	e.journalMu.Lock()
+	e.journal.Close()
+	e.journalMu.Unlock()
+	_ = os.RemoveAll(e.workspace)
 	return nil
 }

@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/journal"
 )
 
 // This exercises the real guest wire and disk engine with quiescent test files.
@@ -109,13 +110,13 @@ func journalWireFixture(t *testing.T) (*Client, string) {
 	home := t.TempDir()
 	hostConn, guestConn := net.Pipe()
 	ctx, cancel := context.WithCancel(t.Context())
-	server := &server{home: home, events: make(chan []execenv.ProcessEvent), journal: newDiskJournal(home, &testWriteBarrier{}, nil)}
+	server := &server{home: home, events: make(chan []execenv.ProcessEvent), journal: journal.New(home, openBarrier{}, nil)}
 	server.processes.Store(true)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		defer server.shutdown()
-		defer server.journal.close()
+		defer server.journal.Close()
 		server.serveLink(ctx, guestConn, server)
 	}()
 	client := NewClient(hostConn)
@@ -157,4 +158,14 @@ func TestNativeJournalWireInitializesLargeSnapshot(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(home, request.Entries[len(request.Entries)-1].Path)); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// openBarrier runs fn at once: these tests' files are quiescent.
+type openBarrier struct{}
+
+func (openBarrier) Stopped(ctx context.Context, fn func() error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return fn()
 }

@@ -17,6 +17,7 @@ import (
 	guestv1 "github.com/sudosylabs/execenv/internal/gen/execenv/guest/v1"
 	"github.com/sudosylabs/execenv/internal/gen/execenv/guest/v1/guestv1connect"
 	execenvv1 "github.com/sudosylabs/execenv/internal/gen/execenv/v1"
+	"github.com/sudosylabs/execenv/internal/journal"
 	"github.com/sudosylabs/execenv/internal/wire"
 	"github.com/sudosylabs/execenv/internal/workload"
 )
@@ -51,9 +52,7 @@ type Config struct {
 
 // WriteBarrier stops every writer under Home while fn runs. An error from
 // fn means the disk state is uncertain; the barrier stays closed after it.
-type WriteBarrier interface {
-	Stopped(ctx context.Context, fn func() error) error
-}
+type WriteBarrier = journal.Barrier
 
 // Serve handles one host connection until it ends. Losing the connection
 // is hangup: Home stays. The caller tears the machine down separately.
@@ -96,12 +95,12 @@ func Serve(ctx context.Context, conn net.Conn, cfg Config) error {
 	}
 	switch {
 	case group != nil:
-		s.journal = newDiskJournal(cfg.Home, group, group.OwnHome)
+		s.journal = journal.New(cfg.Home, group, group.OwnHome)
 	case cfg.Barrier != nil:
-		s.journal = newDiskJournal(cfg.Home, cfg.Barrier, nil)
+		s.journal = journal.New(cfg.Home, cfg.Barrier, nil)
 	}
 	if s.journal != nil {
-		defer s.journal.close()
+		defer s.journal.Close()
 	}
 	// The process log must be recording before any workload process can
 	// start. Without the kernel's process events the helper says so in
@@ -146,7 +145,7 @@ type server struct {
 	scratch     string
 	workload    *workload.Group
 	workloadErr error
-	journal     *diskJournal
+	journal     *journal.Journal
 	// processes is whether the process log source is recording; events
 	// carries its batches to the host's ProcessEvents stream.
 	processes atomic.Bool
@@ -386,10 +385,10 @@ func (s *server) UploadContent(_ context.Context, stream *connect.ClientStream[e
 	if err := s.journalGuard(); err != nil {
 		return nil, wire.Error(err)
 	}
-	if err := s.journal.bind(fence); err != nil {
+	if err := s.journal.Bind(fence); err != nil {
 		return nil, wire.Error(err)
 	}
-	ref, err := s.journal.upload(fence, data)
+	ref, err := s.journal.Upload(fence, data)
 	if err != nil {
 		return nil, wire.Error(err)
 	}
@@ -402,10 +401,10 @@ func (s *server) InitializeProjection(ctx context.Context, req *connect.Request[
 	if err := s.journalGuard(); err != nil {
 		return nil, wire.Error(err)
 	}
-	if s.term != nil && !s.journal.state.Initialized() {
+	if s.term != nil && !s.journal.Initialized() {
 		return nil, wire.Error(execenv.ErrConflict)
 	}
-	receipt, err := s.journal.initialize(ctx, wire.InitializationFrom(req.Msg))
+	receipt, err := s.journal.Initialize(ctx, wire.InitializationFrom(req.Msg))
 	if err != nil {
 		return nil, wire.Error(err)
 	}
@@ -418,7 +417,7 @@ func (s *server) ApplyProjection(ctx context.Context, req *connect.Request[exece
 	if err := s.journalGuard(); err != nil {
 		return nil, wire.Error(err)
 	}
-	receipt, err := s.journal.apply(ctx, wire.ApplyFrom(req.Msg))
+	receipt, err := s.journal.Apply(ctx, wire.ApplyFrom(req.Msg))
 	if err != nil {
 		return nil, wire.Error(err)
 	}
@@ -434,7 +433,7 @@ func (s *server) bound(fence *execenvv1.Fence) (execenv.ProjectionFence, error) 
 	if execenv.ValidateProjectionFence(f) != nil {
 		return f, execenv.ErrInvalid
 	}
-	return f, s.journal.bind(f)
+	return f, s.journal.Bind(f)
 }
 
 func (s *server) Observe(ctx context.Context, req *connect.Request[execenvv1.ObserveRequest]) (*connect.Response[execenvv1.ObservationPage], error) {
@@ -444,7 +443,7 @@ func (s *server) Observe(ctx context.Context, req *connect.Request[execenvv1.Obs
 	if err != nil {
 		return nil, wire.Error(err)
 	}
-	page, err := s.journal.observe(ctx, fence, req.Msg.GetAfter(), int(req.Msg.GetLimit()))
+	page, err := s.journal.Observe(ctx, fence, req.Msg.GetAfter(), int(req.Msg.GetLimit()))
 	if err != nil {
 		return nil, wire.Error(err)
 	}
@@ -464,7 +463,7 @@ func (s *server) ReadObservationContent(_ context.Context, req *connect.Request[
 		if _, err := s.bound(req.Msg.GetFence()); err != nil {
 			return nil, err
 		}
-		return s.journal.log.Chunk(*ref, offset, wire.ChunkSize)
+		return s.journal.Chunk(*ref, offset, wire.ChunkSize)
 	}
 	var offset int64
 	for {
@@ -493,7 +492,7 @@ func (s *server) ConfirmObservationProjection(_ context.Context, req *connect.Re
 		HostSequence: req.Msg.GetHostSequence(),
 		Mutation:     wire.MutationFrom(req.Msg.GetMutation()),
 	}
-	if err := s.journal.confirm(binding); err != nil {
+	if err := s.journal.Confirm(binding); err != nil {
 		return nil, wire.Error(err)
 	}
 	return connect.NewResponse(&execenvv1.ConfirmObservationProjectionResponse{}), nil
@@ -506,7 +505,7 @@ func (s *server) AcknowledgeObservations(_ context.Context, req *connect.Request
 	if err != nil {
 		return nil, wire.Error(err)
 	}
-	if err := s.journal.acknowledge(fence, req.Msg.GetThrough()); err != nil {
+	if err := s.journal.Acknowledge(fence, req.Msg.GetThrough()); err != nil {
 		return nil, wire.Error(err)
 	}
 	return connect.NewResponse(&execenvv1.AcknowledgeObservationsResponse{}), nil

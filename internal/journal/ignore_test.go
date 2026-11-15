@@ -1,6 +1,6 @@
 //go:build linux || darwin
 
-package agent
+package journal
 
 import (
 	"context"
@@ -15,23 +15,23 @@ import (
 )
 
 // journalWorkspace drives a disk journal through the conformance surface.
-type journalWorkspace struct{ j *diskJournal }
+type journalWorkspace struct{ j *Journal }
 
 func (w journalWorkspace) UploadProjectionContent(_ context.Context, fence execenv.ProjectionFence, body io.Reader) (execenv.ContentReference, error) {
 	data, err := io.ReadAll(body)
 	if err != nil {
 		return execenv.ContentReference{}, err
 	}
-	return w.j.upload(fence, data)
+	return w.j.Upload(fence, data)
 }
 func (w journalWorkspace) InitializeProjection(ctx context.Context, request execenv.ProjectionInitialization) (execenv.ProjectionReceipt, error) {
-	return w.j.initialize(ctx, request)
+	return w.j.Initialize(ctx, request)
 }
 func (w journalWorkspace) ApplyProjection(ctx context.Context, request execenv.ProjectionApply) (execenv.ProjectionReceipt, error) {
-	return w.j.apply(ctx, request)
+	return w.j.Apply(ctx, request)
 }
 func (w journalWorkspace) Observe(ctx context.Context, fence execenv.ProjectionFence, after uint64, limit int) (execenv.ObservationPage, error) {
-	return w.j.observe(ctx, fence, after, limit)
+	return w.j.Observe(ctx, fence, after, limit)
 }
 
 // diskGuest writes Home directly, as guest processes do.
@@ -47,10 +47,10 @@ func (g diskGuest) Move(_ context.Context, from, to string) error {
 }
 func (g diskGuest) Remove(_ context.Context, name string) error { return os.RemoveAll(g.full(name)) }
 
-func ignoreJournal(t *testing.T, own func(string) error) (*diskJournal, execenv.ProjectionFence) {
+func ignoreJournal(t *testing.T, own func(string) error) (*Journal, execenv.ProjectionFence) {
 	t.Helper()
-	j := newDiskJournal(t.TempDir(), &testWriteBarrier{}, own)
-	t.Cleanup(j.close)
+	j := New(t.TempDir(), &testWriteBarrier{}, own)
+	t.Cleanup(j.Close)
 	return j, execenv.ProjectionFence{ExecutionGrantID: "grant", EnvironmentEpoch: "epoch", FenceRevision: 1}
 }
 
@@ -68,7 +68,7 @@ func TestDiskJournalNeverWalksAnIgnoredDirectory(t *testing.T) {
 	var owned []string
 	j, fence := ignoreJournal(t, func(name string) error { owned = append(owned, name); return nil })
 	init := execenv.ProjectionInitialization{Fence: fence, MutationID: "init", Ignore: &execenv.IgnoreRules{File: "rules", Fallback: []string{"deps/", "*.lnk"}}}
-	if _, err := j.initialize(t.Context(), init); err != nil {
+	if _, err := j.Initialize(t.Context(), init); err != nil {
 		t.Fatal(err)
 	}
 	guest := diskGuest{j.home}
@@ -92,17 +92,17 @@ func TestDiskJournalNeverWalksAnIgnoredDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(deps, 0o755) })
-	page, err := j.observe(t.Context(), fence, 0, 16)
+	page, err := j.Observe(t.Context(), fence, 0, 16)
 	if err != nil || len(page.Observations) != 0 {
 		t.Fatalf("ignored tree observed: %+v %v", page, err)
 	}
-	ref, err := j.upload(fence, []byte("projected"))
+	ref, err := j.Upload(fence, []byte("projected"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	owned = nil
 	apply := execenv.ProjectionApply{Fence: fence, MutationID: "create", FromWorkspaceCursor: 0, ThroughWorkspaceCursor: 1, Mutations: []execenv.ProjectionMutation{{JournalCursor: 1, EntryID: "file", Operation: execenv.ProjectionCreate, Kind: execenv.ProjectionFile, Path: "file", ResultingContentVersion: "v1", Content: &ref}}}
-	if _, err := j.apply(t.Context(), apply); err != nil {
+	if _, err := j.Apply(t.Context(), apply); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range owned {
@@ -123,7 +123,7 @@ func TestDiskJournalNeverWalksAnIgnoredDirectory(t *testing.T) {
 func TestDiskJournalProjectionAdoptsIgnoredDirectory(t *testing.T) {
 	j, fence := ignoreJournal(t, nil)
 	init := execenv.ProjectionInitialization{Fence: fence, MutationID: "init", Ignore: &execenv.IgnoreRules{File: "rules", Fallback: []string{"cache/"}}}
-	if _, err := j.initialize(t.Context(), init); err != nil {
+	if _, err := j.Initialize(t.Context(), init); err != nil {
 		t.Fatal(err)
 	}
 	guest := diskGuest{j.home}
@@ -133,7 +133,7 @@ func TestDiskJournalProjectionAdoptsIgnoredDirectory(t *testing.T) {
 	if err := guest.Write(t.Context(), "cache/blob", []byte("guest")); err != nil {
 		t.Fatal(err)
 	}
-	ref, err := j.upload(fence, []byte("projected"))
+	ref, err := j.Upload(fence, []byte("projected"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestDiskJournalProjectionAdoptsIgnoredDirectory(t *testing.T) {
 		{JournalCursor: 1, EntryID: "cache", Operation: execenv.ProjectionCreate, Kind: execenv.ProjectionDirectory, Path: "cache"},
 		{JournalCursor: 2, EntryID: "held", Operation: execenv.ProjectionCreate, Kind: execenv.ProjectionFile, Path: "cache/held", ResultingContentVersion: "v1", Content: &ref},
 	}}
-	if _, err := j.apply(t.Context(), apply); err != nil {
+	if _, err := j.Apply(t.Context(), apply); err != nil {
 		t.Fatal(err)
 	}
 	if body, err := os.ReadFile(guest.full("cache/blob")); err != nil || string(body) != "guest" {
@@ -153,7 +153,7 @@ func TestDiskJournalProjectionAdoptsIgnoredDirectory(t *testing.T) {
 	if err := guest.Write(t.Context(), "cache/blob", []byte("still ignored")); err != nil {
 		t.Fatal(err)
 	}
-	page, err := j.observe(t.Context(), fence, 0, 16)
+	page, err := j.Observe(t.Context(), fence, 0, 16)
 	if err != nil || len(page.Observations) != 1 || page.Observations[0].Operation != execenv.ObservationWriteFile || page.Observations[0].Path != "cache/held" {
 		t.Fatalf("observations = %+v %v", page, err)
 	}

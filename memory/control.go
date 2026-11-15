@@ -11,9 +11,6 @@ func (e *environment) ControlStatus(ctx context.Context) (execenv.ControlReceipt
 }
 func (e *environment) Control(ctx context.Context, request execenv.ControlRequest) (execenv.ControlReceipt, error) {
 	receipt, err := e.control.Execute(ctx, request, func() error {
-		e.mu.Lock()
-		e.projectionFence = request.Fence
-		e.mu.Unlock()
 		switch request.State {
 		case execenv.ControlFrozen:
 			return e.freeze(ctx)

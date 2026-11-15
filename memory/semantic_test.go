@@ -36,14 +36,24 @@ func TestObservationsPreserveOriginalContentAndSubtreeIdentity(t *testing.T) {
 	if _, err := semantic.InitializeProjection(t.Context(), initial); err != nil {
 		t.Fatal(err)
 	}
+	// The guest's changes are captured when the caller observes, as on a
+	// real guest, so observe after each one to see each one.
+	captured := func() {
+		t.Helper()
+		if _, err := semantic.Observe(t.Context(), fence, 0, 128); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, body := range []string{"first", "second"} {
 		if err := host.WriteGuest(t.Context(), env.ID(), "dir/file", []byte(body)); err != nil {
 			t.Fatal(err)
 		}
+		captured()
 	}
 	if err := host.MoveGuest(t.Context(), env.ID(), "dir", "moved"); err != nil {
 		t.Fatal(err)
 	}
+	captured()
 	if err := host.WriteGuest(t.Context(), env.ID(), "moved/file", []byte("third")); err != nil {
 		t.Fatal(err)
 	}

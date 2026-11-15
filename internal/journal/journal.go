@@ -1,4 +1,9 @@
-package agent
+// Package journal is a grant's projection journal over a real directory:
+// the caller's tree projected into it, and the changes made there reported
+// back until the caller acknowledges them. The guest agent runs it on the
+// workspace disk; the in-memory host runs it on a temporary directory, so
+// both serve the same contract from the same code.
+package journal
 
 import (
 	"bytes"
@@ -15,12 +20,19 @@ import (
 	"github.com/sudosylabs/execenv/internal/tree"
 )
 
-// diskJournal is serialized by the agent server, independently of any RPC
+// Barrier stops every writer under the journal's directory while fn runs.
+// An error from fn means the disk state is uncertain; the barrier stays
+// closed after it.
+type Barrier interface {
+	Stopped(ctx context.Context, fn func() error) error
+}
+
+// Journal is serialized by its caller, independently of any RPC
 // connection. Its barrier must contain every guest writer before capture and
 // commit. An uncertain disk mutation poisons the barrier until guest teardown.
-type diskJournal struct {
+type Journal struct {
 	home     string
-	barrier  WriteBarrier
+	barrier  Barrier
 	state    *projection.State
 	log      *observations.Log
 	snapshot *guesttree.Snapshot
@@ -28,11 +40,24 @@ type diskJournal struct {
 	own      func(string) error
 }
 
-func newDiskJournal(home string, barrier WriteBarrier, own func(string) error) *diskJournal {
-	return &diskJournal{home: home, barrier: barrier, state: projection.New(), own: own}
+// New journals home. own, when set, hands every projected path to the
+// workload's user.
+func New(home string, barrier Barrier, own func(string) error) *Journal {
+	return &Journal{home: home, barrier: barrier, state: projection.New(), own: own}
 }
-func (j *diskJournal) close() { j.snapshot.Close() }
-func (j *diskJournal) bind(fence execenv.ProjectionFence) error {
+
+// Initialized reports whether the projection has been initialized.
+func (j *Journal) Initialized() bool { return j.state.Initialized() }
+
+// Chunk reads part of a retained observation body.
+func (j *Journal) Chunk(ref execenv.ContentReference, offset int64, length int) ([]byte, error) {
+	if j.log == nil {
+		return nil, execenv.ErrConflict
+	}
+	return j.log.Chunk(ref, offset, length)
+}
+func (j *Journal) Close() { j.snapshot.Close() }
+func (j *Journal) Bind(fence execenv.ProjectionFence) error {
 	if execenv.ValidateProjectionFence(fence) != nil {
 		return execenv.ErrInvalid
 	}
@@ -45,14 +70,14 @@ func (j *diskJournal) bind(fence execenv.ProjectionFence) error {
 	}
 	return nil
 }
-func (j *diskJournal) upload(fence execenv.ProjectionFence, body []byte) (execenv.ContentReference, error) {
-	if err := j.bind(fence); err != nil {
+func (j *Journal) Upload(fence execenv.ProjectionFence, body []byte) (execenv.ContentReference, error) {
+	if err := j.Bind(fence); err != nil {
 		return execenv.ContentReference{}, err
 	}
 	return j.state.Put(body)
 }
-func (j *diskJournal) initialize(ctx context.Context, request execenv.ProjectionInitialization) (execenv.ProjectionReceipt, error) {
-	if err := j.bind(request.Fence); err != nil {
+func (j *Journal) Initialize(ctx context.Context, request execenv.ProjectionInitialization) (execenv.ProjectionReceipt, error) {
+	if err := j.Bind(request.Fence); err != nil {
 		return execenv.ProjectionReceipt{}, err
 	}
 	var receipt execenv.ProjectionReceipt
@@ -94,8 +119,8 @@ func (j *diskJournal) initialize(ctx context.Context, request execenv.Projection
 	}
 	return receipt, resultErr
 }
-func (j *diskJournal) apply(ctx context.Context, request execenv.ProjectionApply) (execenv.ProjectionReceipt, error) {
-	if err := j.bind(request.Fence); err != nil {
+func (j *Journal) Apply(ctx context.Context, request execenv.ProjectionApply) (execenv.ProjectionReceipt, error) {
+	if err := j.Bind(request.Fence); err != nil {
 		return execenv.ProjectionReceipt{}, err
 	}
 	var receipt execenv.ProjectionReceipt
@@ -147,8 +172,8 @@ func (j *diskJournal) apply(ctx context.Context, request execenv.ProjectionApply
 	}
 	return receipt, resultErr
 }
-func (j *diskJournal) observe(ctx context.Context, fence execenv.ProjectionFence, after uint64, limit int) (execenv.ObservationPage, error) {
-	if err := j.bind(fence); err != nil {
+func (j *Journal) Observe(ctx context.Context, fence execenv.ProjectionFence, after uint64, limit int) (execenv.ObservationPage, error) {
+	if err := j.Bind(fence); err != nil {
 		return execenv.ObservationPage{}, err
 	}
 	if !j.state.Initialized() {
@@ -159,7 +184,7 @@ func (j *diskJournal) observe(ctx context.Context, fence execenv.ProjectionFence
 	}
 	return j.log.Page(after, limit)
 }
-func (j *diskJournal) observeCaptured() error {
+func (j *Journal) observeCaptured() error {
 	next, err := guesttree.Capture(j.home, j.snapshot, j.observePolicy())
 	if err != nil {
 		j.log.Lagged()
@@ -205,7 +230,7 @@ func (j *diskJournal) observeCaptured() error {
 	j.snapshot = next
 	return nil
 }
-func (j *diskJournal) captureProjection(mutations []execenv.Mutation) error {
+func (j *Journal) captureProjection(mutations []execenv.Mutation) error {
 	// The guest is stopped, so the workspace is the previous capture plus this
 	// commit's effects. With ignore rules, admit exactly that: a path a
 	// projected ignore-file edit has just made visible must reach the stream
@@ -245,7 +270,7 @@ func (j *diskJournal) captureProjection(mutations []execenv.Mutation) error {
 
 // observePolicy returns the capture filter for the ignore file as the guest
 // left it, or nil when nothing is ignored. Projected paths are held.
-func (j *diskJournal) observePolicy() guesttree.Observe {
+func (j *Journal) observePolicy() guesttree.Observe {
 	rules := j.state.Ignore()
 	if rules == nil {
 		return nil
@@ -288,7 +313,7 @@ func readIgnoreFile(home, name string) ([]byte, bool) {
 // ownTree hands projected paths to the guest user. roots nil means the whole
 // workspace (initialization); otherwise only the subtrees this commit wrote,
 // so ignored guest trees elsewhere are never walked.
-func (j *diskJournal) ownTree(roots []string) error {
+func (j *Journal) ownTree(roots []string) error {
 	if j.own == nil {
 		return nil
 	}
@@ -317,8 +342,8 @@ func (j *diskJournal) ownTree(roots []string) error {
 	}
 	return nil
 }
-func (j *diskJournal) content(fence execenv.ProjectionFence, reference execenv.ContentReference) (io.ReadCloser, error) {
-	if err := j.bind(fence); err != nil {
+func (j *Journal) Content(fence execenv.ProjectionFence, reference execenv.ContentReference) (io.ReadCloser, error) {
+	if err := j.Bind(fence); err != nil {
 		return nil, err
 	}
 	body, err := j.log.Content(reference)
@@ -327,15 +352,15 @@ func (j *diskJournal) content(fence execenv.ProjectionFence, reference execenv.C
 	}
 	return io.NopCloser(bytes.NewReader(body)), nil
 }
-func (j *diskJournal) acknowledge(fence execenv.ProjectionFence, through uint64) error {
-	if err := j.bind(fence); err != nil {
+func (j *Journal) Acknowledge(fence execenv.ProjectionFence, through uint64) error {
+	if err := j.Bind(fence); err != nil {
 		return err
 	}
 	return j.log.Acknowledge(through)
 }
 
-func (j *diskJournal) confirm(binding execenv.ObservationProjection) error {
-	if err := j.bind(binding.Fence); err != nil {
+func (j *Journal) Confirm(binding execenv.ObservationProjection) error {
+	if err := j.Bind(binding.Fence); err != nil {
 		return err
 	}
 	return j.state.RegisterObservation(binding, j.log.Event)
