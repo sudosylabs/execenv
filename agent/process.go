@@ -5,11 +5,14 @@ import (
 	"context"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
+	"connectrpc.com/connect"
+
 	"github.com/sudosylabs/execenv"
+	execenvv1 "github.com/sudosylabs/execenv/internal/gen/execenv/v1"
 	"github.com/sudosylabs/execenv/internal/processes"
+	"github.com/sudosylabs/execenv/internal/wire"
 )
 
 // ProcessSource reports the processes a workload starts and how they end.
@@ -22,48 +25,27 @@ type ProcessSource interface {
 	Close() error
 }
 
-const (
-	// processQueueEvents bounds the events the helper holds while the host
-	// link is slow. Beyond it events are counted, never waited for.
-	processQueueEvents = execenv.MaxProcessEvents
-	processBatchEvents = 128
-)
-
-// pumpProcesses sends every event to the host as soon as it is taken. The
-// source is read on its own goroutine into a bounded queue, so a slow host
-// link costs counted events, never a stalled workload.
-func (s *server) pumpProcesses(ctx context.Context, source ProcessSource) {
-	queue := newProcessQueue()
+// recordProcesses appends every event to the guest's process log as it is
+// taken. The log is bounded: past its bounds it counts what it drops, and
+// the workload is never held back.
+func (s *server) recordProcesses(ctx context.Context, source ProcessSource) {
 	s.processes.Store(true)
 	go func() {
 		<-ctx.Done()
 		_ = source.Close()
-		queue.close()
 	}()
 	go func() {
 		defer s.processes.Store(false)
 		for {
 			event, err := source.Next()
 			if err != nil {
-				queue.close()
 				return
 			}
-			queue.push(boundProcess(event))
-		}
-	}()
-	go func() {
-		for {
-			batch, ok := queue.take()
-			if !ok {
-				return
+			if event.Kind == execenv.ProcessDropped {
+				s.log.Lost(event.Dropped)
+				continue
 			}
-			// The host's ProcessEvents stream takes it; until one is open
-			// the queue keeps absorbing, and counts what it cannot hold.
-			select {
-			case s.events <- batch:
-			case <-ctx.Done():
-				return
-			}
+			s.log.Append(boundProcess(event))
 		}
 	}()
 }
@@ -84,92 +66,25 @@ func boundProcess(event execenv.ProcessEvent) execenv.ProcessEvent {
 	return event
 }
 
-type processQueue struct {
-	mu     sync.Mutex
-	cond   *sync.Cond
-	events []execenv.ProcessEvent
-	lost   uint64
-	closed bool
-}
-
-func newProcessQueue() *processQueue {
-	q := &processQueue{}
-	q.cond = sync.NewCond(&q.mu)
-	return q
-}
-
-func (q *processQueue) push(event execenv.ProcessEvent) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if q.closed {
-		return
-	}
-	defer q.cond.Signal()
-	if event.Kind == execenv.ProcessDropped {
-		q.lost += event.Dropped
-		return
-	}
-	if q.lost > 0 {
-		if len(q.events)+2 > processQueueEvents {
-			q.lost++
-			return
-		}
-		q.events = append(q.events, dropped(q.lost))
-		q.lost = 0
-	}
-	if len(q.events) >= processQueueEvents {
-		q.lost++
-		return
-	}
-	q.events = append(q.events, event)
-}
-
-func (q *processQueue) take() ([]execenv.ProcessEvent, bool) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	for len(q.events) == 0 && q.lost == 0 && !q.closed {
-		q.cond.Wait()
-	}
-	if q.closed {
-		return nil, false
-	}
-	if len(q.events) == 0 {
-		lost := q.lost
-		q.lost = 0
-		return []execenv.ProcessEvent{dropped(lost)}, true
-	}
-	n := min(len(q.events), processBatchEvents)
-	batch := append([]execenv.ProcessEvent(nil), q.events[:n]...)
-	q.events = append(q.events[:0], q.events[n:]...)
-	return batch, true
-}
-
-func (q *processQueue) close() {
-	q.mu.Lock()
-	q.closed = true
-	q.cond.Broadcast()
-	q.mu.Unlock()
-}
-
-func dropped(count uint64) execenv.ProcessEvent {
-	return execenv.ProcessEvent{Kind: execenv.ProcessDropped, Dropped: count, At: time.Now()}
-}
-
-// ObserveProcesses pages the process log the host retains for this guest.
-// The log outlives the guest link, so a lost link loses no retained event.
+// ObserveProcesses pages the process log the guest retains. It outlives the
+// guest link and the host, so neither losing the link nor restarting the
+// host loses a retained event.
 func (c *Client) ObserveProcesses(ctx context.Context, after uint64, limit int) (execenv.ProcessPage, error) {
-	if err := ctx.Err(); err != nil {
-		return execenv.ProcessPage{}, err
+	ctx, cancel := c.call(ctx)
+	defer cancel()
+	resp, err := c.agent.ObserveProcesses(ctx, connect.NewRequest(&execenvv1.ObserveProcessesRequest{After: after, Limit: int32(limit)}))
+	if err != nil {
+		return execenv.ProcessPage{}, c.failure("process_observe", err)
 	}
-	return c.processes.Page(after, limit)
+	return wire.ProcessPageFrom(resp.Msg), nil
 }
 
 // AcknowledgeProcesses releases retained process events through a sequence.
 func (c *Client) AcknowledgeProcesses(ctx context.Context, through uint64) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return c.processes.Acknowledge(through)
+	ctx, cancel := c.call(ctx)
+	defer cancel()
+	_, err := c.agent.AcknowledgeProcesses(ctx, connect.NewRequest(&execenvv1.AcknowledgeProcessesRequest{Through: through}))
+	return c.failure("process_acknowledge", err)
 }
 
 // kernelKind is one raw kernel process event.

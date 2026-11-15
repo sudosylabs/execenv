@@ -8,4 +8,6 @@ func setupAllowlist(execenv.ID, []string) (*netAttach, error) {
 	return nil, execenv.ErrUnavailable
 }
 
-func cleanStaleLinks() {}
+func cleanStaleLinks([]*netAttach) {}
+
+func releaseAttach(*netAttach) {}

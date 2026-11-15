@@ -17,7 +17,6 @@ import (
 	guestv1 "github.com/sudosylabs/execenv/internal/gen/execenv/guest/v1"
 	"github.com/sudosylabs/execenv/internal/gen/execenv/guest/v1/guestv1connect"
 	execenvv1 "github.com/sudosylabs/execenv/internal/gen/execenv/v1"
-	"github.com/sudosylabs/execenv/internal/processes"
 	"github.com/sudosylabs/execenv/internal/wire"
 )
 
@@ -31,9 +30,6 @@ type Client struct {
 	agent     guestv1connect.AgentServiceClient
 	ctx       context.Context
 	cancel    context.CancelFunc
-	// processes is the guest's process log, retained on the host until the
-	// caller acknowledges it.
-	processes *processes.Log
 
 	mu     sync.Mutex
 	frozen bool
@@ -53,7 +49,6 @@ func NewClient(conn net.Conn) *Client {
 		agent:     guestv1connect.NewAgentServiceClient(httpClient, linkBase),
 		ctx:       ctx,
 		cancel:    cancel,
-		processes: processes.New(),
 	}
 	go func() {
 		<-link.done
@@ -64,8 +59,7 @@ func NewClient(conn net.Conn) *Client {
 
 // Verify rejects a helper that speaks another protocol, cannot serve the
 // native journal, or is not recording the workload's processes. Host
-// readiness must not infer capability from its own binary. Once verified,
-// the process log flows to the host until the link ends.
+// readiness must not infer capability from its own binary.
 func (c *Client) Verify(ctx context.Context) error {
 	ctx, cancel := c.call(ctx)
 	defer cancel()
@@ -73,31 +67,12 @@ func (c *Client) Verify(ctx context.Context) error {
 	if err != nil || resp.Msg.GetProtocol() != protocol || !resp.Msg.GetJournal() || !resp.Msg.GetProcesses() {
 		return execenv.Error("agent protocol", execenv.ErrUnavailable)
 	}
-	go c.receiveProcesses()
 	return nil
 }
 
-func (c *Client) receiveProcesses() {
-	stream, err := c.agent.ProcessEvents(c.ctx, connect.NewRequest(&guestv1.ProcessEventsRequest{}))
-	if err != nil {
-		return
-	}
-	defer stream.Close()
-	for stream.Receive() {
-		page := wire.ProcessPageFrom(&execenvv1.ProcessPage{Events: stream.Msg().GetEvents()})
-		if len(page.Events) == 0 {
-			c.processes.Lost(1)
-			continue
-		}
-		for _, event := range page.Events {
-			c.processes.Append(event)
-		}
-	}
-}
-
 // Done is closed once the guest link is gone, whether the guest end failed
-// or Close hung it up. The link is never re-established: a new link would
-// be a new helper session without this one's processes or process log.
+// or Close hung it up. A client serves one link; a host that dials again
+// uses a new client and finds the helper as this one left it.
 func (c *Client) Done() <-chan struct{} { return c.link.done }
 
 // Close hangs up the guest link. The machine is not torn down.

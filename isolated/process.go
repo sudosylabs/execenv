@@ -38,8 +38,12 @@ func newProcessLauncher(cfg Config) launcher {
 func (l *processLauncher) jailBase() string { return filepath.Join(l.cfg.WorkDir, jailsDir) }
 
 type processInstance struct {
-	cmd  *exec.Cmd
-	sock string
+	// pid and start name the monitor for good; it is this host's child
+	// only if this host started it.
+	pid   int
+	start uint64
+	rec   machine
+	sock  string
 	// api is the monitor's API socket, for limits changed while it runs.
 	api  string
 	done <-chan struct{}
@@ -208,26 +212,87 @@ func (l *processLauncher) Start(ctx context.Context, req startRequest) (instance
 	}
 	done := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(done) }()
-	return &processInstance{cmd: cmd, sock: jail.host(jailLinkSoc), api: jail.host(jailAPISock), release: release, done: done}, nil
+	pid := cmd.Process.Pid
+	start, _ := procStart(pid)
+	rec := machine{
+		PID: pid, Start: start, UID: uid,
+		Jail: jail.dir, Exec: filepath.Base(runtimeBin),
+		Sock: jail.host(jailLinkSoc), API: jail.host(jailAPISock),
+		Net: netRecordOf(req.Attach),
+	}
+	return &processInstance{pid: pid, start: start, rec: rec, sock: rec.Sock, api: rec.API, release: release, done: done}, nil
 }
 
-// cleanStale reclaims what a crashed daemon left: jailed monitors (which
-// the parent-death signal no longer reaches once the supervisor dropped
-// privileges), their taps, filters and NAT, then their jails.
-func (l *processLauncher) cleanStale() error {
+// Adopt takes over a machine a previous host started. It is the same
+// machine only if its pid still runs with the start time recorded.
+func (l *processLauncher) Adopt(_ context.Context, m machine) (instance, error) {
+	if start, ok := procStart(m.PID); !ok || start != m.Start || m.PID <= 0 {
+		return nil, execenv.ErrLost
+	}
+	l.uids.claim(m.UID)
+	att, err := m.Net.attach()
+	if err != nil {
+		return nil, execenv.ErrLost
+	}
+	release := []func() error{
+		func() error { l.uids.release(m.UID); return nil },
+		jailLayout{dir: m.Jail}.remove,
+		func() error { removeJailCgroups(m.Exec); return nil },
+	}
+	if att != nil {
+		release = append(release, func() error { att.close(); return nil })
+	}
+	return &processInstance{pid: m.PID, start: m.Start, rec: m, sock: m.Sock, api: m.API, release: release, done: watchExit(m.PID, m.Start)}, nil
+}
+
+func (p *processInstance) Machine() machine { return p.rec }
+
+// cleanStale reclaims what a previous daemon left that is not being
+// adopted: jailed monitors, their taps, filters and NAT, then their jails.
+func (l *processLauncher) cleanStale(keep []machine) error {
 	if runtime.GOOS != "linux" {
 		return nil
 	}
-	killJailed(l.uids)
-	// The monitors are gone, so their taps can be deleted.
-	cleanStaleLinks()
-	if err := unmountUnder(l.jailBase()); err != nil {
+	uids := map[int]bool{}
+	jails := map[string]bool{}
+	var nets []*netAttach
+	for _, m := range keep {
+		uids[m.UID] = true
+		jails[m.Jail] = true
+		if att, err := m.Net.attach(); err == nil && att != nil {
+			nets = append(nets, att)
+		}
+	}
+	killJailed(l.uids, uids)
+	// The other monitors are gone, so their taps can be deleted.
+	cleanStaleLinks(nets)
+	execs, err := os.ReadDir(l.jailBase())
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
+	}
+	for _, e := range execs {
+		parent := filepath.Join(l.jailBase(), e.Name())
+		dirs, err := os.ReadDir(parent)
+		if err != nil {
+			continue
+		}
+		for _, d := range dirs {
+			dir := filepath.Join(parent, d.Name())
+			if jails[dir] {
+				continue
+			}
+			if err := unmountUnder(dir); err != nil {
+				return err
+			}
+			if err := os.RemoveAll(dir); err != nil {
+				return err
+			}
+		}
 	}
 	if runtimeBin, err := lookBinary(l.cfg.Runtime, defaultRuntime); err == nil {
 		removeJailCgroups(filepath.Base(runtimeBin))
 	}
-	return os.RemoveAll(l.jailBase())
+	return nil
 }
 
 // Done closes when the monitor process has been reaped. The guest kernel
@@ -236,22 +301,32 @@ func (l *processLauncher) cleanStale() error {
 func (p *processInstance) Done() <-chan struct{} { return p.done }
 
 func (p *processInstance) Pause(ctx context.Context) error {
-	return signalProcess(ctx, p.cmd, true)
+	return signalProcess(ctx, p.pid, true)
 }
 
 func (p *processInstance) Resume(ctx context.Context) error {
-	return signalProcess(ctx, p.cmd, false)
+	return signalProcess(ctx, p.pid, false)
 }
 
 func (p *processInstance) Stop(ctx context.Context) error {
-	if p.cmd == nil || p.cmd.Process == nil || p.done == nil {
+	if p.pid <= 0 || p.done == nil {
 		return execenv.ErrUnavailable
 	}
-	if err := p.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-		return err
+	select {
+	case <-p.done:
+	default:
+		// Only the recorded machine is killed: a pid whose start time
+		// changed is someone else's.
+		if start, ok := procStart(p.pid); ok && (p.start == 0 || start == p.start) {
+			if proc, err := os.FindProcess(p.pid); err == nil {
+				if err := proc.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+					return err
+				}
+			}
+		}
 	}
-	// The launch-owned waiter reaps exactly once. Killing a process is not a
-	// destruction acknowledgement until that waiter observes its exit.
+	// Killing a process is not a destruction acknowledgement until its
+	// exit has been observed.
 	select {
 	case <-ctx.Done():
 		return ctx.Err()

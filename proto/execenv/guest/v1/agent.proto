@@ -12,18 +12,24 @@ option go_package = "github.com/sudosylabs/execenv/internal/gen/execenv/guest/v1
 
 // AgentService is the guest helper, served on the per-grant guest link.
 // It is internal: the host speaks it, no caller does, and it is versioned
-// with the helper baked into each image.
+// with the helper baked into each image. The helper outlives any one link:
+// a host that restarts dials again and finds the workload, its processes,
+// their recent output and the process log as it left them.
 service AgentService {
   // Hello says what this helper serves. The host refuses a helper on
   // another protocol, or without the journal or the process log.
   rpc Hello(HelloRequest) returns (HelloResponse);
 
-  // Processes, by tag. The host keeps their history, grace and timeout;
-  // the guest runs them inside the contained workload.
+  // Processes, by tag. The guest runs them inside the contained workload
+  // and keeps the newest output of each stream by absolute offset; the host
+  // keeps the longer history, grace and timeout.
   rpc Spawn(SpawnRequest) returns (SpawnResponse);
-  // Output streams every byte the process writes, each with its stream,
-  // then its exit. It opens with an empty event as soon as the guest has
-  // the process. The host opens it right after Spawn.
+  // ListProcesses describes every process the guest holds, so a restarted
+  // host can adopt them.
+  rpc ListProcesses(ListProcessesRequest) returns (ListProcessesResponse);
+  // Output streams the process's output from the given offsets, each chunk
+  // with its stream and offset, then its exit. It opens with an empty event
+  // as soon as the guest has the process.
   rpc Output(OutputRequest) returns (stream OutputResponse);
   // Feed carries input for one process. The first message names it.
   rpc Feed(stream FeedRequest) returns (FeedResponse);
@@ -35,9 +41,10 @@ service AgentService {
   rpc Freeze(FreezeRequest) returns (FreezeResponse);
   rpc Thaw(ThawRequest) returns (ThawResponse);
 
-  // ProcessEvents streams the workload's process log as it happens. The
-  // helper holds a bounded queue while no stream is open.
-  rpc ProcessEvents(ProcessEventsRequest) returns (stream ProcessEventsResponse);
+  // The workload's process log, kept in the guest until the host
+  // acknowledges it. The host checks grant and epoch.
+  rpc ObserveProcesses(execenv.v1.ObserveProcessesRequest) returns (execenv.v1.ProcessPage);
+  rpc AcknowledgeProcesses(execenv.v1.AcknowledgeProcessesRequest) returns (execenv.v1.AcknowledgeProcessesResponse);
 
   rpc UploadContent(stream execenv.v1.UploadContentRequest) returns (execenv.v1.ContentReference);
   rpc InitializeProjection(execenv.v1.InitializeProjectionRequest) returns (execenv.v1.ProjectionReceipt);
@@ -82,8 +89,25 @@ message ProcessRef {
   string tag = 1;
 }
 
+message ListProcessesRequest {}
+
+message ListProcessesResponse {
+  repeated GuestProcess processes = 1;
+}
+
+// GuestProcess is one process as the guest holds it: how it was started,
+// where it stands, and the oldest offset of each stream still held.
+message GuestProcess {
+  execenv.v1.ProcessSpec spec = 1;
+  execenv.v1.ProcessInfo info = 2;
+  map<string, uint64> first = 3;
+}
+
 message OutputRequest {
   string tag = 1;
+  // from is where each stream starts; a stream not named starts at the
+  // oldest byte held.
+  map<string, uint64> from = 2;
 }
 
 message OutputResponse {
@@ -97,6 +121,7 @@ message OutputResponse {
 message Chunk {
   string stream = 1;
   bytes data = 2;
+  uint64 offset = 3;
 }
 
 message FeedRequest {
@@ -126,8 +151,3 @@ message ThawRequest {}
 
 message ThawResponse {}
 
-message ProcessEventsRequest {}
-
-message ProcessEventsResponse {
-  repeated execenv.v1.ProcessEvent events = 1;
-}

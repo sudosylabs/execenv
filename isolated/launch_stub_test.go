@@ -37,6 +37,13 @@ type stubInstance struct {
 
 func (s *stubInstance) Done() <-chan struct{} { return s.exited }
 
+// Machine names the stub by its socket, which a restarted host finds again.
+func (s *stubInstance) Machine() machine {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return machine{Sock: s.sock}
+}
+
 func (s *stubInstance) UpdateLimits(_ context.Context, limits execenv.Limits, _ bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -200,6 +207,27 @@ func (l *recordingLauncher) Start(ctx context.Context, req startRequest) (instan
 	}
 	l.byID[req.ID] = inst
 	return inst, nil
+}
+
+// Adopt finds a stub machine a previous host started, if it still runs.
+func (l *recordingLauncher) Adopt(_ context.Context, m machine) (instance, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, inst := range l.instances {
+		select {
+		case <-inst.exited:
+			continue
+		default:
+		}
+		if inst.Machine().Sock == m.Sock {
+			return inst, nil
+		}
+	}
+	return nil, execenv.ErrLost
+}
+
+func (l *blockingLauncher) Adopt(ctx context.Context, m machine) (instance, error) {
+	return l.inner.Adopt(ctx, m)
 }
 
 // instance returns the machine last started for id.

@@ -50,10 +50,15 @@ type instance interface {
 	// UpdateLimits replaces the running machine's device limits; network
 	// says whether it has a network device to limit.
 	UpdateLimits(ctx context.Context, limits execenv.Limits, network bool) error
+	// Machine is what a restarted host needs to adopt this machine.
+	Machine() machine
 }
 
 type launcher interface {
 	Start(ctx context.Context, req startRequest) (instance, error)
+	// Adopt takes over a machine a previous host started, if it is still
+	// the same running machine; otherwise it is ErrLost.
+	Adopt(ctx context.Context, m machine) (instance, error)
 }
 
 // seedPreparer turns a freshly unpacked seed into what the launcher clones
@@ -65,5 +70,7 @@ type seedPreparer interface {
 // staleCleaner releases host resources a crashed daemon left behind. It
 // runs once at construction, holding the work directory lock.
 type staleCleaner interface {
-	cleanStale() error
+	// cleanStale releases everything a previous host left except the
+	// machines in keep, which are being adopted.
+	cleanStale(keep []machine) error
 }

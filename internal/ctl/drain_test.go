@@ -38,13 +38,14 @@ func TestRestartVerdict(t *testing.T) {
 		{"draining with grants", true, daemon.OperatorReply{State: daemon.DrainDraining, Grants: 1}, nil, false},
 		{"unreachable and stopped", false, daemon.OperatorReply{}, unreachable, true},
 		{"unreachable but running", true, daemon.OperatorReply{}, unreachable, false},
+		{"durable grants survive", true, daemon.OperatorReply{State: daemon.DrainServing, Grants: 3, Durable: true}, nil, true},
 	}
 	for _, c := range cases {
 		err := restartVerdict(c.active, c.reply, c.err)
 		if (err == nil) != c.ok {
 			t.Errorf("%s: restartVerdict() = %v, want ok=%v", c.name, err, c.ok)
 		}
-		if c.reply.Grants > 0 && !errors.Is(err, errGrantsLive) {
+		if c.reply.Grants > 0 && !c.reply.Durable && !errors.Is(err, errGrantsLive) {
 			t.Errorf("%s: error = %v, want errGrantsLive", c.name, err)
 		}
 	}
@@ -81,6 +82,26 @@ func liveDaemon(t *testing.T, opts Options) *memory.Host {
 	t.Cleanup(cancel)
 	go func() { _ = daemon.ServeOperator(ctx, ln, host) }()
 	return host
+}
+
+// A durable daemon restarts with grants live, but an image its grants run
+// from is never removed, not even with --force.
+func TestDurableDaemonRestartsButKeepsImagesInUse(t *testing.T) {
+	t.Parallel()
+	opts := bootstrappedWithFixture(t, t.TempDir())
+	host := liveDaemon(t, opts)
+	occupy(t, host, "held")
+	reply, err := opts.operate(daemon.OperatorStatus)
+	if err != nil || reply.Durable || len(reply.Images) != 1 || reply.Images[0] != "default" {
+		t.Fatalf("status = %+v, %v", reply, err)
+	}
+	if err := restartVerdict(true, daemon.OperatorReply{Grants: 1, Durable: true}, nil); err != nil {
+		t.Fatalf("durable restart refused: %v", err)
+	}
+	used := daemon.OperatorReply{Grants: 1, Durable: true, Images: []string{"fixture"}}
+	if !imageInUse(used, "fixture") || imageInUse(used, "other") || imageInUse(daemon.OperatorReply{Images: []string{"fixture"}}, "fixture") {
+		t.Fatal("imageInUse() misjudged")
+	}
 }
 
 // newCountingServer is a release channel that serves nothing and counts

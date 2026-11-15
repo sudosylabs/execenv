@@ -24,6 +24,12 @@ func New(id execenv.ID) *State {
 	return &State{lock: make(chan struct{}, 1), epoch: epoch, receipt: execenv.ControlReceipt{Fence: execenv.ProjectionFence{ExecutionGrantID: id, EnvironmentEpoch: epoch}, State: execenv.ControlRunning, Confirmed: true}}
 }
 
+// Restore resumes an epoch a restarted host recorded, with its last
+// receipt.
+func Restore(epoch string, receipt execenv.ControlReceipt) *State {
+	return &State{lock: make(chan struct{}, 1), epoch: epoch, receipt: receipt}
+}
+
 func (s *State) Epoch() string { return s.epoch }
 
 func (s *State) acquire(ctx context.Context) error {

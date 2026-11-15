@@ -39,6 +39,12 @@ type environment struct {
 	// gone closes once the environment has been stopped, by revoke or loss.
 	gone     chan struct{}
 	goneOnce sync.Once
+	// started is when the grant was first ensured; its wall timeout runs
+	// from then, across restarts.
+	started time.Time
+	// adoptPending says a restarted host adopted this grant paused, and
+	// takes over its guest's processes when it thaws.
+	adoptPending bool
 }
 
 func (e *environment) ID() execenv.ID { return e.id }
@@ -102,21 +108,32 @@ func (e *environment) endCause(fallback error) error {
 	return execenv.ErrRevoked
 }
 
-// watch waits for the machine or its guest link to end. Either one ending
-// before a revoke is a loss: the guest link cannot be re-established
-// without losing the guest's processes and process log, so the host does
-// not try.
+// watch waits for the machine to end. Its ending before a revoke is a loss.
 func (e *environment) watch() {
 	e.mu.Lock()
-	inst, client := e.inst, e.client
+	inst := e.inst
 	e.mu.Unlock()
-	if inst == nil || client == nil {
+	if inst == nil {
 		return
 	}
 	select {
 	case <-e.gone:
 		return
 	case <-inst.Done():
+	}
+	e.host.lose(e)
+}
+
+// watchLink waits for a guest link to end. A link that breaks while the
+// host runs means the guest helper died, which is a loss; only a restarted
+// host dials a guest again.
+func (e *environment) watchLink(client *agent.Client) {
+	if client == nil {
+		return
+	}
+	select {
+	case <-e.gone:
+		return
 	case <-client.Done():
 	}
 	e.host.lose(e)
@@ -169,12 +186,12 @@ func (e *environment) thaw(ctx context.Context) error {
 		e.mu.Unlock()
 		return err
 	}
-	client, inst, frozen := e.client, e.inst, e.frozen
+	client, inst, frozen, pending := e.client, e.inst, e.frozen, e.adoptPending
 	e.mu.Unlock()
 	if !frozen {
 		return nil
 	}
-	if client == nil || inst == nil {
+	if inst == nil || (client == nil && !pending) {
 		return execenv.Error("thaw", execenv.ErrUnavailable)
 	}
 	if err := inst.Resume(ctx); err != nil {
@@ -183,6 +200,16 @@ func (e *environment) thaw(ctx context.Context) error {
 	e.mu.Lock()
 	e.paused = false
 	e.mu.Unlock()
+	// A grant adopted paused meets its guest now.
+	if client == nil {
+		if err := e.dial(ctx); err != nil {
+			return execenv.Error("thaw", err)
+		}
+		e.mu.Lock()
+		client = e.client
+		e.mu.Unlock()
+		go e.watchLink(client)
+	}
 	if err := client.Reopen(ctx); err != nil {
 		// A failed recovery never leaves a runnable guest behind an apparently
 		// closed gate. Use a separate bounded context if the caller timed out.
@@ -194,10 +221,18 @@ func (e *environment) thaw(ctx context.Context) error {
 		e.mu.Unlock()
 		return execenv.Error("thaw", errors.Join(err, pauseErr))
 	}
+	e.procs.Thaw()
+	if pending {
+		if err := e.adoptProcesses(ctx, client); err != nil {
+			return execenv.Error("thaw", err)
+		}
+		e.mu.Lock()
+		e.adoptPending = false
+		e.mu.Unlock()
+	}
 	e.mu.Lock()
 	e.frozen = false
 	e.mu.Unlock()
-	e.procs.Thaw()
 	return nil
 }
 
@@ -255,7 +290,7 @@ func (e *environment) UpdateLimits(ctx context.Context, fence execenv.Projection
 	if err := execenv.ValidateLimits(limits); err != nil {
 		return execenv.Error("update_limits", err)
 	}
-	return e.control.Run(ctx, fence, func() error {
+	err := e.control.Run(ctx, fence, func() error {
 		e.mu.Lock()
 		inst := e.inst
 		network := e.spec.Network
@@ -271,6 +306,10 @@ func (e *environment) UpdateLimits(ctx context.Context, fence execenv.Projection
 		e.mu.Unlock()
 		return nil
 	})
+	if err == nil {
+		e.persist()
+	}
+	return err
 }
 
 func (e *environment) live(op string) (*agent.Client, error) {

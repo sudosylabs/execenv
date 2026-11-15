@@ -16,8 +16,8 @@ import (
 	"github.com/sudosylabs/execenv/internal/files"
 	"github.com/sudosylabs/execenv/internal/journal"
 	"github.com/sudosylabs/execenv/internal/lifetime"
-	"github.com/sudosylabs/execenv/internal/seed"
 	"github.com/sudosylabs/execenv/internal/procs"
+	"github.com/sudosylabs/execenv/internal/seed"
 )
 
 var (
@@ -133,6 +133,24 @@ func (h *Host) SetDraining(on bool) {
 	h.draining = on
 	h.mu.Unlock()
 }
+
+// ImagesInUse are the images live grants were started from.
+func (h *Host) ImagesInUse() []execenv.Image {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	seen := map[execenv.Image]bool{}
+	var out []execenv.Image
+	for _, env := range h.grants {
+		if !seen[env.spec.Image] {
+			seen[env.spec.Image] = true
+			out = append(out, env.spec.Image)
+		}
+	}
+	return out
+}
+
+// DurableGrants is false: the in-memory host's grants end with its process.
+func (h *Host) DurableGrants() bool { return false }
 
 // Lose ends a grant's environment as if its machine had died, without a
 // revoke: its resources are freed and every call on the occupancy fails
@@ -323,7 +341,6 @@ func (h *Host) hasImage(want execenv.Image) bool {
 }
 
 func (e *environment) ID() execenv.ID { return e.id }
-
 
 // UpdateLimits records the limits. The in-memory host has no devices to
 // throttle.

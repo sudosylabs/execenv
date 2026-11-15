@@ -281,4 +281,3 @@ func waitExited(t *testing.T, env execenv.Env, tag string) {
 	}
 	t.Fatalf("%s did not exit", tag)
 }
-

@@ -56,6 +56,10 @@ type OperatorReply struct {
 	State DrainState `json:"state"`
 	// Grants is how many grants the daemon holds, including starting ones.
 	Grants int `json:"grants"`
+	// Durable says the grants survive a restart of the daemon.
+	Durable bool `json:"durable"`
+	// Images are the catalog images live grants were started from.
+	Images []string `json:"images,omitempty"`
 	// Error is set when the request failed.
 	Error string `json:"error,omitempty"`
 }
@@ -64,6 +68,10 @@ type OperatorReply struct {
 // daemon composes implement it; it is not part of the execenv.Host contract.
 type drainable interface {
 	SetDraining(on bool)
+	// ImagesInUse are the images live grants were started from.
+	ImagesInUse() []execenv.Image
+	// DurableGrants says grants survive a restart of the daemon.
+	DurableGrants() bool
 }
 
 // drain owns the daemon's drain state over one host.
@@ -110,7 +118,11 @@ func (d *drain) do(ctx context.Context, op OperatorOp) (OperatorReply, error) {
 	case draining:
 		state = DrainDraining
 	}
-	return OperatorReply{State: state, Grants: report.Grants}, nil
+	reply := OperatorReply{State: state, Grants: report.Grants, Durable: d.adapter.DurableGrants()}
+	for _, image := range d.adapter.ImagesInUse() {
+		reply.Images = append(reply.Images, string(image))
+	}
+	return reply, nil
 }
 
 // listenOperator binds the operator socket at path, replacing a stale socket

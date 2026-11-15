@@ -5,7 +5,6 @@ import (
 	"os"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sudosylabs/execenv"
 )
@@ -215,37 +214,5 @@ func TestKernelProcessesSkipsUnrecordedEvents(t *testing.T) {
 	}
 	if _, err := source.Next(); err == nil {
 		t.Fatal("thread exit recorded")
-	}
-}
-
-// The queue between the source and the host link never blocks the source:
-// beyond its bound it counts, and the count precedes the next event.
-func TestProcessQueueCountsOverflow(t *testing.T) {
-	q := newProcessQueue()
-	start := execenv.ProcessEvent{Kind: execenv.ProcessStarted, PID: 1, At: time.Now()}
-	for range processQueueEvents + 5 {
-		q.push(start)
-	}
-	q.push(execenv.ProcessEvent{Kind: execenv.ProcessDropped, Dropped: 2})
-	total := 0
-	for total < processQueueEvents {
-		batch, ok := q.take()
-		if !ok || len(batch) > processBatchEvents {
-			t.Fatal("bad batch")
-		}
-		total += len(batch)
-	}
-	q.push(start)
-	batch, _ := q.take()
-	if len(batch) != 2 || batch[0].Kind != execenv.ProcessDropped || batch[0].Dropped != 7 || batch[1].Kind != execenv.ProcessStarted {
-		t.Fatalf("overflow: %+v", batch)
-	}
-	q.push(execenv.ProcessEvent{Kind: execenv.ProcessDropped, Dropped: 3})
-	if batch, _ := q.take(); len(batch) != 1 || batch[0].Dropped != 3 {
-		t.Fatalf("loss alone: %+v", batch)
-	}
-	q.close()
-	if _, ok := q.take(); ok {
-		t.Fatal("closed queue delivered")
 	}
 }

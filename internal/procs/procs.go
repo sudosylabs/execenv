@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/ring"
 )
 
 // Backend is one running process, as the adapter started it.
@@ -57,7 +58,7 @@ type proc struct {
 	spec    execenv.ProcessSpec
 	backend Backend
 	started time.Time
-	rings   map[execenv.Stream]*ring
+	rings   map[execenv.Stream]*ring.Ring
 	cond    *sync.Cond
 
 	input     uint64
@@ -121,33 +122,100 @@ func (m *Manager) Start(ctx context.Context, spec execenv.ProcessSpec) (execenv.
 		delete(m.procs, spec.Tag)
 		return execenv.ProcessInfo{}, err
 	}
-	p := placeholder
-	p.backend = backend
-	p.started = time.Now()
-	p.rings = make(map[execenv.Stream]*ring)
-	streams := backend.Streams()
-	for name := range streams {
-		p.rings[name] = newRing(int(spec.HistoryBytes))
-	}
 	if spec.PTY == nil && !spec.Stdin {
 		_ = backend.CloseInput()
+	}
+	placeholder.runLocked(backend, time.Now(), nil)
+	return placeholder.infoLocked(), nil
+}
+
+// Adopted is a process a restarted host finds still held by the guest.
+type Adopted struct {
+	Spec    execenv.ProcessSpec
+	Started time.Time
+	// Input is how much input it has taken; From is where each stream's
+	// output resumes; Until is where each stream stood when it was found.
+	Input uint64
+	From  map[execenv.Stream]uint64
+	Until map[execenv.Stream]uint64
+}
+
+// adoptCatchUp bounds how long Adopt waits for the output a process had
+// already produced to arrive.
+const adoptCatchUp = 5 * time.Second
+
+// Adopt takes over a process the adapter found running, or exited, after
+// a restart. Its history starts at From; readers asking for older output
+// are told it was truncated.
+func (m *Manager) Adopt(a Adopted, backend Backend) error {
+	spec := a.Spec
+	if spec.HistoryBytes == 0 {
+		spec.HistoryBytes = execenv.DefaultHistoryBytes
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// A frozen grant adopts too: its processes were already running.
+	if m.ended != nil {
+		return m.ended
+	}
+	if _, ok := m.procs[spec.Tag]; ok {
+		return execenv.ErrConflict
+	}
+	p := &proc{m: m, spec: spec, input: a.Input}
+	p.cond = sync.NewCond(&m.mu)
+	m.procs[spec.Tag] = p
+	p.runLocked(backend, a.Started, a.From)
+	// Readers resume at offsets they had before the restart, so Adopt
+	// returns once the history reaches where the process stood.
+	expired := false
+	timer := time.AfterFunc(adoptCatchUp, func() {
+		m.mu.Lock()
+		expired = true
+		p.cond.Broadcast()
+		m.mu.Unlock()
+	})
+	defer timer.Stop()
+	for !expired && p.streaming > 0 && !p.caughtUp(a.Until) {
+		p.cond.Wait()
+	}
+	return nil
+}
+
+func (p *proc) caughtUp(until map[execenv.Stream]uint64) bool {
+	for name, r := range p.rings {
+		if r.Total() < until[name] {
+			return false
+		}
+	}
+	return true
+}
+
+// runLocked starts reading backend's output from the offsets in from and
+// arms the process's timeout and grace.
+func (p *proc) runLocked(backend Backend, started time.Time, from map[execenv.Stream]uint64) {
+	p.backend = backend
+	p.started = started
+	p.rings = make(map[execenv.Stream]*ring.Ring)
+	streams := backend.Streams()
+	for name := range streams {
+		p.rings[name] = ring.New(int(p.spec.HistoryBytes), from[name])
 	}
 	p.streaming = len(streams)
 	for name, r := range streams {
 		go p.pump(name, r)
 	}
 	go p.wait()
-	if spec.Timeout > 0 {
-		p.timeout = time.AfterFunc(spec.Timeout, func() {
+	if p.spec.Timeout > 0 {
+		left := max(time.Until(started.Add(p.spec.Timeout)), 0)
+		p.timeout = time.AfterFunc(left, func() {
 			_ = backend.Signal(execenv.SignalTerminate)
 			time.AfterFunc(killDelay, func() { _ = backend.Signal(execenv.SignalKill) })
 		})
 	}
 	p.armGraceLocked()
-	if m.ended != nil {
+	if p.m.ended != nil {
 		_ = backend.Signal(execenv.SignalKill)
 	}
-	return p.infoLocked(), nil
 }
 
 func (p *proc) pump(name execenv.Stream, r io.Reader) {
@@ -156,7 +224,7 @@ func (p *proc) pump(name execenv.Stream, r io.Reader) {
 		n, err := r.Read(buf)
 		if n > 0 {
 			p.m.mu.Lock()
-			p.rings[name].write(buf[:n])
+			p.rings[name].Write(buf[:n])
 			p.cond.Broadcast()
 			p.m.mu.Unlock()
 		}
@@ -210,7 +278,7 @@ func (p *proc) infoLocked() execenv.ProcessInfo {
 		out.PID = p.backend.PID()
 	}
 	for name, r := range p.rings {
-		out.Output[name] = r.total
+		out.Output[name] = r.Total()
 	}
 	return out
 }
@@ -407,9 +475,9 @@ func (m *Manager) Attach(tag string, from map[execenv.Stream]uint64) (execenv.At
 	for name, r := range p.rings {
 		at, ok := from[name]
 		if !ok {
-			at = r.first()
+			at = r.First()
 		}
-		if at > r.total {
+		if at > r.Total() {
 			return nil, execenv.ErrInvalid
 		}
 		a.offsets[name] = at
@@ -464,12 +532,12 @@ func (a *attachment) Next(ctx context.Context) (execenv.Output, error) {
 			a.next++
 			r := a.p.rings[name]
 			at := a.offsets[name]
-			if first := r.first(); at < first {
+			if first := r.First(); at < first {
 				a.offsets[name] = first
 				return execenv.Output{Kind: execenv.OutputTruncated, Stream: name, Offset: at, To: first}, nil
 			}
-			if at < r.total {
-				data := r.read(at, 32<<10)
+			if at < r.Total() {
+				data := r.Read(at, 32<<10)
 				a.offsets[name] = at + uint64(len(data))
 				return execenv.Output{Kind: execenv.OutputData, Stream: name, Offset: at, Data: data}, nil
 			}
@@ -494,42 +562,4 @@ func (a *attachment) Close() error {
 	a.p.armGraceLocked()
 	a.p.cond.Broadcast()
 	return nil
-}
-
-// ring keeps the newest bytes of one stream by absolute offset.
-type ring struct {
-	buf   []byte
-	total uint64
-}
-
-func newRing(size int) *ring { return &ring{buf: make([]byte, size)} }
-
-func (r *ring) first() uint64 {
-	if r.total > uint64(len(r.buf)) {
-		return r.total - uint64(len(r.buf))
-	}
-	return 0
-}
-
-func (r *ring) write(p []byte) {
-	size := uint64(len(r.buf))
-	if uint64(len(p)) > size {
-		r.total += uint64(len(p)) - size
-		p = p[uint64(len(p))-size:]
-	}
-	for len(p) > 0 {
-		at := r.total % size
-		n := copy(r.buf[at:], p)
-		p = p[n:]
-		r.total += uint64(n)
-	}
-}
-
-// read copies up to max bytes from offset, which must be within the ring.
-func (r *ring) read(offset uint64, max int) []byte {
-	size := uint64(len(r.buf))
-	at := offset % size
-	end := min(size, at+(r.total-offset))
-	n := min(int(end-at), max)
-	return append([]byte(nil), r.buf[at:at+uint64(n)]...)
 }

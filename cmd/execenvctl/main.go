@@ -85,10 +85,10 @@ func newBootstrap(opts *ctl.Options) *cobra.Command {
 }
 
 // restartNote is the shared help for commands that restart the daemon.
-const restartNote = " Restarts a running daemon, which destroys every grant it holds, so it refuses before changing anything while the daemon holds grants. Run execenvctl drain first, or pass --force to restart anyway."
+const restartNote = " Restarts a running daemon. An isolated daemon adopts its grants again, so they keep running; one whose grants would not survive (the in-memory adapter) is refused while it holds any. Run execenvctl drain first, or pass --force to restart anyway."
 
 func forceFlag(cmd *cobra.Command, opts *ctl.Options) {
-	cmd.Flags().BoolVar(&opts.Force, "force", false, "restart the daemon even while it holds grants, destroying them")
+	cmd.Flags().BoolVar(&opts.Force, "force", false, "restart a daemon whose grants do not survive a restart even while it holds some, destroying them")
 }
 
 func newInstall(opts *ctl.Options) *cobra.Command {

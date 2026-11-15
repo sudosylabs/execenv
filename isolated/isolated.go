@@ -120,15 +120,14 @@ func New(cfg Config) (*Host, error) {
 		}
 		images[image.ID] = newImageRecord(image)
 	}
-	probe, launch, attach := func() error { return probePlatform(cfg) }, launcher(newProcessLauncher(cfg)), attacher(allowAttacher{})
-	// Stale cleanup runs under the work directory lock, before the grants
-	// directory is cleared, so leftovers of a crashed daemon are released
-	// (jailed monitors, mounts, grant links) rather than merely unlinked.
-	var stale func() error
-	if cleaner, ok := launch.(staleCleaner); ok {
-		stale = cleaner.cleanStale
-	}
-	lock, err := prepareWorkDir(cfg.WorkDir, stale)
+	return newHost(cfg, pool, images, func() error { return probePlatform(cfg) }, newProcessLauncher(cfg), allowAttacher{})
+}
+
+// newHost serves cfg.WorkDir with launch. Under the work directory lock it
+// adopts the grants a previous host left running and releases the rest
+// (jailed monitors, mounts, grant links), before any caller can reach it.
+func newHost(cfg Config, pool *capacity.Pool, images map[execenv.Image]*imageRecord, probe func() error, launch launcher, attach attacher) (*Host, error) {
+	lock, err := prepareWorkDir(cfg.WorkDir)
 	if err != nil {
 		return nil, execenv.Error("isolated", err)
 	}
@@ -158,6 +157,10 @@ func New(cfg Config) (*Host, error) {
 		return nil
 	}
 	h.seeds = seeds
+	if err := h.recover(); err != nil {
+		_ = lock.Close()
+		return nil, execenv.Error("isolated", err)
+	}
 	return h, nil
 }
 
@@ -165,6 +168,31 @@ func New(cfg Config) (*Host, error) {
 func (h *Host) Capabilities() execenv.Capabilities {
 	return execenv.Capabilities{Isolated: true}
 }
+
+// ImagesInUse are the images live grants were started from. The operator
+// tool refuses to remove one.
+func (h *Host) ImagesInUse() []execenv.Image {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	seen := map[execenv.Image]bool{}
+	var out []execenv.Image
+	for _, env := range h.grants {
+		if !seen[env.spec.Image] {
+			seen[env.spec.Image] = true
+			out = append(out, env.spec.Image)
+		}
+	}
+	for _, call := range h.pending {
+		if !seen[call.spec.Image] {
+			seen[call.spec.Image] = true
+			out = append(out, call.spec.Image)
+		}
+	}
+	return out
+}
+
+// DurableGrants is true: a restarted host adopts the grants it held.
+func (h *Host) DurableGrants() bool { return true }
 
 // SetDraining starts or stops draining. A draining host keeps serving the
 // grants it holds, including Ensure of one of them, refuses new grants with
@@ -324,6 +352,7 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		host:    h,
 		inst:    inst,
 		treeDir: treeDir,
+		started: time.Now(),
 	}
 	env.public = env
 	env.procs = procs.New(env.startProcess)
@@ -403,7 +432,9 @@ func (h *Host) completeEnsure(call *ensureCall, env *environment, err error, tre
 		_ = os.RemoveAll(filepath.Dir(treeDir))
 		return nil, err
 	}
+	env.persist()
 	go env.watch()
+	go env.watchLink(env.client)
 	return env.public, nil
 }
 
@@ -429,7 +460,14 @@ func (h *Host) Revoke(ctx context.Context, id execenv.ID) error {
 	}
 	defer h.mu.Unlock()
 	// Revoke acknowledges a loss; the id can then be ensured afresh.
-	delete(h.lost, id)
+	if _, lost := h.lost[id]; lost {
+		delete(h.lost, id)
+		if h.grants[id] == nil {
+			if err := os.RemoveAll(filepath.Join(h.cfg.WorkDir, "grants", string(id))); err != nil {
+				return execenv.Error("revoke", err)
+			}
+		}
+	}
 	env := h.grants[id]
 	if env == nil {
 		return nil
@@ -445,6 +483,11 @@ func (h *Host) revokeExact(ctx context.Context, env *environment) error {
 	defer h.mu.Unlock()
 	if h.lost[env.id] == env {
 		delete(h.lost, env.id)
+		if h.grants[env.id] == nil {
+			if err := os.RemoveAll(filepath.Join(h.cfg.WorkDir, "grants", string(env.id))); err != nil {
+				return err
+			}
+		}
 	}
 	if h.grants[env.id] != env {
 		return nil
@@ -471,8 +514,14 @@ func (h *Host) lose(env *environment) {
 	if err != nil {
 		return
 	}
-	if err := os.RemoveAll(filepath.Join(h.cfg.WorkDir, "grants", string(env.id))); err != nil {
+	dir := filepath.Join(h.cfg.WorkDir, "grants", string(env.id))
+	if err := os.RemoveAll(dir); err != nil {
 		return
+	}
+	// The loss outlives a restart: only the caller's revoke clears it.
+	if os.MkdirAll(dir, 0o700) == nil {
+		receipt, _ := env.control.Status(context.Background())
+		_ = saveState(h.cfg.WorkDir, grantState{Spec: env.spec, Epoch: env.control.Epoch(), Receipt: receipt, Started: env.started, Lost: true})
 	}
 	delete(h.grants, env.id)
 	h.pool.Release(env.id)

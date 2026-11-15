@@ -61,7 +61,8 @@ type Options struct {
 	ReleaseURL string
 	// Reload, if set, replaces the systemd reload after catalog changes.
 	Reload func() error
-	// Force restarts the daemon even while it holds grants, destroying
+	// Force restarts a daemon whose grants do not survive a restart even
+	// while it holds some, destroying
 	// them. Without it install, remove and upgrade refuse to restart a
 	// daemon that holds grants.
 	Force bool
@@ -384,7 +385,9 @@ func writeUnit(opts Options) error {
 		"Type=simple\n" +
 		"ExecStart=" + opts.execenvPath() + " -config " + opts.configPath() + "\n" +
 		"Restart=on-failure\n" +
-		"KillMode=control-group\n" +
+		// Grants' machines outlive a restart of the daemon, which adopts
+		// them again; stopping the unit stops only the daemon.
+		"KillMode=process\n" +
 		"NoNewPrivileges=true\n" +
 		"\n" +
 		"[Install]\n" +

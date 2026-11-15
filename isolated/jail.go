@@ -146,6 +146,13 @@ func (p *jailUIDs) acquire() (int, error) {
 	return 0, execenv.ErrCapacity
 }
 
+// claim marks uid used by an adopted machine.
+func (p *jailUIDs) claim(uid int) {
+	p.mu.Lock()
+	p.used[uid] = true
+	p.mu.Unlock()
+}
+
 func (p *jailUIDs) release(uid int) {
 	p.mu.Lock()
 	delete(p.used, uid)

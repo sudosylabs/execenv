@@ -18,6 +18,7 @@ import (
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/internal/content"
 	"github.com/sudosylabs/execenv/internal/journal"
+	"github.com/sudosylabs/execenv/internal/processes"
 )
 
 // This exercises the real guest wire and disk engine with quiescent test files.
@@ -111,12 +112,12 @@ func journalWireFixture(t *testing.T) (*Client, string) {
 	home := t.TempDir()
 	hostConn, guestConn := net.Pipe()
 	ctx, cancel := context.WithCancel(t.Context())
-	server := &server{home: home, events: make(chan []execenv.ProcessEvent), journal: journal.New(home, wireStore(t), openBarrier{}, nil)}
+	server := &server{home: home, log: processes.New(), procs: map[string]*guestProc{}, journal: journal.New(home, wireStore(t), openBarrier{}, nil)}
 	server.processes.Store(true)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		defer server.shutdown()
+		defer server.stopAll()
 		defer server.journal.Close()
 		server.serveLink(ctx, guestConn, server)
 	}()

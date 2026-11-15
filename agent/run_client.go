@@ -26,13 +26,51 @@ func (c *Client) Start(ctx context.Context, spec execenv.ProcessSpec) (procs.Bac
 	if err != nil {
 		return nil, c.failure("start", err)
 	}
-	stream, err := c.agent.Output(c.ctx, connect.NewRequest(&guestv1.OutputRequest{Tag: spec.Tag}))
+	return c.open(spec.Tag, int(resp.Msg.GetPid()), spec.PTY != nil, nil)
+}
+
+// GuestProcess is a process the guest holds, as a restarted host finds it.
+type GuestProcess struct {
+	Spec execenv.ProcessSpec
+	Info execenv.ProcessInfo
+	// First is the oldest offset of each stream the guest still holds.
+	First map[execenv.Stream]uint64
+}
+
+// Processes lists what the guest holds, running or exited.
+func (c *Client) Processes(ctx context.Context) ([]GuestProcess, error) {
+	ctx, cancel := c.call(ctx)
+	defer cancel()
+	resp, err := c.agent.ListProcesses(ctx, connect.NewRequest(&guestv1.ListProcessesRequest{}))
+	if err != nil {
+		return nil, c.failure("processes", err)
+	}
+	out := make([]GuestProcess, 0, len(resp.Msg.GetProcesses()))
+	for _, gp := range resp.Msg.GetProcesses() {
+		spec, ok := wire.ProcessSpecFrom(gp.GetSpec())
+		if !ok {
+			return nil, execenv.Error("processes", execenv.ErrUnavailable)
+		}
+		out = append(out, GuestProcess{Spec: spec, Info: wire.ProcessInfoFrom(gp.GetInfo()), First: wire.OffsetsFrom(gp.GetFirst())})
+	}
+	return out, nil
+}
+
+// Adopt reads on from a process the guest holds, from the oldest output it
+// still has.
+func (c *Client) Adopt(gp GuestProcess) (procs.Backend, error) {
+	return c.open(gp.Spec.Tag, gp.Info.PID, gp.Spec.PTY != nil, gp.First)
+}
+
+// open streams tag's output from the offsets in from.
+func (c *Client) open(tag string, pid int, pty bool, from map[execenv.Stream]uint64) (procs.Backend, error) {
+	stream, err := c.agent.Output(c.ctx, connect.NewRequest(&guestv1.OutputRequest{Tag: tag, From: wire.OffsetsTo(from)}))
 	if err != nil {
 		return nil, c.failure("output", err)
 	}
-	b := &guestBackend{client: c, tag: spec.Tag, pid: int(resp.Msg.GetPid()), stream: stream, done: make(chan struct{}), writers: map[execenv.Stream]*io.PipeWriter{}, readers: map[execenv.Stream]io.Reader{}}
+	b := &guestBackend{client: c, tag: tag, pid: pid, stream: stream, done: make(chan struct{}), writers: map[execenv.Stream]*io.PipeWriter{}, readers: map[execenv.Stream]io.Reader{}}
 	names := []execenv.Stream{execenv.StreamStdout, execenv.StreamStderr}
-	if spec.PTY != nil {
+	if pty {
 		names = []execenv.Stream{execenv.StreamPTY}
 	}
 	for _, name := range names {

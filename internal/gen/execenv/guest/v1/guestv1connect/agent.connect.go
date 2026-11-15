@@ -38,6 +38,9 @@ const (
 	AgentServiceHelloProcedure = "/execenv.guest.v1.AgentService/Hello"
 	// AgentServiceSpawnProcedure is the fully-qualified name of the AgentService's Spawn RPC.
 	AgentServiceSpawnProcedure = "/execenv.guest.v1.AgentService/Spawn"
+	// AgentServiceListProcessesProcedure is the fully-qualified name of the AgentService's
+	// ListProcesses RPC.
+	AgentServiceListProcessesProcedure = "/execenv.guest.v1.AgentService/ListProcesses"
 	// AgentServiceOutputProcedure is the fully-qualified name of the AgentService's Output RPC.
 	AgentServiceOutputProcedure = "/execenv.guest.v1.AgentService/Output"
 	// AgentServiceFeedProcedure is the fully-qualified name of the AgentService's Feed RPC.
@@ -54,9 +57,12 @@ const (
 	AgentServiceFreezeProcedure = "/execenv.guest.v1.AgentService/Freeze"
 	// AgentServiceThawProcedure is the fully-qualified name of the AgentService's Thaw RPC.
 	AgentServiceThawProcedure = "/execenv.guest.v1.AgentService/Thaw"
-	// AgentServiceProcessEventsProcedure is the fully-qualified name of the AgentService's
-	// ProcessEvents RPC.
-	AgentServiceProcessEventsProcedure = "/execenv.guest.v1.AgentService/ProcessEvents"
+	// AgentServiceObserveProcessesProcedure is the fully-qualified name of the AgentService's
+	// ObserveProcesses RPC.
+	AgentServiceObserveProcessesProcedure = "/execenv.guest.v1.AgentService/ObserveProcesses"
+	// AgentServiceAcknowledgeProcessesProcedure is the fully-qualified name of the AgentService's
+	// AcknowledgeProcesses RPC.
+	AgentServiceAcknowledgeProcessesProcedure = "/execenv.guest.v1.AgentService/AcknowledgeProcesses"
 	// AgentServiceUploadContentProcedure is the fully-qualified name of the AgentService's
 	// UploadContent RPC.
 	AgentServiceUploadContentProcedure = "/execenv.guest.v1.AgentService/UploadContent"
@@ -103,12 +109,16 @@ type AgentServiceClient interface {
 	// Hello says what this helper serves. The host refuses a helper on
 	// another protocol, or without the journal or the process log.
 	Hello(context.Context, *connect.Request[v1.HelloRequest]) (*connect.Response[v1.HelloResponse], error)
-	// Processes, by tag. The host keeps their history, grace and timeout;
-	// the guest runs them inside the contained workload.
+	// Processes, by tag. The guest runs them inside the contained workload
+	// and keeps the newest output of each stream by absolute offset; the host
+	// keeps the longer history, grace and timeout.
 	Spawn(context.Context, *connect.Request[v1.SpawnRequest]) (*connect.Response[v1.SpawnResponse], error)
-	// Output streams every byte the process writes, each with its stream,
-	// then its exit. It opens with an empty event as soon as the guest has
-	// the process. The host opens it right after Spawn.
+	// ListProcesses describes every process the guest holds, so a restarted
+	// host can adopt them.
+	ListProcesses(context.Context, *connect.Request[v1.ListProcessesRequest]) (*connect.Response[v1.ListProcessesResponse], error)
+	// Output streams the process's output from the given offsets, each chunk
+	// with its stream and offset, then its exit. It opens with an empty event
+	// as soon as the guest has the process.
 	Output(context.Context, *connect.Request[v1.OutputRequest]) (*connect.ServerStreamForClient[v1.OutputResponse], error)
 	// Feed carries input for one process. The first message names it.
 	Feed(context.Context) *connect.ClientStreamForClient[v1.FeedRequest, v1.FeedResponse]
@@ -118,9 +128,10 @@ type AgentServiceClient interface {
 	// Freeze closes I/O before the host pauses the machine; Thaw reopens it.
 	Freeze(context.Context, *connect.Request[v1.FreezeRequest]) (*connect.Response[v1.FreezeResponse], error)
 	Thaw(context.Context, *connect.Request[v1.ThawRequest]) (*connect.Response[v1.ThawResponse], error)
-	// ProcessEvents streams the workload's process log as it happens. The
-	// helper holds a bounded queue while no stream is open.
-	ProcessEvents(context.Context, *connect.Request[v1.ProcessEventsRequest]) (*connect.ServerStreamForClient[v1.ProcessEventsResponse], error)
+	// The workload's process log, kept in the guest until the host
+	// acknowledges it. The host checks grant and epoch.
+	ObserveProcesses(context.Context, *connect.Request[v11.ObserveProcessesRequest]) (*connect.Response[v11.ProcessPage], error)
+	AcknowledgeProcesses(context.Context, *connect.Request[v11.AcknowledgeProcessesRequest]) (*connect.Response[v11.AcknowledgeProcessesResponse], error)
 	UploadContent(context.Context) *connect.ClientStreamForClient[v11.UploadContentRequest, v11.ContentReference]
 	InitializeProjection(context.Context, *connect.Request[v11.InitializeProjectionRequest]) (*connect.Response[v11.ProjectionReceipt], error)
 	ApplyProjection(context.Context, *connect.Request[v11.ApplyProjectionRequest]) (*connect.Response[v11.ProjectionReceipt], error)
@@ -162,6 +173,12 @@ func NewAgentServiceClient(httpClient connect.HTTPClient, baseURL string, opts .
 			httpClient,
 			baseURL+AgentServiceSpawnProcedure,
 			connect.WithSchema(agentServiceMethods.ByName("Spawn")),
+			connect.WithClientOptions(opts...),
+		),
+		listProcesses: connect.NewClient[v1.ListProcessesRequest, v1.ListProcessesResponse](
+			httpClient,
+			baseURL+AgentServiceListProcessesProcedure,
+			connect.WithSchema(agentServiceMethods.ByName("ListProcesses")),
 			connect.WithClientOptions(opts...),
 		),
 		output: connect.NewClient[v1.OutputRequest, v1.OutputResponse](
@@ -206,10 +223,16 @@ func NewAgentServiceClient(httpClient connect.HTTPClient, baseURL string, opts .
 			connect.WithSchema(agentServiceMethods.ByName("Thaw")),
 			connect.WithClientOptions(opts...),
 		),
-		processEvents: connect.NewClient[v1.ProcessEventsRequest, v1.ProcessEventsResponse](
+		observeProcesses: connect.NewClient[v11.ObserveProcessesRequest, v11.ProcessPage](
 			httpClient,
-			baseURL+AgentServiceProcessEventsProcedure,
-			connect.WithSchema(agentServiceMethods.ByName("ProcessEvents")),
+			baseURL+AgentServiceObserveProcessesProcedure,
+			connect.WithSchema(agentServiceMethods.ByName("ObserveProcesses")),
+			connect.WithClientOptions(opts...),
+		),
+		acknowledgeProcesses: connect.NewClient[v11.AcknowledgeProcessesRequest, v11.AcknowledgeProcessesResponse](
+			httpClient,
+			baseURL+AgentServiceAcknowledgeProcessesProcedure,
+			connect.WithSchema(agentServiceMethods.ByName("AcknowledgeProcesses")),
 			connect.WithClientOptions(opts...),
 		),
 		uploadContent: connect.NewClient[v11.UploadContentRequest, v11.ContentReference](
@@ -315,6 +338,7 @@ func NewAgentServiceClient(httpClient connect.HTTPClient, baseURL string, opts .
 type agentServiceClient struct {
 	hello                        *connect.Client[v1.HelloRequest, v1.HelloResponse]
 	spawn                        *connect.Client[v1.SpawnRequest, v1.SpawnResponse]
+	listProcesses                *connect.Client[v1.ListProcessesRequest, v1.ListProcessesResponse]
 	output                       *connect.Client[v1.OutputRequest, v1.OutputResponse]
 	feed                         *connect.Client[v1.FeedRequest, v1.FeedResponse]
 	closeFeed                    *connect.Client[v1.ProcessRef, v1.Empty]
@@ -322,7 +346,8 @@ type agentServiceClient struct {
 	signalProcess                *connect.Client[v1.SignalRequest, v1.Empty]
 	freeze                       *connect.Client[v1.FreezeRequest, v1.FreezeResponse]
 	thaw                         *connect.Client[v1.ThawRequest, v1.ThawResponse]
-	processEvents                *connect.Client[v1.ProcessEventsRequest, v1.ProcessEventsResponse]
+	observeProcesses             *connect.Client[v11.ObserveProcessesRequest, v11.ProcessPage]
+	acknowledgeProcesses         *connect.Client[v11.AcknowledgeProcessesRequest, v11.AcknowledgeProcessesResponse]
 	uploadContent                *connect.Client[v11.UploadContentRequest, v11.ContentReference]
 	initializeProjection         *connect.Client[v11.InitializeProjectionRequest, v11.ProjectionReceipt]
 	applyProjection              *connect.Client[v11.ApplyProjectionRequest, v11.ProjectionReceipt]
@@ -349,6 +374,11 @@ func (c *agentServiceClient) Hello(ctx context.Context, req *connect.Request[v1.
 // Spawn calls execenv.guest.v1.AgentService.Spawn.
 func (c *agentServiceClient) Spawn(ctx context.Context, req *connect.Request[v1.SpawnRequest]) (*connect.Response[v1.SpawnResponse], error) {
 	return c.spawn.CallUnary(ctx, req)
+}
+
+// ListProcesses calls execenv.guest.v1.AgentService.ListProcesses.
+func (c *agentServiceClient) ListProcesses(ctx context.Context, req *connect.Request[v1.ListProcessesRequest]) (*connect.Response[v1.ListProcessesResponse], error) {
+	return c.listProcesses.CallUnary(ctx, req)
 }
 
 // Output calls execenv.guest.v1.AgentService.Output.
@@ -386,9 +416,14 @@ func (c *agentServiceClient) Thaw(ctx context.Context, req *connect.Request[v1.T
 	return c.thaw.CallUnary(ctx, req)
 }
 
-// ProcessEvents calls execenv.guest.v1.AgentService.ProcessEvents.
-func (c *agentServiceClient) ProcessEvents(ctx context.Context, req *connect.Request[v1.ProcessEventsRequest]) (*connect.ServerStreamForClient[v1.ProcessEventsResponse], error) {
-	return c.processEvents.CallServerStream(ctx, req)
+// ObserveProcesses calls execenv.guest.v1.AgentService.ObserveProcesses.
+func (c *agentServiceClient) ObserveProcesses(ctx context.Context, req *connect.Request[v11.ObserveProcessesRequest]) (*connect.Response[v11.ProcessPage], error) {
+	return c.observeProcesses.CallUnary(ctx, req)
+}
+
+// AcknowledgeProcesses calls execenv.guest.v1.AgentService.AcknowledgeProcesses.
+func (c *agentServiceClient) AcknowledgeProcesses(ctx context.Context, req *connect.Request[v11.AcknowledgeProcessesRequest]) (*connect.Response[v11.AcknowledgeProcessesResponse], error) {
+	return c.acknowledgeProcesses.CallUnary(ctx, req)
 }
 
 // UploadContent calls execenv.guest.v1.AgentService.UploadContent.
@@ -476,12 +511,16 @@ type AgentServiceHandler interface {
 	// Hello says what this helper serves. The host refuses a helper on
 	// another protocol, or without the journal or the process log.
 	Hello(context.Context, *connect.Request[v1.HelloRequest]) (*connect.Response[v1.HelloResponse], error)
-	// Processes, by tag. The host keeps their history, grace and timeout;
-	// the guest runs them inside the contained workload.
+	// Processes, by tag. The guest runs them inside the contained workload
+	// and keeps the newest output of each stream by absolute offset; the host
+	// keeps the longer history, grace and timeout.
 	Spawn(context.Context, *connect.Request[v1.SpawnRequest]) (*connect.Response[v1.SpawnResponse], error)
-	// Output streams every byte the process writes, each with its stream,
-	// then its exit. It opens with an empty event as soon as the guest has
-	// the process. The host opens it right after Spawn.
+	// ListProcesses describes every process the guest holds, so a restarted
+	// host can adopt them.
+	ListProcesses(context.Context, *connect.Request[v1.ListProcessesRequest]) (*connect.Response[v1.ListProcessesResponse], error)
+	// Output streams the process's output from the given offsets, each chunk
+	// with its stream and offset, then its exit. It opens with an empty event
+	// as soon as the guest has the process.
 	Output(context.Context, *connect.Request[v1.OutputRequest], *connect.ServerStream[v1.OutputResponse]) error
 	// Feed carries input for one process. The first message names it.
 	Feed(context.Context, *connect.ClientStream[v1.FeedRequest]) (*connect.Response[v1.FeedResponse], error)
@@ -491,9 +530,10 @@ type AgentServiceHandler interface {
 	// Freeze closes I/O before the host pauses the machine; Thaw reopens it.
 	Freeze(context.Context, *connect.Request[v1.FreezeRequest]) (*connect.Response[v1.FreezeResponse], error)
 	Thaw(context.Context, *connect.Request[v1.ThawRequest]) (*connect.Response[v1.ThawResponse], error)
-	// ProcessEvents streams the workload's process log as it happens. The
-	// helper holds a bounded queue while no stream is open.
-	ProcessEvents(context.Context, *connect.Request[v1.ProcessEventsRequest], *connect.ServerStream[v1.ProcessEventsResponse]) error
+	// The workload's process log, kept in the guest until the host
+	// acknowledges it. The host checks grant and epoch.
+	ObserveProcesses(context.Context, *connect.Request[v11.ObserveProcessesRequest]) (*connect.Response[v11.ProcessPage], error)
+	AcknowledgeProcesses(context.Context, *connect.Request[v11.AcknowledgeProcessesRequest]) (*connect.Response[v11.AcknowledgeProcessesResponse], error)
 	UploadContent(context.Context, *connect.ClientStream[v11.UploadContentRequest]) (*connect.Response[v11.ContentReference], error)
 	InitializeProjection(context.Context, *connect.Request[v11.InitializeProjectionRequest]) (*connect.Response[v11.ProjectionReceipt], error)
 	ApplyProjection(context.Context, *connect.Request[v11.ApplyProjectionRequest]) (*connect.Response[v11.ProjectionReceipt], error)
@@ -531,6 +571,12 @@ func NewAgentServiceHandler(svc AgentServiceHandler, opts ...connect.HandlerOpti
 		AgentServiceSpawnProcedure,
 		svc.Spawn,
 		connect.WithSchema(agentServiceMethods.ByName("Spawn")),
+		connect.WithHandlerOptions(opts...),
+	)
+	agentServiceListProcessesHandler := connect.NewUnaryHandler(
+		AgentServiceListProcessesProcedure,
+		svc.ListProcesses,
+		connect.WithSchema(agentServiceMethods.ByName("ListProcesses")),
 		connect.WithHandlerOptions(opts...),
 	)
 	agentServiceOutputHandler := connect.NewServerStreamHandler(
@@ -575,10 +621,16 @@ func NewAgentServiceHandler(svc AgentServiceHandler, opts ...connect.HandlerOpti
 		connect.WithSchema(agentServiceMethods.ByName("Thaw")),
 		connect.WithHandlerOptions(opts...),
 	)
-	agentServiceProcessEventsHandler := connect.NewServerStreamHandler(
-		AgentServiceProcessEventsProcedure,
-		svc.ProcessEvents,
-		connect.WithSchema(agentServiceMethods.ByName("ProcessEvents")),
+	agentServiceObserveProcessesHandler := connect.NewUnaryHandler(
+		AgentServiceObserveProcessesProcedure,
+		svc.ObserveProcesses,
+		connect.WithSchema(agentServiceMethods.ByName("ObserveProcesses")),
+		connect.WithHandlerOptions(opts...),
+	)
+	agentServiceAcknowledgeProcessesHandler := connect.NewUnaryHandler(
+		AgentServiceAcknowledgeProcessesProcedure,
+		svc.AcknowledgeProcesses,
+		connect.WithSchema(agentServiceMethods.ByName("AcknowledgeProcesses")),
 		connect.WithHandlerOptions(opts...),
 	)
 	agentServiceUploadContentHandler := connect.NewClientStreamHandler(
@@ -683,6 +735,8 @@ func NewAgentServiceHandler(svc AgentServiceHandler, opts ...connect.HandlerOpti
 			agentServiceHelloHandler.ServeHTTP(w, r)
 		case AgentServiceSpawnProcedure:
 			agentServiceSpawnHandler.ServeHTTP(w, r)
+		case AgentServiceListProcessesProcedure:
+			agentServiceListProcessesHandler.ServeHTTP(w, r)
 		case AgentServiceOutputProcedure:
 			agentServiceOutputHandler.ServeHTTP(w, r)
 		case AgentServiceFeedProcedure:
@@ -697,8 +751,10 @@ func NewAgentServiceHandler(svc AgentServiceHandler, opts ...connect.HandlerOpti
 			agentServiceFreezeHandler.ServeHTTP(w, r)
 		case AgentServiceThawProcedure:
 			agentServiceThawHandler.ServeHTTP(w, r)
-		case AgentServiceProcessEventsProcedure:
-			agentServiceProcessEventsHandler.ServeHTTP(w, r)
+		case AgentServiceObserveProcessesProcedure:
+			agentServiceObserveProcessesHandler.ServeHTTP(w, r)
+		case AgentServiceAcknowledgeProcessesProcedure:
+			agentServiceAcknowledgeProcessesHandler.ServeHTTP(w, r)
 		case AgentServiceUploadContentProcedure:
 			agentServiceUploadContentHandler.ServeHTTP(w, r)
 		case AgentServiceInitializeProjectionProcedure:
@@ -748,6 +804,10 @@ func (UnimplementedAgentServiceHandler) Spawn(context.Context, *connect.Request[
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.Spawn is not implemented"))
 }
 
+func (UnimplementedAgentServiceHandler) ListProcesses(context.Context, *connect.Request[v1.ListProcessesRequest]) (*connect.Response[v1.ListProcessesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.ListProcesses is not implemented"))
+}
+
 func (UnimplementedAgentServiceHandler) Output(context.Context, *connect.Request[v1.OutputRequest], *connect.ServerStream[v1.OutputResponse]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.Output is not implemented"))
 }
@@ -776,8 +836,12 @@ func (UnimplementedAgentServiceHandler) Thaw(context.Context, *connect.Request[v
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.Thaw is not implemented"))
 }
 
-func (UnimplementedAgentServiceHandler) ProcessEvents(context.Context, *connect.Request[v1.ProcessEventsRequest], *connect.ServerStream[v1.ProcessEventsResponse]) error {
-	return connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.ProcessEvents is not implemented"))
+func (UnimplementedAgentServiceHandler) ObserveProcesses(context.Context, *connect.Request[v11.ObserveProcessesRequest]) (*connect.Response[v11.ProcessPage], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.ObserveProcesses is not implemented"))
+}
+
+func (UnimplementedAgentServiceHandler) AcknowledgeProcesses(context.Context, *connect.Request[v11.AcknowledgeProcessesRequest]) (*connect.Response[v11.AcknowledgeProcessesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.AcknowledgeProcesses is not implemented"))
 }
 
 func (UnimplementedAgentServiceHandler) UploadContent(context.Context, *connect.ClientStream[v11.UploadContentRequest]) (*connect.Response[v11.ContentReference], error) {

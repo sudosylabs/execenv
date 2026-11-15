@@ -194,7 +194,7 @@ capacity each reports.
 
 `Usable` false means the host takes no new grants; `Reason` says why.
 `execenv.ReasonDraining` means its operator is draining it before a
-restart: it keeps serving the grants it holds, and Ensure of a new id
+being taken out of service: it keeps serving the grants it holds, and Ensure of a new id
 returns `ErrDraining`. Place new grants elsewhere until it is usable again.
 
 `Isolation` is the boundary class the host provides:
@@ -282,10 +282,20 @@ and no type assertion to make.
 
 ### Control
 
-`Epoch()` identifies this exact occupancy and survives reconnect and
-re-Ensure. Reconstruction generates a fresh epoch; the host never recovers an
-old epoch without its highest fence. Production host process death kills its
-execution children; restart does not adopt them.
+`Epoch()` identifies this exact occupancy and survives reconnect, re-Ensure
+and a restart of the host daemon. Reconstruction generates a fresh epoch;
+the host never recovers an old epoch without its highest fence.
+
+Grants outlive the daemon. Each grant's machine runs on its own, and the
+daemon records each grant's spec, epoch, control receipt and machine in a
+state file it replaces atomically. A restarted daemon adopts every grant
+whose machine still runs: same epoch, same fence, same processes. Each
+process's output resumes from the offsets you held, and the process log
+and observations you had not acknowledged are still there. A grant frozen
+when the daemon went away is still frozen; it thaws under its next fence.
+A grant whose machine ended while no daemon ran is lost after the restart
+(`ErrLost` until you revoke it). The in-memory host's grants end with its
+process.
 
 ```go
 fence := execenv.ProjectionFence{
@@ -892,11 +902,12 @@ Each grant's monitor runs in its own jail under
 into the jail (read-only bind mounts when they sit on another filesystem),
 so catalog files must stay readable by other users (the installed mode is
 `0644`). Reserve the uid range for execenv: a restarted host kills every
-process running under it.
+process running under it except the machines of the grants it adopts.
 
 The workspace disk is a sparse file in the grant's directory, so only
 written blocks use host storage. It is created when the grant starts and
-removed on revoke and when a restarted daemon clears stale grants. The
+removed on revoke, and when a restarted daemon finds a grant's machine
+gone. The
 guest does not reclaim space from deleted files during a grant.
 
 The daemon watches every grant's machine. If a monitor exits, a guest
@@ -1042,9 +1053,9 @@ sudo execenvctl list
 
 `install` fetches that id from this binary’s tagged release, verifies the
 kernel-then-rootfs hash, writes local paths into Host configuration, and
-restarts the daemon. A restart destroys every grant the daemon holds, so
-`install`, `remove` and `upgrade` refuse, before changing anything, while
-grants are live; see Drain before a restart.
+restarts the daemon. The restarted daemon adopts its grants, so they keep
+running. `remove` refuses an image a live grant was started from; revoke
+those grants first.
 
 Ids you can install when the release includes them: `python`, `node`,
 `go`, `java`. `default` is a large universal-class disk, often published
@@ -1067,17 +1078,17 @@ sudo execenvctl remove python   # does not touch the token
 
 Until an id is installed, `Ensure` of that id is `ErrUnknownImage`.
 
-### Drain before a restart
+### Drain the host
 
-`install`, `remove` and `upgrade` restart a running daemon. Drain it first
-so no live grant is destroyed:
+`install`, `remove` and `upgrade` restart a running daemon, and the
+restarted daemon adopts every grant it held. To take a host out of service
+instead, drain it:
 
 ```sh
 sudo execenvctl drain --timeout 30m
 # state=draining grants=3
 # state=draining grants=1
 # state=drained grants=0
-sudo execenvctl install python
 ```
 
 While draining, the daemon keeps serving the grants it holds (including
@@ -1086,22 +1097,23 @@ reports `Usable` false with reason `draining`, so the application places
 new grants elsewhere. `drain` prints the remaining count as it changes and
 returns once none remain. If `--timeout` passes first it exits non-zero
 and the daemon stays draining; `--timeout 0` starts the drain and returns
-at once. A drained daemon restarts without `--force`, and the restart
-brings it back serving. To cancel a drain without restarting:
+at once. To cancel a drain without restarting:
 
 ```sh
 sudo execenvctl undrain
 ```
 
-`--force` on `install`, `remove` or `upgrade` restarts anyway and destroys
-the live grants. They also refuse when the unit is running but its daemon
-does not answer, since then nothing can say whether grants are live.
+A daemon whose grants would not survive a restart (the in-memory adapter)
+is not restarted while it holds any; `--force` restarts it anyway and
+destroys them. A running unit whose daemon does not answer is refused too,
+since then nothing can say what it holds.
 
 execenvctl reaches the daemon on a Unix socket, `operator_socket` in Host
 configuration (bootstrap writes `/var/lib/execenv/operator.sock`, mode
-`0600`). It carries only drain requests and the live grant count, never
-grant operations, so grant callers on the network cannot take the host out
-of service. Drain state is not saved: every daemon start begins serving.
+`0600`). It carries only drain requests, the live grant count and the
+images those grants run from, never grant operations, so grant callers on
+the network cannot take the host out of service. Drain state is not saved:
+every daemon start begins serving.
 
 ### Give the application what it needs
 
@@ -1123,8 +1135,9 @@ sudo execenvctl upgrade
 
 That replaces `execenv` and `execenvctl` from this binary’s tag, then
 reinstalls every catalog id already on the host so the guest agent
-matches, then restarts the daemon once. Drain first (see above); without
-`--force` it refuses before replacing anything while grants are live.
+matches, then restarts the daemon once. Live grants keep running: the
+upgraded daemon adopts them, and their machines keep the guest agent they
+started with until they end.
 Token, TLS files, listen address, capacity, and allowlist stay.
 If an installed id is missing from the new index, upgrade fails before
 binaries move. When everything already matches: `upgraded=already current`.

@@ -16,33 +16,46 @@ import (
 
 	"github.com/sudosylabs/execenv"
 	guestv1 "github.com/sudosylabs/execenv/internal/gen/execenv/guest/v1"
+	"github.com/sudosylabs/execenv/internal/ring"
 	"github.com/sudosylabs/execenv/internal/wire"
 )
 
-// The guest runs the processes the host starts. It holds no history: the
-// host does. Output waits in the kernel's pipe or terminal buffer, and in a
-// short queue here, until the host reads it, so a process outruns no
-// reader; it is held back instead.
+// The guest runs the processes the host starts and keeps the newest output
+// of each stream by absolute offset. A process may run ahead of what the
+// host has read by at most guestHistory per stream; beyond that it is held
+// back, so nothing the host has not received is ever dropped. A host that
+// restarts lists the processes and reads on from where the guest stands.
 
-// outputDrain is how long a process's output may still arrive after it
-// exits, from children that kept its terminal or pipes open.
-const outputDrain = 200 * time.Millisecond
-
-type chunk struct {
-	stream execenv.Stream
-	data   []byte
-	exit   *execenv.ExitStatus
-}
+const (
+	// guestHistory is the output each stream keeps. It covers everything
+	// the guest link can hold in flight, so a broken link loses nothing.
+	guestHistory = 2 << 20
+	// outputDrain is how long a process's output may still arrive after it
+	// exits, from children that kept its terminal or pipes open.
+	outputDrain = 200 * time.Millisecond
+)
 
 type guestProc struct {
-	spec  execenv.ProcessSpec
-	cmd   *exec.Cmd
-	pty   *os.File
-	stdin *os.File
-	// reads are the host ends of the outputs; they close after the drain.
-	reads  []*os.File
-	out    chan chunk
-	exited chan struct{}
+	spec    execenv.ProcessSpec
+	cmd     *exec.Cmd
+	started time.Time
+	pty     *os.File
+	stdin   *os.File
+	// reads are the guest ends of the outputs; they close after the drain.
+	reads []*os.File
+
+	mu   sync.Mutex
+	cond *sync.Cond
+	// rings hold each stream's newest output; sent is how far the current
+	// reader has been sent. A stream's pump waits while it is guestHistory
+	// ahead of sent.
+	rings   map[execenv.Stream]*ring.Ring
+	sent    map[execenv.Stream]uint64
+	pumping int
+	closing bool
+	exited  bool
+	exit    execenv.ExitStatus
+	input   uint64
 
 	// outMu admits one Output stream at a time; inMu one Feed.
 	outMu sync.Mutex
@@ -50,12 +63,9 @@ type guestProc struct {
 }
 
 func (p *guestProc) done() bool {
-	select {
-	case <-p.exited:
-		return true
-	default:
-		return false
-	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.exited
 }
 
 func (s *server) Spawn(_ context.Context, req *connect.Request[guestv1.SpawnRequest]) (*connect.Response[guestv1.SpawnResponse], error) {
@@ -71,13 +81,7 @@ func (s *server) Spawn(_ context.Context, req *connect.Request[guestv1.SpawnRequ
 	if old, ok := s.procs[spec.Tag]; ok && !old.done() {
 		return nil, wire.Error(execenv.ErrConflict)
 	}
-	running := 0
-	for _, p := range s.procs {
-		if !p.done() {
-			running++
-		}
-	}
-	if running >= execenv.MaxProcesses {
+	if s.runningLocked() >= execenv.MaxProcesses {
 		return nil, wire.Error(execenv.ErrBusy)
 	}
 	p, err := s.spawn(spec)
@@ -125,7 +129,8 @@ func (s *server) spawn(spec execenv.ProcessSpec) (*guestProc, error) {
 	}
 	cmd.Dir = dir
 	cmd.Env = environment(s.scratch, dir, spec)
-	p := &guestProc{spec: spec, cmd: cmd, out: make(chan chunk, 16), exited: make(chan struct{})}
+	p := &guestProc{spec: spec, cmd: cmd, rings: map[execenv.Stream]*ring.Ring{}, sent: map[execenv.Stream]uint64{}}
+	p.cond = sync.NewCond(&p.mu)
 	if spec.PTY != nil {
 		master, err := startPTY(cmd, *spec.PTY)
 		if err != nil {
@@ -133,7 +138,8 @@ func (s *server) spawn(spec execenv.ProcessSpec) (*guestProc, error) {
 		}
 		p.pty = master
 		p.reads = []*os.File{master}
-		go p.pump(execenv.StreamPTY, master)
+		p.started = time.Now()
+		p.pumpAll(map[execenv.Stream]*os.File{execenv.StreamPTY: master})
 	} else if err := p.startPiped(); err != nil {
 		return nil, err
 	}
@@ -185,12 +191,14 @@ func (p *guestProc) startPiped() error {
 		p.cmd.Stdin, p.stdin = r, w
 		closeAfter = append(closeAfter, r)
 	}
+	outputs := map[execenv.Stream]*os.File{}
 	for _, stream := range []execenv.Stream{execenv.StreamStdout, execenv.StreamStderr} {
 		r, w, err := os.Pipe()
 		if err != nil {
 			return fail(err)
 		}
 		p.reads = append(p.reads, r)
+		outputs[stream] = r
 		closeAfter = append(closeAfter, w)
 		if stream == execenv.StreamStdout {
 			p.cmd.Stdout = w
@@ -203,29 +211,52 @@ func (p *guestProc) startPiped() error {
 	if err := p.cmd.Start(); err != nil {
 		return fail(err)
 	}
+	p.started = time.Now()
 	for _, f := range closeAfter {
 		_ = f.Close()
 	}
-	go p.pump(execenv.StreamStdout, p.reads[0])
-	go p.pump(execenv.StreamStderr, p.reads[1])
+	p.pumpAll(outputs)
 	return nil
 }
 
+func (p *guestProc) pumpAll(outputs map[execenv.Stream]*os.File) {
+	p.mu.Lock()
+	for name := range outputs {
+		p.rings[name] = ring.New(guestHistory, 0)
+		p.pumping++
+	}
+	p.mu.Unlock()
+	for name, f := range outputs {
+		go p.pump(name, f)
+	}
+}
+
+// pump moves a stream's output into its ring, holding the process back
+// while the ring is a full history ahead of the host.
 func (p *guestProc) pump(stream execenv.Stream, r io.Reader) {
 	buf := make([]byte, wire.ChunkSize)
+	defer func() {
+		p.mu.Lock()
+		p.pumping--
+		p.cond.Broadcast()
+		p.mu.Unlock()
+	}()
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
-			select {
-			case p.out <- chunk{stream: stream, data: append([]byte(nil), buf[:n]...)}:
-			case <-p.exited:
-				// After the exit, output waits only for the drain.
-				select {
-				case p.out <- chunk{stream: stream, data: append([]byte(nil), buf[:n]...)}:
-				case <-time.After(outputDrain):
-					return
-				}
+			p.mu.Lock()
+			rg := p.rings[stream]
+			for !p.closing && rg.Total()+uint64(n)-p.sent[stream] > guestHistory {
+				p.cond.Wait()
 			}
+			if p.closing && rg.Total()+uint64(n)-p.sent[stream] > guestHistory {
+				// Past the drain, output nobody reads is not kept.
+				p.mu.Unlock()
+				return
+			}
+			rg.Write(buf[:n])
+			p.cond.Broadcast()
+			p.mu.Unlock()
 		}
 		if err != nil {
 			return
@@ -233,21 +264,28 @@ func (p *guestProc) pump(stream execenv.Stream, r io.Reader) {
 	}
 }
 
-// wait reports the exit once the process has ended and its output has
-// drained. Children left holding its outputs are cut off after the drain.
+// wait records the exit, then cuts off children left holding the outputs
+// once the drain has passed.
 func (p *guestProc) wait() {
 	_ = p.cmd.Wait()
 	status := exitStatus(p.cmd)
-	close(p.exited)
+	p.mu.Lock()
+	p.exited, p.exit = true, status
+	p.cond.Broadcast()
+	p.mu.Unlock()
 	time.Sleep(outputDrain)
+	p.mu.Lock()
+	p.closing = true
+	p.cond.Broadcast()
+	p.mu.Unlock()
 	for _, f := range p.reads {
 		_ = f.Close()
 	}
 	if p.stdin != nil {
+		p.inMu.Lock()
 		_ = p.stdin.Close()
+		p.inMu.Unlock()
 	}
-	p.out <- chunk{exit: &status}
-	close(p.out)
 }
 
 func exitStatus(cmd *exec.Cmd) execenv.ExitStatus {
@@ -271,8 +309,36 @@ func (s *server) proc(tag string) (*guestProc, error) {
 	return p, nil
 }
 
-// Output streams the process's output, then its exit. A stream that ends
-// early loses at most the chunk in flight; the host opens another.
+// ListProcesses describes every process held, running or exited.
+func (s *server) ListProcesses(context.Context, *connect.Request[guestv1.ListProcessesRequest]) (*connect.Response[guestv1.ListProcessesResponse], error) {
+	s.mu.Lock()
+	procs := make([]*guestProc, 0, len(s.procs))
+	for _, p := range s.procs {
+		procs = append(procs, p)
+	}
+	s.mu.Unlock()
+	out := &guestv1.ListProcessesResponse{}
+	for _, p := range procs {
+		out.Processes = append(out.Processes, p.describe())
+	}
+	return connect.NewResponse(out), nil
+}
+
+func (p *guestProc) describe() *guestv1.GuestProcess {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	info := execenv.ProcessInfo{Tag: p.spec.Tag, PID: p.cmd.Process.Pid, PTY: p.pty != nil, Started: p.started, Running: !p.exited, Exit: p.exit, Input: p.input, Output: map[execenv.Stream]uint64{}}
+	first := map[execenv.Stream]uint64{}
+	for name, r := range p.rings {
+		info.Output[name] = r.Total()
+		first[name] = r.First()
+	}
+	return &guestv1.GuestProcess{Spec: wire.ProcessSpecTo(p.spec), Info: wire.ProcessInfoTo(info), First: wire.OffsetsTo(first)}
+}
+
+// Output streams the process's output from the offsets asked for, then
+// its exit once every stream has drained. The reader has everything
+// before its offsets, so the guest may drop it.
 func (s *server) Output(ctx context.Context, req *connect.Request[guestv1.OutputRequest], stream *connect.ServerStream[guestv1.OutputResponse]) error {
 	p, err := s.proc(req.Msg.GetTag())
 	if err != nil {
@@ -282,31 +348,80 @@ func (s *server) Output(ctx context.Context, req *connect.Request[guestv1.Output
 		return wire.Error(execenv.ErrBusy)
 	}
 	defer p.outMu.Unlock()
+	from := wire.OffsetsFrom(req.Msg.GetFrom())
+	at := map[execenv.Stream]uint64{}
+	p.mu.Lock()
+	for name, r := range p.rings {
+		pos, ok := from[name]
+		if !ok || pos < r.First() {
+			pos = r.First()
+		}
+		if pos > r.Total() {
+			p.mu.Unlock()
+			return wire.Error(execenv.ErrInvalid)
+		}
+		at[name] = pos
+		p.sent[name] = pos
+	}
+	p.cond.Broadcast()
+	names := make([]execenv.Stream, 0, len(at))
+	for name := range at {
+		names = append(names, name)
+	}
+	p.mu.Unlock()
 	if err := stream.Send(&guestv1.OutputResponse{Event: &guestv1.OutputResponse_Opened{Opened: &guestv1.Empty{}}}); err != nil {
 		return err
 	}
+	stop := context.AfterFunc(ctx, func() {
+		p.mu.Lock()
+		p.cond.Broadcast()
+		p.mu.Unlock()
+	})
+	defer stop()
+	next := 0
 	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case c, ok := <-p.out:
-			if !ok {
-				return nil
-			}
-			var msg *guestv1.OutputResponse
-			if c.exit != nil {
-				msg = &guestv1.OutputResponse{Event: &guestv1.OutputResponse_Exit{Exit: wire.ExitTo(*c.exit)}}
-			} else {
-				msg = &guestv1.OutputResponse{Event: &guestv1.OutputResponse_Data{Data: &guestv1.Chunk{Stream: string(c.stream), Data: c.data}}}
-			}
-			if err := stream.Send(msg); err != nil {
+		p.mu.Lock()
+		var msg *guestv1.OutputResponse
+		for msg == nil {
+			if err := ctx.Err(); err != nil {
+				p.mu.Unlock()
 				return err
 			}
+			for range names {
+				name := names[next%len(names)]
+				next++
+				if data := p.rings[name].Read(at[name], wire.ChunkSize); len(data) > 0 {
+					msg = &guestv1.OutputResponse{Event: &guestv1.OutputResponse_Data{Data: &guestv1.Chunk{Stream: string(name), Data: data, Offset: at[name]}}}
+					at[name] += uint64(len(data))
+					break
+				}
+			}
+			if msg == nil && p.exited && p.pumping == 0 {
+				msg = &guestv1.OutputResponse{Event: &guestv1.OutputResponse_Exit{Exit: wire.ExitTo(p.exit)}}
+			}
+			if msg == nil {
+				p.cond.Wait()
+			}
+		}
+		p.mu.Unlock()
+		if err := stream.Send(msg); err != nil {
+			return err
+		}
+		if msg.GetExit() != nil {
+			return nil
+		}
+		// What was sent is the reader's: the pump may run that far ahead.
+		if data := msg.GetData(); data != nil {
+			p.mu.Lock()
+			name := execenv.Stream(data.GetStream())
+			p.sent[name] = data.GetOffset() + uint64(len(data.GetData()))
+			p.cond.Broadcast()
+			p.mu.Unlock()
 		}
 	}
 }
 
-func (p *guestProc) input() io.Writer {
+func (p *guestProc) inputWriter() io.Writer {
 	if p.pty != nil {
 		return p.pty
 	}
@@ -325,7 +440,7 @@ func (s *server) Feed(_ context.Context, stream *connect.ClientStream[guestv1.Fe
 	if err != nil {
 		return nil, wire.Error(err)
 	}
-	w := p.input()
+	w := p.inputWriter()
 	if w == nil {
 		return nil, wire.Error(execenv.ErrInvalid)
 	}
@@ -338,7 +453,11 @@ func (s *server) Feed(_ context.Context, stream *connect.ClientStream[guestv1.Fe
 		if err != nil {
 			return nil, wire.Error(err)
 		}
-		if _, err := w.Write(stream.Msg().GetData()); err != nil {
+		n, err := w.Write(stream.Msg().GetData())
+		p.mu.Lock()
+		p.input += uint64(n)
+		p.mu.Unlock()
+		if err != nil {
 			return nil, wire.Error(execenv.ErrClosed)
 		}
 	}
@@ -410,18 +529,19 @@ func (s *server) SignalProcess(_ context.Context, req *connect.Request[guestv1.S
 	return connect.NewResponse(&guestv1.Empty{}), nil
 }
 
-// runningLocked reports whether any process is still running.
-func (s *server) runningLocked() bool {
+// runningLocked counts the processes still running.
+func (s *server) runningLocked() int {
+	n := 0
 	for _, p := range s.procs {
 		if !p.done() {
-			return true
+			n++
 		}
 	}
-	return false
+	return n
 }
 
 // stopAll kills every process. A contained workload is killed whole, so
-// nothing a process left behind survives the link.
+// nothing a process left behind survives the helper.
 func (s *server) stopAll() {
 	s.mu.Lock()
 	procs := make([]*guestProc, 0, len(s.procs))
