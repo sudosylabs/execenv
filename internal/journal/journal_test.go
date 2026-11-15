@@ -16,9 +16,11 @@ import (
 type testWriteBarrier struct {
 	inside   bool
 	poisoned bool
+	calls    int
 }
 
 func (b *testWriteBarrier) Stopped(ctx context.Context, fn func() error) error {
+	b.calls++
 	if b.poisoned {
 		return execenv.ErrUnavailable
 	}
@@ -209,5 +211,22 @@ func TestNativeConfirmedGuestCreateDoesNotOverwriteLaterWrite(t *testing.T) {
 	}
 	if err := j.Confirm(binding); err != nil {
 		t.Fatalf("binding retry after acknowledgement: %v", err)
+	}
+}
+
+// Observe never stops the workload: a guest change is captured with every
+// writer still running.
+func TestObserveNeverStopsTheWorkload(t *testing.T) {
+	j, fence, barrier := journalFixture(t)
+	before := barrier.calls
+	if err := os.WriteFile(filepath.Join(j.home, "dir/new"), []byte("guest"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	page, err := j.Observe(t.Context(), fence, 0, 128)
+	if err != nil || len(page.Observations) != 1 {
+		t.Fatalf("observe = %+v %v", page, err)
+	}
+	if barrier.calls != before {
+		t.Fatalf("Observe stopped the workload %d times", barrier.calls-before)
 	}
 }

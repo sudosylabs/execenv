@@ -7,7 +7,6 @@ package journal
 
 import (
 	"context"
-	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -31,8 +30,9 @@ type Barrier interface {
 }
 
 // Journal is serialized by its caller, independently of any RPC
-// connection. Its barrier must contain every guest writer before capture and
-// commit. An uncertain disk mutation poisons the barrier until guest teardown.
+// connection. Its barrier must contain every guest writer while a projection
+// commits; observing never uses it, and captures with the workload running.
+// An uncertain disk mutation poisons the barrier until guest teardown.
 type Journal struct {
 	home     string
 	store    *content.Store
@@ -44,6 +44,8 @@ type Journal struct {
 	own      func(string) error
 	watcher  Watcher
 	walked   time.Time
+	// unsettled is set when the last capture met changes still under way.
+	unsettled bool
 }
 
 // New journals home, keeping bodies in store, which must not be under home.
@@ -248,8 +250,10 @@ func (j *Journal) Observe(ctx context.Context, fence execenv.ProjectionFence, af
 	}
 	// With a watcher, a workspace nothing has touched is not walked at all;
 	// the periodic walk catches what no event reports (writes through mmap).
-	if j.watcher == nil || j.watcher.Changed() || time.Since(j.walked) >= WalkInterval {
-		if err := j.barrier.Stopped(ctx, j.observeCaptured); err != nil {
+	// The workload keeps running: a capture never freezes it. One that ran
+	// into a change still under way is taken again on the next Observe.
+	if j.unsettled || j.watcher == nil || j.watcher.Changed() || time.Since(j.walked) >= WalkInterval {
+		if err := j.observeCaptured(); err != nil {
 			return execenv.ObservationPage{}, err
 		}
 		j.walked = time.Now()
@@ -271,16 +275,7 @@ const WalkInterval = 30 * time.Second
 // interval has passed.
 func (j *Journal) Watch(w Watcher) { j.watcher = w }
 func (j *Journal) observeCaptured() error {
-	// A capture that raced a writer is tried again: the barrier normally
-	// stops every writer, so this happens only without one.
-	var next *guesttree.Snapshot
-	var err error
-	for range 5 {
-		next, err = guesttree.Capture(j.home, j.snapshot, j.observePolicy())
-		if !errors.Is(err, guesttree.ErrChanged) {
-			break
-		}
-	}
+	next, err := guesttree.Capture(j.home, j.snapshot, j.observePolicy())
 	if err != nil {
 		j.log.Lagged()
 		return err
@@ -325,6 +320,7 @@ func (j *Journal) observeCaptured() error {
 	}
 	j.snapshot.Close()
 	j.snapshot = next
+	j.unsettled = next.Unsettled
 	return nil
 }
 func (j *Journal) captureProjection(mutations []tree.Mutation) error {
@@ -362,6 +358,7 @@ func (j *Journal) captureProjection(mutations []tree.Mutation) error {
 	}
 	j.snapshot.Close()
 	j.snapshot = next
+	j.unsettled = next.Unsettled
 	return nil
 }
 

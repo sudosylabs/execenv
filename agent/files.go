@@ -14,7 +14,7 @@ import (
 
 // The guest serves the plain file API from its workspace. Changing calls
 // bind the fence through the journal and hold the server's lock, so a
-// capture never runs half-way through a write.
+// capture never runs half-way through one of them.
 
 func (s *server) fenced(fence *execenvv1.Fence) error {
 	if s.files == nil || s.journal == nil {

@@ -7,8 +7,9 @@ package guesttree
 
 import (
 	"crypto/rand"
-	"fmt"
+	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -20,8 +21,7 @@ import (
 type Node struct {
 	Identity string
 	Kind     execenv.ProjectionKind
-	// Content is a file's digest and size, never its bytes. The body is
-	// copied into the content store only when a change reports it.
+	// Content is a file's digest and size, never its bytes.
 	Content content.Blob
 	key     physicalKey
 	// stamp is what a file's metadata was when Content was computed, so an
@@ -36,7 +36,13 @@ type stamp struct {
 	ctime int64
 }
 
-type Snapshot struct{ Nodes map[string]Node }
+// Snapshot is one capture of the tree. The workload keeps running while it
+// is taken, so it may miss what changed under it: Unsettled says so, and a
+// capture soon after reports the rest.
+type Snapshot struct {
+	Nodes     map[string]Node
+	Unsettled bool
+}
 
 // Close releases the snapshot. It holds nothing open; Close is kept so
 // callers need not know that.
@@ -47,10 +53,6 @@ func (s *Snapshot) Close() {}
 // node. A directory left out is never descended into. A nil Observe admits
 // everything.
 type Observe func(name string, dir, held bool) bool
-
-// ErrChanged is a capture that raced a writer: a file changed while it was
-// read. It is ErrLagged, but a fresh capture may succeed.
-var ErrChanged = fmt.Errorf("%w: changed while captured", execenv.ErrLagged)
 
 // admitted reads every entry of one directory and keeps only those observe
 // admits. A left-out entry costs its name, plus one Lstat when its path is
@@ -125,7 +127,7 @@ func Capture(home string, previous *Snapshot, observe Observe) (result *Snapshot
 			identities[node.key] = node.Identity
 		}
 	}
-	seen := make(map[physicalKey]bool)
+	seen := make(map[physicalKey]string)
 	previousByKey := make(map[physicalKey]Node)
 	if previous != nil {
 		for _, node := range previous.Nodes {
@@ -135,6 +137,11 @@ func Capture(home string, previous *Snapshot, observe Observe) (result *Snapshot
 	var visit func(string) error
 	visit = func(directory string) error {
 		parent, err := root.Open(directory)
+		if errors.Is(err, fs.ErrNotExist) {
+			// Moved or removed since it was listed.
+			result.Unsettled = true
+			return nil
+		}
 		if err != nil {
 			return execenv.ErrLagged
 		}
@@ -149,6 +156,10 @@ func Capture(home string, previous *Snapshot, observe Observe) (result *Snapshot
 				return execenv.ErrLagged
 			}
 			info, err := root.Lstat(name)
+			if errors.Is(err, fs.ErrNotExist) {
+				result.Unsettled = true
+				continue
+			}
 			if err != nil {
 				return execenv.ErrLagged
 			}
@@ -159,8 +170,26 @@ func Capture(home string, previous *Snapshot, observe Observe) (result *Snapshot
 				return execenv.ErrLagged
 			}
 			key, err := physicalIdentity(filepath.Join(home, filepath.FromSlash(name)), info)
-			if err != nil || seen[key] {
-				return execenv.ErrLagged
+			if err != nil {
+				// A node it cannot name is unsupported (a hard link) unless
+				// it is simply gone.
+				if _, lerr := root.Lstat(name); !errors.Is(lerr, fs.ErrNotExist) {
+					return execenv.ErrLagged
+				}
+			}
+			if err == nil && seen[key] != "" {
+				// One file under two names is a hard link, which a tree
+				// cannot hold, unless the first name is gone: then a move
+				// ran while the walk did.
+				if first, ferr := root.Lstat(seen[key]); ferr == nil && os.SameFile(first, info) {
+					return execenv.ErrLagged
+				}
+			}
+			if err != nil || seen[key] != "" {
+				// Gone, or moved while the walk ran: the next capture sees
+				// where it went.
+				result.Unsettled = true
+				continue
 			}
 			identity := identities[key]
 			if identity == "" {
@@ -168,7 +197,7 @@ func Capture(home string, previous *Snapshot, observe Observe) (result *Snapshot
 			}
 			node := Node{Identity: identity, Kind: kind, key: key}
 			result.Nodes[name] = node
-			seen[key] = true
+			seen[key] = name
 			if kind == execenv.ProjectionFile {
 				st := stampOf(info)
 				if old, ok := previousByKey[key]; ok && old.Kind == kind && old.stamp == st && old.Content.Digest != "" {
@@ -176,12 +205,22 @@ func Capture(home string, previous *Snapshot, observe Observe) (result *Snapshot
 					result.Nodes[name] = node
 					continue
 				}
-				blob, err := hashFile(root, name, info, st)
+				blob, settled, err := hashFile(root, name, info, st)
+				if errors.Is(err, fs.ErrNotExist) {
+					delete(result.Nodes, name)
+					result.Unsettled = true
+					continue
+				}
 				if err != nil {
 					return err
 				}
+				// A file written while it was hashed keeps the stamp it was
+				// listed with, so the next capture hashes it again.
 				node.Content, node.stamp = blob, st
 				result.Nodes[name] = node
+				if !settled {
+					result.Unsettled = true
+				}
 			} else if err := visit(name); err != nil {
 				return err
 			}
@@ -192,25 +231,28 @@ func Capture(home string, previous *Snapshot, observe Observe) (result *Snapshot
 	return result, err
 }
 
-// hashFile reads one file once to hash it. A file that is not the one
-// listed, or that changes while read, is ErrChanged.
-func hashFile(root *os.Root, name string, listed os.FileInfo, st stamp) (content.Blob, error) {
+// hashFile reads one file once to hash it. settled is false when the file
+// changed while it was read: the hash is of the bytes read, which a writer
+// may already have moved past. A file replaced since it was listed is
+// fs.ErrNotExist: the listed one is gone.
+func hashFile(root *os.Root, name string, listed os.FileInfo, st stamp) (blob content.Blob, settled bool, err error) {
 	file, err := root.Open(name)
+	if errors.Is(err, fs.ErrNotExist) {
+		return content.Blob{}, false, fs.ErrNotExist
+	}
 	if err != nil {
-		return content.Blob{}, ErrChanged
+		return content.Blob{}, false, execenv.ErrLagged
 	}
 	defer file.Close()
 	actual, err := file.Stat()
-	if err != nil || !os.SameFile(listed, actual) || stampOf(actual) != st {
-		return content.Blob{}, ErrChanged
+	if err != nil || !os.SameFile(listed, actual) {
+		return content.Blob{}, false, fs.ErrNotExist
 	}
-	blob, err := content.Hash(file)
+	blob, err = content.Hash(file)
 	if err != nil {
-		return content.Blob{}, execenv.ErrLagged
+		return content.Blob{}, false, execenv.ErrLagged
 	}
 	final, err := file.Stat()
-	if err != nil || final.Size() != blob.Size || stampOf(final) != st {
-		return content.Blob{}, ErrChanged
-	}
-	return blob, nil
+	settled = err == nil && stampOf(actual) == st && final.Size() == blob.Size && stampOf(final) == st
+	return blob, settled, nil
 }
