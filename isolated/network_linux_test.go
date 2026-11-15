@@ -175,7 +175,8 @@ func TestLiveAllowlistDeniesFromGuest(t *testing.T) {
 	// would mean the guest has a general NIC.
 	// A missing wget or no default route is not proof. Require wget,
 	// then treat a completed TCP handshake as a leak.
-	if _, err := term.Write([]byte("command -v wget >/dev/null || { echo NO_WGET; exit 0; }; wget -q -T 2 -O /dev/null http://1.1.1.1/ && echo LEAKED || echo DENIED\n")); err != nil {
+	// The terminal echoes the line: quotes keep the echo from matching.
+	if _, err := term.Write([]byte("command -v wget >/dev/null || { echo NO_\"\"WGET; exit 0; }; wget -q -T 2 -O /dev/null http://1.1.1.1/ && echo LEAK\"\"ED || echo DEN\"\"IED\n")); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(8 * time.Second)

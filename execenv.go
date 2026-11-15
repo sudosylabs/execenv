@@ -165,6 +165,7 @@ type Host interface {
 	Ensure(ctx context.Context, spec Spec) (Env, error)
 	Revoke(ctx context.Context, id ID) error
 	Seeder
+	Grants
 }
 
 // Env is one grant's occupancy for one epoch.

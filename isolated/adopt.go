@@ -90,6 +90,7 @@ func (h *Host) tombstone(s grantState) {
 	_, _ = env.control.Lose(context.Background(), func() error { return nil })
 	h.lost[s.Spec.ID] = env
 	h.lostCount++
+	h.hub.Poke()
 	dir := filepath.Join(h.cfg.WorkDir, "grants", string(s.Spec.ID))
 	_ = os.RemoveAll(dir)
 	if os.MkdirAll(dir, 0o700) == nil {
@@ -151,6 +152,8 @@ func (h *Host) adopt(ctx context.Context, s grantState, inst instance) error {
 		env.public = lifetime.Watch(env, env.timer)
 	}
 	h.grants[s.Spec.ID] = env
+	env.control.OnChange(h.hub.Poke)
+	h.hub.Poke()
 	go env.watch()
 	if env.client != nil {
 		go env.watchLink(env.client)
@@ -193,6 +196,8 @@ func (h *Host) adoptSuspended(s grantState) error {
 		env.public = lifetime.Watch(env, env.timer)
 	}
 	h.grants[s.Spec.ID] = env
+	env.control.OnChange(h.hub.Poke)
+	h.hub.Poke()
 	return nil
 }
 

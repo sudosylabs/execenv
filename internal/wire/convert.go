@@ -112,6 +112,59 @@ func ReportFrom(r *execenvv1.Report) execenv.Report {
 	return out
 }
 
+var grantStates = map[execenv.GrantState]execenvv1.GrantState{
+	execenv.GrantCreating:  execenvv1.GrantState_GRANT_STATE_CREATING,
+	execenv.GrantRunning:   execenvv1.GrantState_GRANT_STATE_RUNNING,
+	execenv.GrantFrozen:    execenvv1.GrantState_GRANT_STATE_FROZEN,
+	execenv.GrantSuspended: execenvv1.GrantState_GRANT_STATE_SUSPENDED,
+	execenv.GrantRevoked:   execenvv1.GrantState_GRANT_STATE_REVOKED,
+	execenv.GrantLost:      execenvv1.GrantState_GRANT_STATE_LOST,
+}
+
+func GrantInfoTo(g execenv.GrantInfo) *execenvv1.GrantInfo {
+	return &execenvv1.GrantInfo{
+		GrantId: string(g.ID), Epoch: g.Epoch, Image: string(g.Image), Network: NetworkTo(g.Network),
+		Resources: ResourcesTo(g.Resources), Labels: g.Labels, State: grantStates[g.State],
+		FenceRevision: g.FenceRevision, Started: timestamppb.New(g.Started),
+	}
+}
+
+func GrantInfoFrom(g *execenvv1.GrantInfo) execenv.GrantInfo {
+	network, _ := NetworkFrom(g.GetNetwork())
+	var state execenv.GrantState
+	for k, v := range grantStates {
+		if v == g.GetState() {
+			state = k
+		}
+	}
+	return execenv.GrantInfo{
+		ID: execenv.ID(g.GetGrantId()), Epoch: g.GetEpoch(), Image: execenv.Image(g.GetImage()), Network: network,
+		Resources: ResourcesFrom(g.GetResources()), Labels: g.GetLabels(), State: state,
+		FenceRevision: g.GetFenceRevision(), Started: g.GetStarted().AsTime(),
+	}
+}
+
+func HostEventTo(e execenv.HostEvent) *execenvv1.HostEvent {
+	if e.Grant != nil {
+		return &execenvv1.HostEvent{Change: &execenvv1.HostEvent_Grant{Grant: GrantInfoTo(*e.Grant)}}
+	}
+	c := e.Capacity
+	return &execenvv1.HostEvent{Change: &execenvv1.HostEvent_Capacity{Capacity: &execenvv1.HostCapacity{
+		CpuMillis: capacityTo(c.CPUMillis), MemoryBytes: capacityTo(c.MemoryBytes), DiskBytes: capacityTo(c.DiskBytes),
+	}}}
+}
+
+func HostEventFrom(e *execenvv1.HostEvent) execenv.HostEvent {
+	if g := e.GetGrant(); g != nil {
+		info := GrantInfoFrom(g)
+		return execenv.HostEvent{Grant: &info}
+	}
+	c := e.GetCapacity()
+	return execenv.HostEvent{Capacity: &execenv.HostCapacity{
+		CPUMillis: capacityFrom(c.GetCpuMillis()), MemoryBytes: capacityFrom(c.GetMemoryBytes()), DiskBytes: capacityFrom(c.GetDiskBytes()),
+	}}
+}
+
 func capacityTo(c execenv.Capacity) *execenvv1.Capacity {
 	return &execenvv1.Capacity{Total: c.Total, Reserved: c.Reserved, Free: c.Free}
 }

@@ -47,6 +47,14 @@ const (
 	HostServiceListSeedsProcedure = "/execenv.v1.HostService/ListSeeds"
 	// HostServiceDeleteSeedProcedure is the fully-qualified name of the HostService's DeleteSeed RPC.
 	HostServiceDeleteSeedProcedure = "/execenv.v1.HostService/DeleteSeed"
+	// HostServiceListGrantsProcedure is the fully-qualified name of the HostService's ListGrants RPC.
+	HostServiceListGrantsProcedure = "/execenv.v1.HostService/ListGrants"
+	// HostServiceWaitGrantProcedure is the fully-qualified name of the HostService's WaitGrant RPC.
+	HostServiceWaitGrantProcedure = "/execenv.v1.HostService/WaitGrant"
+	// HostServiceWatchGrantProcedure is the fully-qualified name of the HostService's WatchGrant RPC.
+	HostServiceWatchGrantProcedure = "/execenv.v1.HostService/WatchGrant"
+	// HostServiceWatchHostProcedure is the fully-qualified name of the HostService's WatchHost RPC.
+	HostServiceWatchHostProcedure = "/execenv.v1.HostService/WatchHost"
 )
 
 // HostServiceClient is a client for the execenv.v1.HostService service.
@@ -65,6 +73,16 @@ type HostServiceClient interface {
 	PutSeed(context.Context) *connect.ClientStreamForClient[v1.PutSeedRequest, v1.Seed]
 	ListSeeds(context.Context, *connect.Request[v1.ListSeedsRequest]) (*connect.Response[v1.ListSeedsResponse], error)
 	DeleteSeed(context.Context, *connect.Request[v1.DeleteSeedRequest]) (*connect.Response[v1.DeleteSeedResponse], error)
+	// ListGrants describes every grant the host holds, lost ones included.
+	ListGrants(context.Context, *connect.Request[v1.ListGrantsRequest]) (*connect.Response[v1.ListGrantsResponse], error)
+	// WaitGrant returns once the grant has left GRANT_STATE_CREATING.
+	WaitGrant(context.Context, *connect.Request[v1.WaitGrantRequest]) (*connect.Response[v1.GrantInfo], error)
+	// WatchGrant streams one grant's state now and each change, ending after
+	// GRANT_STATE_REVOKED.
+	WatchGrant(context.Context, *connect.Request[v1.WatchGrantRequest]) (*connect.ServerStreamForClient[v1.GrantInfo], error)
+	// WatchHost streams every grant's state and the capacity now, then each
+	// change.
+	WatchHost(context.Context, *connect.Request[v1.WatchHostRequest]) (*connect.ServerStreamForClient[v1.HostEvent], error)
 }
 
 // NewHostServiceClient constructs a client for the execenv.v1.HostService service. By default, it
@@ -120,6 +138,30 @@ func NewHostServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(hostServiceMethods.ByName("DeleteSeed")),
 			connect.WithClientOptions(opts...),
 		),
+		listGrants: connect.NewClient[v1.ListGrantsRequest, v1.ListGrantsResponse](
+			httpClient,
+			baseURL+HostServiceListGrantsProcedure,
+			connect.WithSchema(hostServiceMethods.ByName("ListGrants")),
+			connect.WithClientOptions(opts...),
+		),
+		waitGrant: connect.NewClient[v1.WaitGrantRequest, v1.GrantInfo](
+			httpClient,
+			baseURL+HostServiceWaitGrantProcedure,
+			connect.WithSchema(hostServiceMethods.ByName("WaitGrant")),
+			connect.WithClientOptions(opts...),
+		),
+		watchGrant: connect.NewClient[v1.WatchGrantRequest, v1.GrantInfo](
+			httpClient,
+			baseURL+HostServiceWatchGrantProcedure,
+			connect.WithSchema(hostServiceMethods.ByName("WatchGrant")),
+			connect.WithClientOptions(opts...),
+		),
+		watchHost: connect.NewClient[v1.WatchHostRequest, v1.HostEvent](
+			httpClient,
+			baseURL+HostServiceWatchHostProcedure,
+			connect.WithSchema(hostServiceMethods.ByName("WatchHost")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -132,6 +174,10 @@ type hostServiceClient struct {
 	putSeed     *connect.Client[v1.PutSeedRequest, v1.Seed]
 	listSeeds   *connect.Client[v1.ListSeedsRequest, v1.ListSeedsResponse]
 	deleteSeed  *connect.Client[v1.DeleteSeedRequest, v1.DeleteSeedResponse]
+	listGrants  *connect.Client[v1.ListGrantsRequest, v1.ListGrantsResponse]
+	waitGrant   *connect.Client[v1.WaitGrantRequest, v1.GrantInfo]
+	watchGrant  *connect.Client[v1.WatchGrantRequest, v1.GrantInfo]
+	watchHost   *connect.Client[v1.WatchHostRequest, v1.HostEvent]
 }
 
 // Hello calls execenv.v1.HostService.Hello.
@@ -169,6 +215,26 @@ func (c *hostServiceClient) DeleteSeed(ctx context.Context, req *connect.Request
 	return c.deleteSeed.CallUnary(ctx, req)
 }
 
+// ListGrants calls execenv.v1.HostService.ListGrants.
+func (c *hostServiceClient) ListGrants(ctx context.Context, req *connect.Request[v1.ListGrantsRequest]) (*connect.Response[v1.ListGrantsResponse], error) {
+	return c.listGrants.CallUnary(ctx, req)
+}
+
+// WaitGrant calls execenv.v1.HostService.WaitGrant.
+func (c *hostServiceClient) WaitGrant(ctx context.Context, req *connect.Request[v1.WaitGrantRequest]) (*connect.Response[v1.GrantInfo], error) {
+	return c.waitGrant.CallUnary(ctx, req)
+}
+
+// WatchGrant calls execenv.v1.HostService.WatchGrant.
+func (c *hostServiceClient) WatchGrant(ctx context.Context, req *connect.Request[v1.WatchGrantRequest]) (*connect.ServerStreamForClient[v1.GrantInfo], error) {
+	return c.watchGrant.CallServerStream(ctx, req)
+}
+
+// WatchHost calls execenv.v1.HostService.WatchHost.
+func (c *hostServiceClient) WatchHost(ctx context.Context, req *connect.Request[v1.WatchHostRequest]) (*connect.ServerStreamForClient[v1.HostEvent], error) {
+	return c.watchHost.CallServerStream(ctx, req)
+}
+
 // HostServiceHandler is an implementation of the execenv.v1.HostService service.
 type HostServiceHandler interface {
 	// Hello is the first call a client makes. It names the features the
@@ -185,6 +251,16 @@ type HostServiceHandler interface {
 	PutSeed(context.Context, *connect.ClientStream[v1.PutSeedRequest]) (*connect.Response[v1.Seed], error)
 	ListSeeds(context.Context, *connect.Request[v1.ListSeedsRequest]) (*connect.Response[v1.ListSeedsResponse], error)
 	DeleteSeed(context.Context, *connect.Request[v1.DeleteSeedRequest]) (*connect.Response[v1.DeleteSeedResponse], error)
+	// ListGrants describes every grant the host holds, lost ones included.
+	ListGrants(context.Context, *connect.Request[v1.ListGrantsRequest]) (*connect.Response[v1.ListGrantsResponse], error)
+	// WaitGrant returns once the grant has left GRANT_STATE_CREATING.
+	WaitGrant(context.Context, *connect.Request[v1.WaitGrantRequest]) (*connect.Response[v1.GrantInfo], error)
+	// WatchGrant streams one grant's state now and each change, ending after
+	// GRANT_STATE_REVOKED.
+	WatchGrant(context.Context, *connect.Request[v1.WatchGrantRequest], *connect.ServerStream[v1.GrantInfo]) error
+	// WatchHost streams every grant's state and the capacity now, then each
+	// change.
+	WatchHost(context.Context, *connect.Request[v1.WatchHostRequest], *connect.ServerStream[v1.HostEvent]) error
 }
 
 // NewHostServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -236,6 +312,30 @@ func NewHostServiceHandler(svc HostServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(hostServiceMethods.ByName("DeleteSeed")),
 		connect.WithHandlerOptions(opts...),
 	)
+	hostServiceListGrantsHandler := connect.NewUnaryHandler(
+		HostServiceListGrantsProcedure,
+		svc.ListGrants,
+		connect.WithSchema(hostServiceMethods.ByName("ListGrants")),
+		connect.WithHandlerOptions(opts...),
+	)
+	hostServiceWaitGrantHandler := connect.NewUnaryHandler(
+		HostServiceWaitGrantProcedure,
+		svc.WaitGrant,
+		connect.WithSchema(hostServiceMethods.ByName("WaitGrant")),
+		connect.WithHandlerOptions(opts...),
+	)
+	hostServiceWatchGrantHandler := connect.NewServerStreamHandler(
+		HostServiceWatchGrantProcedure,
+		svc.WatchGrant,
+		connect.WithSchema(hostServiceMethods.ByName("WatchGrant")),
+		connect.WithHandlerOptions(opts...),
+	)
+	hostServiceWatchHostHandler := connect.NewServerStreamHandler(
+		HostServiceWatchHostProcedure,
+		svc.WatchHost,
+		connect.WithSchema(hostServiceMethods.ByName("WatchHost")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/execenv.v1.HostService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case HostServiceHelloProcedure:
@@ -252,6 +352,14 @@ func NewHostServiceHandler(svc HostServiceHandler, opts ...connect.HandlerOption
 			hostServiceListSeedsHandler.ServeHTTP(w, r)
 		case HostServiceDeleteSeedProcedure:
 			hostServiceDeleteSeedHandler.ServeHTTP(w, r)
+		case HostServiceListGrantsProcedure:
+			hostServiceListGrantsHandler.ServeHTTP(w, r)
+		case HostServiceWaitGrantProcedure:
+			hostServiceWaitGrantHandler.ServeHTTP(w, r)
+		case HostServiceWatchGrantProcedure:
+			hostServiceWatchGrantHandler.ServeHTTP(w, r)
+		case HostServiceWatchHostProcedure:
+			hostServiceWatchHostHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -287,4 +395,20 @@ func (UnimplementedHostServiceHandler) ListSeeds(context.Context, *connect.Reque
 
 func (UnimplementedHostServiceHandler) DeleteSeed(context.Context, *connect.Request[v1.DeleteSeedRequest]) (*connect.Response[v1.DeleteSeedResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.v1.HostService.DeleteSeed is not implemented"))
+}
+
+func (UnimplementedHostServiceHandler) ListGrants(context.Context, *connect.Request[v1.ListGrantsRequest]) (*connect.Response[v1.ListGrantsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.v1.HostService.ListGrants is not implemented"))
+}
+
+func (UnimplementedHostServiceHandler) WaitGrant(context.Context, *connect.Request[v1.WaitGrantRequest]) (*connect.Response[v1.GrantInfo], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.v1.HostService.WaitGrant is not implemented"))
+}
+
+func (UnimplementedHostServiceHandler) WatchGrant(context.Context, *connect.Request[v1.WatchGrantRequest], *connect.ServerStream[v1.GrantInfo]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("execenv.v1.HostService.WatchGrant is not implemented"))
+}
+
+func (UnimplementedHostServiceHandler) WatchHost(context.Context, *connect.Request[v1.WatchHostRequest], *connect.ServerStream[v1.HostEvent]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("execenv.v1.HostService.WatchHost is not implemented"))
 }

@@ -8,12 +8,14 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/internal/capacity"
 	"github.com/sudosylabs/execenv/internal/content"
 	"github.com/sudosylabs/execenv/internal/control"
 	"github.com/sudosylabs/execenv/internal/files"
+	"github.com/sudosylabs/execenv/internal/grants"
 	"github.com/sudosylabs/execenv/internal/journal"
 	"github.com/sudosylabs/execenv/internal/lifetime"
 	"github.com/sudosylabs/execenv/internal/procs"
@@ -58,6 +60,8 @@ type Host struct {
 	lost      map[execenv.ID]*environment
 	lostCount int
 	draining  bool
+	// hub follows the grants for the grant calls and watches.
+	hub *grants.Hub
 }
 
 type environment struct {
@@ -69,6 +73,7 @@ type environment struct {
 	frozen    bool
 	revoked   bool
 	lost      bool
+	started   time.Time
 	procs     *procs.Manager
 	processes *processLog
 	limits    execenv.Limits
@@ -107,7 +112,7 @@ func New(cfg Config) (*Host, error) {
 	if err != nil {
 		return nil, execenv.Error("memory", err)
 	}
-	return &Host{
+	h := &Host{
 		images:   append([]execenv.Image(nil), cfg.Images...),
 		pool:     pool,
 		unusable: cfg.Unusable,
@@ -115,7 +120,9 @@ func New(cfg Config) (*Host, error) {
 		seeds:    seeds,
 		grants:   make(map[execenv.ID]*environment),
 		lost:     make(map[execenv.ID]*environment),
-	}, nil
+	}
+	h.hub = grants.New(h.grantSnapshot)
+	return h, nil
 }
 
 // Capabilities reports adapter-kind facts.
@@ -170,6 +177,7 @@ func (h *Host) Lose(id execenv.ID) bool {
 	h.lostCount++
 	h.lost[id] = env
 	delete(h.grants, id)
+	h.hub.Poke()
 	h.pool.Release(id)
 	return true
 }
@@ -261,6 +269,7 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		control:   control.New(spec.ID),
 		id:        spec.ID,
 		spec:      spec,
+		started:   time.Now(),
 		host:      h,
 		processes: newProcessLog(),
 		limits:    spec.Limits,
@@ -283,7 +292,9 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		env.timer = lifetime.Start(spec.WallTimeout, spec.IdleTimeout, func(r lifetime.Reason) { h.expire(env, r) })
 		env.public = lifetime.Watch(env, env.timer)
 	}
+	env.control.OnChange(h.hub.Poke)
 	h.grants[spec.ID] = env
+	h.hub.Poke()
 	return env.public, nil
 }
 
@@ -304,6 +315,7 @@ func (h *Host) Revoke(ctx context.Context, id execenv.ID) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	delete(h.lost, id)
+	h.hub.Poke()
 	env := h.grants[id]
 	if env == nil {
 		return nil
@@ -312,6 +324,7 @@ func (h *Host) Revoke(ctx context.Context, id execenv.ID) error {
 		return err
 	}
 	delete(h.grants, id)
+	h.hub.Poke()
 	h.pool.Release(id)
 	return nil
 }
@@ -324,6 +337,7 @@ func (h *Host) revokeExact(ctx context.Context, env *environment) error {
 	defer h.mu.Unlock()
 	if h.lost[env.id] == env {
 		delete(h.lost, env.id)
+		h.hub.Poke()
 	}
 	if h.grants[env.id] != env {
 		return nil
@@ -332,6 +346,7 @@ func (h *Host) revokeExact(ctx context.Context, env *environment) error {
 		return err
 	}
 	delete(h.grants, env.id)
+	h.hub.Poke()
 	h.pool.Release(env.id)
 	return nil
 }

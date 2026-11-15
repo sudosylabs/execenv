@@ -12,6 +12,7 @@ import (
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/internal/capacity"
 	"github.com/sudosylabs/execenv/internal/control"
+	"github.com/sudosylabs/execenv/internal/grants"
 	"github.com/sudosylabs/execenv/internal/lifetime"
 	"github.com/sudosylabs/execenv/internal/procs"
 	"github.com/sudosylabs/execenv/internal/seed"
@@ -83,6 +84,8 @@ type Host struct {
 	attach  attacher
 	grants  map[execenv.ID]*environment
 	pending map[execenv.ID]*ensureCall
+	// hub follows the grants for the grant calls and watches.
+	hub *grants.Hub
 	// lost holds each grant whose environment ended without a revoke until
 	// the caller revokes it, so Ensure cannot silently start it afresh.
 	lost      map[execenv.ID]*environment
@@ -154,6 +157,7 @@ func newHost(cfg Config, pool *capacity.Pool, images map[execenv.Image]*imageRec
 		lost:    make(map[execenv.ID]*environment),
 		lock:    lock,
 	}
+	h.hub = grants.New(h.grantSnapshot)
 	seeds, err := seed.Open(filepath.Join(cfg.WorkDir, "seeds"))
 	if err != nil {
 		_ = lock.Close()
@@ -320,6 +324,7 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 	launchCtx, cancel := context.WithCancel(ctx)
 	call := &ensureCall{spec: spec, done: make(chan struct{}), cancel: cancel}
 	h.pending[spec.ID] = call
+	h.hub.Poke()
 	treeDir := filepath.Join(h.cfg.WorkDir, "grants", string(spec.ID), workspaceName)
 	if err := os.MkdirAll(treeDir, 0o700); err != nil {
 		delete(h.pending, spec.ID)
@@ -340,6 +345,7 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 	}
 	// The epoch exists before the machine: the guest is started for it.
 	ctl := control.New(spec.ID)
+	ctl.OnChange(h.hub.Poke)
 	req := startRequest{
 		ID:        spec.ID,
 		Kernel:    image.Kernel,
@@ -453,6 +459,7 @@ func (h *Host) completeEnsure(call *ensureCall, env *environment, err error, tre
 	call.cancel()
 	close(call.done)
 	h.mu.Unlock()
+	h.hub.Poke()
 	if err != nil {
 		_ = os.RemoveAll(filepath.Dir(treeDir))
 		return nil, err
@@ -487,6 +494,7 @@ func (h *Host) Revoke(ctx context.Context, id execenv.ID) error {
 	// Revoke acknowledges a loss; the id can then be ensured afresh.
 	if _, lost := h.lost[id]; lost {
 		delete(h.lost, id)
+		h.hub.Poke()
 		if h.grants[id] == nil {
 			if err := os.RemoveAll(filepath.Join(h.cfg.WorkDir, "grants", string(id))); err != nil {
 				return execenv.Error("revoke", err)
@@ -508,6 +516,7 @@ func (h *Host) revokeExact(ctx context.Context, env *environment) error {
 	defer h.mu.Unlock()
 	if h.lost[env.id] == env {
 		delete(h.lost, env.id)
+		h.hub.Poke()
 		if h.grants[env.id] == nil {
 			if err := os.RemoveAll(filepath.Join(h.cfg.WorkDir, "grants", string(env.id))); err != nil {
 				return err
@@ -536,6 +545,7 @@ func (h *Host) lose(env *environment) {
 	}
 	h.lostCount++
 	h.lost[env.id] = env
+	defer h.hub.Poke()
 	if err != nil {
 		return
 	}
@@ -563,5 +573,6 @@ func (h *Host) retireLocked(env *environment) error {
 	}
 	delete(h.grants, env.id)
 	h.pool.Release(env.id)
+	h.hub.Poke()
 	return nil
 }

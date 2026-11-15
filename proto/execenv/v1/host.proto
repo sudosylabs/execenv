@@ -4,6 +4,7 @@ package execenv.v1;
 
 import "execenv/v1/common.proto";
 import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/sudosylabs/execenv/internal/gen/execenv/v1;execenvv1";
 
@@ -23,7 +24,70 @@ service HostService {
   rpc PutSeed(stream PutSeedRequest) returns (Seed);
   rpc ListSeeds(ListSeedsRequest) returns (ListSeedsResponse);
   rpc DeleteSeed(DeleteSeedRequest) returns (DeleteSeedResponse);
+  // ListGrants describes every grant the host holds, lost ones included.
+  rpc ListGrants(ListGrantsRequest) returns (ListGrantsResponse);
+  // WaitGrant returns once the grant has left GRANT_STATE_CREATING.
+  rpc WaitGrant(WaitGrantRequest) returns (GrantInfo);
+  // WatchGrant streams one grant's state now and each change, ending after
+  // GRANT_STATE_REVOKED.
+  rpc WatchGrant(WatchGrantRequest) returns (stream GrantInfo);
+  // WatchHost streams every grant's state and the capacity now, then each
+  // change.
+  rpc WatchHost(WatchHostRequest) returns (stream HostEvent);
 }
+
+enum GrantState {
+  GRANT_STATE_UNSPECIFIED = 0;
+  GRANT_STATE_CREATING = 1;
+  GRANT_STATE_RUNNING = 2;
+  GRANT_STATE_FROZEN = 3;
+  GRANT_STATE_SUSPENDED = 4;
+  GRANT_STATE_REVOKED = 5;
+  GRANT_STATE_LOST = 6;
+}
+
+message GrantInfo {
+  string grant_id = 1;
+  string epoch = 2;
+  string image = 3;
+  Network network = 4;
+  Resources resources = 5;
+  map<string, string> labels = 6;
+  GrantState state = 7;
+  // The revision of the control that put the grant in its state.
+  uint64 fence_revision = 8;
+  google.protobuf.Timestamp started = 9;
+}
+
+message HostCapacity {
+  Capacity cpu_millis = 1;
+  Capacity memory_bytes = 2;
+  Capacity disk_bytes = 3;
+}
+
+// HostEvent is one change: a grant's new state, or the capacity.
+message HostEvent {
+  oneof change {
+    GrantInfo grant = 1;
+    HostCapacity capacity = 2;
+  }
+}
+
+message ListGrantsRequest {}
+
+message ListGrantsResponse {
+  repeated GrantInfo grants = 1;
+}
+
+message WaitGrantRequest {
+  string grant_id = 1;
+}
+
+message WatchGrantRequest {
+  string grant_id = 1;
+}
+
+message WatchHostRequest {}
 
 message Seed {
   string digest = 1;

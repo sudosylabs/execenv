@@ -801,6 +801,30 @@ with `Revoke` (host or env; it returns nil), then `Ensure` the id again: it
 gets a new `Epoch`, and you rebuild it from your journal as after any new
 occupancy. Fences from the lost epoch never apply to the new one.
 
+### Follow grants
+
+A host lists its grants and tells you when they change, so nothing polls:
+
+```go
+grants, err := host.ListGrants(ctx)       // held and lost grants, with state
+g, err := host.WaitGrant(ctx, "grant-1")  // once it has left GrantCreating
+w, err := host.WatchGrant(ctx, "grant-1") // its state now, then each change
+for {
+	g, err := w.Next(ctx)
+	if err == io.EOF {
+		break // after GrantRevoked
+	}
+	_ = g.State // creating, running, frozen, suspended, revoked or lost
+}
+hw, err := host.WatchHost(ctx) // every grant and the capacity, then changes
+```
+
+`GrantInfo` carries the grant's epoch, image, network, resources, labels,
+state, the fence revision of the control that put it there, and when it
+started. A watch holds at most the latest state of each grant it has not
+read yet: a burst of changes arrives as the last of them, so a slow reader
+costs the host nothing more. An unknown grant is `ErrNotFound`.
+
 ### Network
 
 The grant caller cannot add destinations.

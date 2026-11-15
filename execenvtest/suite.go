@@ -44,6 +44,7 @@ func Run(t *testing.T, factory Factory) {
 	runContent(t, factory)
 	runSeeds(t, factory)
 	runFiles(t, factory)
+	runGrants(t, factory)
 
 	t.Run("ready reports the default image", func(t *testing.T) {
 		host := factory(t, Config{})
