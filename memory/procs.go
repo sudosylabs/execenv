@@ -7,6 +7,7 @@ import (
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/internal/procs"
+	"github.com/sudosylabs/execenv/internal/screen"
 )
 
 // The in-memory host runs every process in its small fake shell: a
@@ -25,6 +26,8 @@ type shellProc struct {
 	sh     *shell
 	stderr io.Reader
 	done   chan struct{}
+	// screen is a terminal process's headless terminal.
+	screen *screen.Terminal
 }
 
 func (e *environment) startProcess(_ context.Context, spec execenv.ProcessSpec) (procs.Backend, error) {
@@ -34,6 +37,9 @@ func (e *environment) startProcess(_ context.Context, spec execenv.ProcessSpec) 
 	}
 	sh := newShell(win, e.processes, spec.PTY != nil, spec.Tag, spec.Argv)
 	p := &shellProc{sh: sh, stderr: strings.NewReader(""), done: make(chan struct{})}
+	if spec.PTY != nil {
+		p.screen = screen.New(win)
+	}
 	go func() {
 		sh.mu.Lock()
 		for !sh.exited && !sh.closed {
@@ -41,6 +47,10 @@ func (e *environment) startProcess(_ context.Context, spec execenv.ProcessSpec) 
 		}
 		sh.mu.Unlock()
 		close(p.done)
+		if p.screen != nil {
+			// It writes no more; the screen stays readable.
+			p.screen.Close()
+		}
 	}()
 	if len(spec.Argv) > 0 {
 		line := strings.Join(spec.Argv, " ")
@@ -59,7 +69,8 @@ func (e *environment) startProcess(_ context.Context, spec execenv.ProcessSpec) 
 
 func (p *shellProc) Streams() map[execenv.Stream]io.Reader {
 	if p.sh.terminal {
-		return map[execenv.Stream]io.Reader{execenv.StreamPTY: p.sh}
+		// The screen takes every byte the host's history does, in order.
+		return map[execenv.Stream]io.Reader{execenv.StreamPTY: io.TeeReader(p.sh, p.screen)}
 	}
 	return map[execenv.Stream]io.Reader{execenv.StreamStdout: p.sh, execenv.StreamStderr: p.stderr}
 }
@@ -75,7 +86,20 @@ func (p *shellProc) CloseInput() error {
 	return err
 }
 
-func (p *shellProc) Resize(ctx context.Context, w execenv.Window) error { return p.sh.Resize(ctx, w) }
+func (p *shellProc) Resize(ctx context.Context, w execenv.Window) error {
+	if err := p.sh.Resize(ctx, w); err != nil {
+		return err
+	}
+	p.screen.Resize(w)
+	return nil
+}
+
+func (p *shellProc) Screen(context.Context) (execenv.Screen, error) {
+	if p.screen == nil {
+		return execenv.Screen{}, execenv.ErrInvalid
+	}
+	return p.screen.Snapshot(), nil
+}
 
 func (p *shellProc) Signal(s execenv.Signal) error {
 	n, ok := signals[s]

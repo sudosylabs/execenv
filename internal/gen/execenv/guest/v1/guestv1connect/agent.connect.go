@@ -53,6 +53,9 @@ const (
 	// AgentServiceSignalProcessProcedure is the fully-qualified name of the AgentService's
 	// SignalProcess RPC.
 	AgentServiceSignalProcessProcedure = "/execenv.guest.v1.AgentService/SignalProcess"
+	// AgentServiceProcessScreenProcedure is the fully-qualified name of the AgentService's
+	// ProcessScreen RPC.
+	AgentServiceProcessScreenProcedure = "/execenv.guest.v1.AgentService/ProcessScreen"
 	// AgentServiceFreezeProcedure is the fully-qualified name of the AgentService's Freeze RPC.
 	AgentServiceFreezeProcedure = "/execenv.guest.v1.AgentService/Freeze"
 	// AgentServiceThawProcedure is the fully-qualified name of the AgentService's Thaw RPC.
@@ -125,6 +128,9 @@ type AgentServiceClient interface {
 	CloseFeed(context.Context, *connect.Request[v1.ProcessRef]) (*connect.Response[v1.Empty], error)
 	ResizeProcess(context.Context, *connect.Request[v1.ResizeRequest]) (*connect.Response[v1.Empty], error)
 	SignalProcess(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.Empty], error)
+	// ProcessScreen is a terminal process's screen, from the helper's own
+	// headless terminal fed every byte the process wrote.
+	ProcessScreen(context.Context, *connect.Request[v1.ProcessScreenRequest]) (*connect.Response[v11.Screen], error)
 	// Freeze closes I/O before the host pauses the machine; Thaw reopens it.
 	Freeze(context.Context, *connect.Request[v1.FreezeRequest]) (*connect.Response[v1.FreezeResponse], error)
 	Thaw(context.Context, *connect.Request[v1.ThawRequest]) (*connect.Response[v1.ThawResponse], error)
@@ -209,6 +215,12 @@ func NewAgentServiceClient(httpClient connect.HTTPClient, baseURL string, opts .
 			httpClient,
 			baseURL+AgentServiceSignalProcessProcedure,
 			connect.WithSchema(agentServiceMethods.ByName("SignalProcess")),
+			connect.WithClientOptions(opts...),
+		),
+		processScreen: connect.NewClient[v1.ProcessScreenRequest, v11.Screen](
+			httpClient,
+			baseURL+AgentServiceProcessScreenProcedure,
+			connect.WithSchema(agentServiceMethods.ByName("ProcessScreen")),
 			connect.WithClientOptions(opts...),
 		),
 		freeze: connect.NewClient[v1.FreezeRequest, v1.FreezeResponse](
@@ -344,6 +356,7 @@ type agentServiceClient struct {
 	closeFeed                    *connect.Client[v1.ProcessRef, v1.Empty]
 	resizeProcess                *connect.Client[v1.ResizeRequest, v1.Empty]
 	signalProcess                *connect.Client[v1.SignalRequest, v1.Empty]
+	processScreen                *connect.Client[v1.ProcessScreenRequest, v11.Screen]
 	freeze                       *connect.Client[v1.FreezeRequest, v1.FreezeResponse]
 	thaw                         *connect.Client[v1.ThawRequest, v1.ThawResponse]
 	observeProcesses             *connect.Client[v11.ObserveProcessesRequest, v11.ProcessPage]
@@ -404,6 +417,11 @@ func (c *agentServiceClient) ResizeProcess(ctx context.Context, req *connect.Req
 // SignalProcess calls execenv.guest.v1.AgentService.SignalProcess.
 func (c *agentServiceClient) SignalProcess(ctx context.Context, req *connect.Request[v1.SignalRequest]) (*connect.Response[v1.Empty], error) {
 	return c.signalProcess.CallUnary(ctx, req)
+}
+
+// ProcessScreen calls execenv.guest.v1.AgentService.ProcessScreen.
+func (c *agentServiceClient) ProcessScreen(ctx context.Context, req *connect.Request[v1.ProcessScreenRequest]) (*connect.Response[v11.Screen], error) {
+	return c.processScreen.CallUnary(ctx, req)
 }
 
 // Freeze calls execenv.guest.v1.AgentService.Freeze.
@@ -527,6 +545,9 @@ type AgentServiceHandler interface {
 	CloseFeed(context.Context, *connect.Request[v1.ProcessRef]) (*connect.Response[v1.Empty], error)
 	ResizeProcess(context.Context, *connect.Request[v1.ResizeRequest]) (*connect.Response[v1.Empty], error)
 	SignalProcess(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.Empty], error)
+	// ProcessScreen is a terminal process's screen, from the helper's own
+	// headless terminal fed every byte the process wrote.
+	ProcessScreen(context.Context, *connect.Request[v1.ProcessScreenRequest]) (*connect.Response[v11.Screen], error)
 	// Freeze closes I/O before the host pauses the machine; Thaw reopens it.
 	Freeze(context.Context, *connect.Request[v1.FreezeRequest]) (*connect.Response[v1.FreezeResponse], error)
 	Thaw(context.Context, *connect.Request[v1.ThawRequest]) (*connect.Response[v1.ThawResponse], error)
@@ -607,6 +628,12 @@ func NewAgentServiceHandler(svc AgentServiceHandler, opts ...connect.HandlerOpti
 		AgentServiceSignalProcessProcedure,
 		svc.SignalProcess,
 		connect.WithSchema(agentServiceMethods.ByName("SignalProcess")),
+		connect.WithHandlerOptions(opts...),
+	)
+	agentServiceProcessScreenHandler := connect.NewUnaryHandler(
+		AgentServiceProcessScreenProcedure,
+		svc.ProcessScreen,
+		connect.WithSchema(agentServiceMethods.ByName("ProcessScreen")),
 		connect.WithHandlerOptions(opts...),
 	)
 	agentServiceFreezeHandler := connect.NewUnaryHandler(
@@ -747,6 +774,8 @@ func NewAgentServiceHandler(svc AgentServiceHandler, opts ...connect.HandlerOpti
 			agentServiceResizeProcessHandler.ServeHTTP(w, r)
 		case AgentServiceSignalProcessProcedure:
 			agentServiceSignalProcessHandler.ServeHTTP(w, r)
+		case AgentServiceProcessScreenProcedure:
+			agentServiceProcessScreenHandler.ServeHTTP(w, r)
 		case AgentServiceFreezeProcedure:
 			agentServiceFreezeHandler.ServeHTTP(w, r)
 		case AgentServiceThawProcedure:
@@ -826,6 +855,10 @@ func (UnimplementedAgentServiceHandler) ResizeProcess(context.Context, *connect.
 
 func (UnimplementedAgentServiceHandler) SignalProcess(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.Empty], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.SignalProcess is not implemented"))
+}
+
+func (UnimplementedAgentServiceHandler) ProcessScreen(context.Context, *connect.Request[v1.ProcessScreenRequest]) (*connect.Response[v11.Screen], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.ProcessScreen is not implemented"))
 }
 
 func (UnimplementedAgentServiceHandler) Freeze(context.Context, *connect.Request[v1.FreezeRequest]) (*connect.Response[v1.FreezeResponse], error) {

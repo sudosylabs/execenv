@@ -18,6 +18,13 @@ func (e *environment) Start(ctx context.Context, fence execenv.ProjectionFence, 
 	return info, err
 }
 
+func (e *environment) Screen(ctx context.Context, tag string) (execenv.Screen, error) {
+	if err := e.live("screen"); err != nil {
+		return execenv.Screen{}, err
+	}
+	return e.procs.Screen(ctx, tag)
+}
+
 func (e *environment) Process(ctx context.Context, tag string) (execenv.ProcessInfo, error) {
 	if err := e.live("process"); err != nil {
 		return execenv.ProcessInfo{}, err

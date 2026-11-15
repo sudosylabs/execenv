@@ -16,7 +16,9 @@ import (
 
 	"github.com/sudosylabs/execenv"
 	guestv1 "github.com/sudosylabs/execenv/internal/gen/execenv/guest/v1"
+	execenvv1 "github.com/sudosylabs/execenv/internal/gen/execenv/v1"
 	"github.com/sudosylabs/execenv/internal/ring"
+	"github.com/sudosylabs/execenv/internal/screen"
 	"github.com/sudosylabs/execenv/internal/wire"
 )
 
@@ -37,7 +39,10 @@ const (
 
 type guestProc struct {
 	// untag forgets its pid's tag once the process is gone.
-	untag   func()
+	untag func()
+	// screen is a terminal process's headless terminal, fed every byte it
+	// writes, in order, by its pump.
+	screen  *screen.Terminal
 	spec    execenv.ProcessSpec
 	cmd     *exec.Cmd
 	started time.Time
@@ -157,6 +162,7 @@ func (s *server) spawn(spec execenv.ProcessSpec) (*guestProc, error) {
 		p.pty = master
 		p.reads = []*os.File{master}
 		p.started = time.Now()
+		p.screen = screen.New(*spec.PTY)
 		p.pumpAll(map[execenv.Stream]*os.File{execenv.StreamPTY: master})
 	} else if err := p.startPiped(); err != nil {
 		return nil, err
@@ -272,6 +278,10 @@ func (p *guestProc) pumpAll(outputs map[execenv.Stream]*os.File) {
 func (p *guestProc) pump(stream execenv.Stream, r io.Reader) {
 	buf := make([]byte, wire.ChunkSize)
 	defer func() {
+		if stream == execenv.StreamPTY && p.screen != nil {
+			// Its output is over; the screen stays readable.
+			p.screen.Close()
+		}
 		p.mu.Lock()
 		p.pumping--
 		p.cond.Broadcast()
@@ -293,6 +303,11 @@ func (p *guestProc) pump(stream execenv.Stream, r io.Reader) {
 			rg.Write(buf[:n])
 			p.cond.Broadcast()
 			p.mu.Unlock()
+			if stream == execenv.StreamPTY && p.screen != nil {
+				// The only writer, so the screen takes output in the
+				// ring's order and its offset matches the ring's.
+				_, _ = p.screen.Write(buf[:n])
+			}
 		}
 		if err != nil {
 			return
@@ -552,7 +567,20 @@ func (s *server) ResizeProcess(_ context.Context, req *connect.Request[guestv1.R
 	if err := setWindow(p.pty, window); err != nil {
 		return nil, wire.Error(execenv.ErrUnavailable)
 	}
+	p.screen.Resize(window)
 	return connect.NewResponse(&guestv1.Empty{}), nil
+}
+
+// ProcessScreen reads a terminal process's screen, running or exited.
+func (s *server) ProcessScreen(_ context.Context, req *connect.Request[guestv1.ProcessScreenRequest]) (*connect.Response[execenvv1.Screen], error) {
+	p, err := s.proc(req.Msg.GetTag())
+	if err != nil {
+		return nil, wire.Error(err)
+	}
+	if p.screen == nil {
+		return nil, wire.Error(execenv.ErrInvalid)
+	}
+	return connect.NewResponse(wire.ScreenTo(p.screen.Snapshot())), nil
 }
 
 // SignalProcess signals the process's whole session.

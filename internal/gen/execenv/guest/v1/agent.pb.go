@@ -810,6 +810,50 @@ func (x *ResizeRequest) GetWindow() *v1.Window {
 	return nil
 }
 
+type ProcessScreenRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Tag           string                 `protobuf:"bytes,1,opt,name=tag,proto3" json:"tag,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProcessScreenRequest) Reset() {
+	*x = ProcessScreenRequest{}
+	mi := &file_execenv_guest_v1_agent_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProcessScreenRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProcessScreenRequest) ProtoMessage() {}
+
+func (x *ProcessScreenRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_execenv_guest_v1_agent_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProcessScreenRequest.ProtoReflect.Descriptor instead.
+func (*ProcessScreenRequest) Descriptor() ([]byte, []int) {
+	return file_execenv_guest_v1_agent_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *ProcessScreenRequest) GetTag() string {
+	if x != nil {
+		return x.Tag
+	}
+	return ""
+}
+
 type SignalRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Tag           string                 `protobuf:"bytes,1,opt,name=tag,proto3" json:"tag,omitempty"`
@@ -820,7 +864,7 @@ type SignalRequest struct {
 
 func (x *SignalRequest) Reset() {
 	*x = SignalRequest{}
-	mi := &file_execenv_guest_v1_agent_proto_msgTypes[15]
+	mi := &file_execenv_guest_v1_agent_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -832,7 +876,7 @@ func (x *SignalRequest) String() string {
 func (*SignalRequest) ProtoMessage() {}
 
 func (x *SignalRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_guest_v1_agent_proto_msgTypes[15]
+	mi := &file_execenv_guest_v1_agent_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -845,7 +889,7 @@ func (x *SignalRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignalRequest.ProtoReflect.Descriptor instead.
 func (*SignalRequest) Descriptor() ([]byte, []int) {
-	return file_execenv_guest_v1_agent_proto_rawDescGZIP(), []int{15}
+	return file_execenv_guest_v1_agent_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *SignalRequest) GetTag() string {
@@ -870,7 +914,7 @@ type FreezeRequest struct {
 
 func (x *FreezeRequest) Reset() {
 	*x = FreezeRequest{}
-	mi := &file_execenv_guest_v1_agent_proto_msgTypes[16]
+	mi := &file_execenv_guest_v1_agent_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -882,7 +926,7 @@ func (x *FreezeRequest) String() string {
 func (*FreezeRequest) ProtoMessage() {}
 
 func (x *FreezeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_guest_v1_agent_proto_msgTypes[16]
+	mi := &file_execenv_guest_v1_agent_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -895,7 +939,7 @@ func (x *FreezeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FreezeRequest.ProtoReflect.Descriptor instead.
 func (*FreezeRequest) Descriptor() ([]byte, []int) {
-	return file_execenv_guest_v1_agent_proto_rawDescGZIP(), []int{16}
+	return file_execenv_guest_v1_agent_proto_rawDescGZIP(), []int{17}
 }
 
 type FreezeResponse struct {
@@ -906,7 +950,7 @@ type FreezeResponse struct {
 
 func (x *FreezeResponse) Reset() {
 	*x = FreezeResponse{}
-	mi := &file_execenv_guest_v1_agent_proto_msgTypes[17]
+	mi := &file_execenv_guest_v1_agent_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -918,7 +962,7 @@ func (x *FreezeResponse) String() string {
 func (*FreezeResponse) ProtoMessage() {}
 
 func (x *FreezeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_guest_v1_agent_proto_msgTypes[17]
+	mi := &file_execenv_guest_v1_agent_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -931,7 +975,7 @@ func (x *FreezeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FreezeResponse.ProtoReflect.Descriptor instead.
 func (*FreezeResponse) Descriptor() ([]byte, []int) {
-	return file_execenv_guest_v1_agent_proto_rawDescGZIP(), []int{17}
+	return file_execenv_guest_v1_agent_proto_rawDescGZIP(), []int{18}
 }
 
 type ThawRequest struct {
@@ -942,7 +986,7 @@ type ThawRequest struct {
 
 func (x *ThawRequest) Reset() {
 	*x = ThawRequest{}
-	mi := &file_execenv_guest_v1_agent_proto_msgTypes[18]
+	mi := &file_execenv_guest_v1_agent_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -954,7 +998,7 @@ func (x *ThawRequest) String() string {
 func (*ThawRequest) ProtoMessage() {}
 
 func (x *ThawRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_guest_v1_agent_proto_msgTypes[18]
+	mi := &file_execenv_guest_v1_agent_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -967,7 +1011,7 @@ func (x *ThawRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ThawRequest.ProtoReflect.Descriptor instead.
 func (*ThawRequest) Descriptor() ([]byte, []int) {
-	return file_execenv_guest_v1_agent_proto_rawDescGZIP(), []int{18}
+	return file_execenv_guest_v1_agent_proto_rawDescGZIP(), []int{19}
 }
 
 type ThawResponse struct {
@@ -978,7 +1022,7 @@ type ThawResponse struct {
 
 func (x *ThawResponse) Reset() {
 	*x = ThawResponse{}
-	mi := &file_execenv_guest_v1_agent_proto_msgTypes[19]
+	mi := &file_execenv_guest_v1_agent_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -990,7 +1034,7 @@ func (x *ThawResponse) String() string {
 func (*ThawResponse) ProtoMessage() {}
 
 func (x *ThawResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_guest_v1_agent_proto_msgTypes[19]
+	mi := &file_execenv_guest_v1_agent_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1003,7 +1047,7 @@ func (x *ThawResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ThawResponse.ProtoReflect.Descriptor instead.
 func (*ThawResponse) Descriptor() ([]byte, []int) {
-	return file_execenv_guest_v1_agent_proto_rawDescGZIP(), []int{19}
+	return file_execenv_guest_v1_agent_proto_rawDescGZIP(), []int{20}
 }
 
 var File_execenv_guest_v1_agent_proto protoreflect.FileDescriptor
@@ -1057,14 +1101,16 @@ const file_execenv_guest_v1_agent_proto_rawDesc = "" +
 	"\fFeedResponse\"M\n" +
 	"\rResizeRequest\x12\x10\n" +
 	"\x03tag\x18\x01 \x01(\tR\x03tag\x12*\n" +
-	"\x06window\x18\x02 \x01(\v2\x12.execenv.v1.WindowR\x06window\"9\n" +
+	"\x06window\x18\x02 \x01(\v2\x12.execenv.v1.WindowR\x06window\"(\n" +
+	"\x14ProcessScreenRequest\x12\x10\n" +
+	"\x03tag\x18\x01 \x01(\tR\x03tag\"9\n" +
 	"\rSignalRequest\x12\x10\n" +
 	"\x03tag\x18\x01 \x01(\tR\x03tag\x12\x16\n" +
 	"\x06signal\x18\x02 \x01(\tR\x06signal\"\x0f\n" +
 	"\rFreezeRequest\"\x10\n" +
 	"\x0eFreezeResponse\"\r\n" +
 	"\vThawRequest\"\x0e\n" +
-	"\fThawResponse2\xbd\x11\n" +
+	"\fThawResponse2\x8a\x12\n" +
 	"\fAgentService\x12H\n" +
 	"\x05Hello\x12\x1e.execenv.guest.v1.HelloRequest\x1a\x1f.execenv.guest.v1.HelloResponse\x12H\n" +
 	"\x05Spawn\x12\x1e.execenv.guest.v1.SpawnRequest\x1a\x1f.execenv.guest.v1.SpawnResponse\x12`\n" +
@@ -1074,6 +1120,7 @@ const file_execenv_guest_v1_agent_proto_rawDesc = "" +
 	"\tCloseFeed\x12\x1c.execenv.guest.v1.ProcessRef\x1a\x17.execenv.guest.v1.Empty\x12I\n" +
 	"\rResizeProcess\x12\x1f.execenv.guest.v1.ResizeRequest\x1a\x17.execenv.guest.v1.Empty\x12I\n" +
 	"\rSignalProcess\x12\x1f.execenv.guest.v1.SignalRequest\x1a\x17.execenv.guest.v1.Empty\x12K\n" +
+	"\rProcessScreen\x12&.execenv.guest.v1.ProcessScreenRequest\x1a\x12.execenv.v1.Screen\x12K\n" +
 	"\x06Freeze\x12\x1f.execenv.guest.v1.FreezeRequest\x1a .execenv.guest.v1.FreezeResponse\x12E\n" +
 	"\x04Thaw\x12\x1d.execenv.guest.v1.ThawRequest\x1a\x1e.execenv.guest.v1.ThawResponse\x12P\n" +
 	"\x10ObserveProcesses\x12#.execenv.v1.ObserveProcessesRequest\x1a\x17.execenv.v1.ProcessPage\x12i\n" +
@@ -1107,7 +1154,7 @@ func file_execenv_guest_v1_agent_proto_rawDescGZIP() []byte {
 	return file_execenv_guest_v1_agent_proto_rawDescData
 }
 
-var file_execenv_guest_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
+var file_execenv_guest_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
 var file_execenv_guest_v1_agent_proto_goTypes = []any{
 	(*Empty)(nil),                                   // 0: execenv.guest.v1.Empty
 	(*HelloRequest)(nil),                            // 1: execenv.guest.v1.HelloRequest
@@ -1124,61 +1171,63 @@ var file_execenv_guest_v1_agent_proto_goTypes = []any{
 	(*FeedRequest)(nil),                             // 12: execenv.guest.v1.FeedRequest
 	(*FeedResponse)(nil),                            // 13: execenv.guest.v1.FeedResponse
 	(*ResizeRequest)(nil),                           // 14: execenv.guest.v1.ResizeRequest
-	(*SignalRequest)(nil),                           // 15: execenv.guest.v1.SignalRequest
-	(*FreezeRequest)(nil),                           // 16: execenv.guest.v1.FreezeRequest
-	(*FreezeResponse)(nil),                          // 17: execenv.guest.v1.FreezeResponse
-	(*ThawRequest)(nil),                             // 18: execenv.guest.v1.ThawRequest
-	(*ThawResponse)(nil),                            // 19: execenv.guest.v1.ThawResponse
-	nil,                                             // 20: execenv.guest.v1.GuestProcess.FirstEntry
-	nil,                                             // 21: execenv.guest.v1.OutputRequest.FromEntry
-	(*v1.ProcessSpec)(nil),                          // 22: execenv.v1.ProcessSpec
-	(*v1.ProcessInfo)(nil),                          // 23: execenv.v1.ProcessInfo
-	(*v1.ExitStatus)(nil),                           // 24: execenv.v1.ExitStatus
-	(*v1.Window)(nil),                               // 25: execenv.v1.Window
-	(*v1.ObserveProcessesRequest)(nil),              // 26: execenv.v1.ObserveProcessesRequest
-	(*v1.AcknowledgeProcessesRequest)(nil),          // 27: execenv.v1.AcknowledgeProcessesRequest
-	(*v1.UploadContentRequest)(nil),                 // 28: execenv.v1.UploadContentRequest
-	(*v1.InitializeProjectionRequest)(nil),          // 29: execenv.v1.InitializeProjectionRequest
-	(*v1.ApplyProjectionRequest)(nil),               // 30: execenv.v1.ApplyProjectionRequest
-	(*v1.ObserveRequest)(nil),                       // 31: execenv.v1.ObserveRequest
-	(*v1.ReadObservationContentRequest)(nil),        // 32: execenv.v1.ReadObservationContentRequest
-	(*v1.ConfirmObservationProjectionRequest)(nil),  // 33: execenv.v1.ConfirmObservationProjectionRequest
-	(*v1.AcknowledgeObservationsRequest)(nil),       // 34: execenv.v1.AcknowledgeObservationsRequest
-	(*v1.StatRequest)(nil),                          // 35: execenv.v1.StatRequest
-	(*v1.ListRequest)(nil),                          // 36: execenv.v1.ListRequest
-	(*v1.ReadFileRequest)(nil),                      // 37: execenv.v1.ReadFileRequest
-	(*v1.WriteFileRequest)(nil),                     // 38: execenv.v1.WriteFileRequest
-	(*v1.MakeDirectoryRequest)(nil),                 // 39: execenv.v1.MakeDirectoryRequest
-	(*v1.MoveRequest)(nil),                          // 40: execenv.v1.MoveRequest
-	(*v1.RemoveRequest)(nil),                        // 41: execenv.v1.RemoveRequest
-	(*v1.ImportRequest)(nil),                        // 42: execenv.v1.ImportRequest
-	(*v1.ExportRequest)(nil),                        // 43: execenv.v1.ExportRequest
-	(*v1.ProcessPage)(nil),                          // 44: execenv.v1.ProcessPage
-	(*v1.AcknowledgeProcessesResponse)(nil),         // 45: execenv.v1.AcknowledgeProcessesResponse
-	(*v1.ContentReference)(nil),                     // 46: execenv.v1.ContentReference
-	(*v1.ProjectionReceipt)(nil),                    // 47: execenv.v1.ProjectionReceipt
-	(*v1.ObservationPage)(nil),                      // 48: execenv.v1.ObservationPage
-	(*v1.ContentChunk)(nil),                         // 49: execenv.v1.ContentChunk
-	(*v1.ConfirmObservationProjectionResponse)(nil), // 50: execenv.v1.ConfirmObservationProjectionResponse
-	(*v1.AcknowledgeObservationsResponse)(nil),      // 51: execenv.v1.AcknowledgeObservationsResponse
-	(*v1.FileInfo)(nil),                             // 52: execenv.v1.FileInfo
-	(*v1.ListResponse)(nil),                         // 53: execenv.v1.ListResponse
-	(*v1.MakeDirectoryResponse)(nil),                // 54: execenv.v1.MakeDirectoryResponse
-	(*v1.MoveResponse)(nil),                         // 55: execenv.v1.MoveResponse
-	(*v1.RemoveResponse)(nil),                       // 56: execenv.v1.RemoveResponse
-	(*v1.ImportResponse)(nil),                       // 57: execenv.v1.ImportResponse
+	(*ProcessScreenRequest)(nil),                    // 15: execenv.guest.v1.ProcessScreenRequest
+	(*SignalRequest)(nil),                           // 16: execenv.guest.v1.SignalRequest
+	(*FreezeRequest)(nil),                           // 17: execenv.guest.v1.FreezeRequest
+	(*FreezeResponse)(nil),                          // 18: execenv.guest.v1.FreezeResponse
+	(*ThawRequest)(nil),                             // 19: execenv.guest.v1.ThawRequest
+	(*ThawResponse)(nil),                            // 20: execenv.guest.v1.ThawResponse
+	nil,                                             // 21: execenv.guest.v1.GuestProcess.FirstEntry
+	nil,                                             // 22: execenv.guest.v1.OutputRequest.FromEntry
+	(*v1.ProcessSpec)(nil),                          // 23: execenv.v1.ProcessSpec
+	(*v1.ProcessInfo)(nil),                          // 24: execenv.v1.ProcessInfo
+	(*v1.ExitStatus)(nil),                           // 25: execenv.v1.ExitStatus
+	(*v1.Window)(nil),                               // 26: execenv.v1.Window
+	(*v1.ObserveProcessesRequest)(nil),              // 27: execenv.v1.ObserveProcessesRequest
+	(*v1.AcknowledgeProcessesRequest)(nil),          // 28: execenv.v1.AcknowledgeProcessesRequest
+	(*v1.UploadContentRequest)(nil),                 // 29: execenv.v1.UploadContentRequest
+	(*v1.InitializeProjectionRequest)(nil),          // 30: execenv.v1.InitializeProjectionRequest
+	(*v1.ApplyProjectionRequest)(nil),               // 31: execenv.v1.ApplyProjectionRequest
+	(*v1.ObserveRequest)(nil),                       // 32: execenv.v1.ObserveRequest
+	(*v1.ReadObservationContentRequest)(nil),        // 33: execenv.v1.ReadObservationContentRequest
+	(*v1.ConfirmObservationProjectionRequest)(nil),  // 34: execenv.v1.ConfirmObservationProjectionRequest
+	(*v1.AcknowledgeObservationsRequest)(nil),       // 35: execenv.v1.AcknowledgeObservationsRequest
+	(*v1.StatRequest)(nil),                          // 36: execenv.v1.StatRequest
+	(*v1.ListRequest)(nil),                          // 37: execenv.v1.ListRequest
+	(*v1.ReadFileRequest)(nil),                      // 38: execenv.v1.ReadFileRequest
+	(*v1.WriteFileRequest)(nil),                     // 39: execenv.v1.WriteFileRequest
+	(*v1.MakeDirectoryRequest)(nil),                 // 40: execenv.v1.MakeDirectoryRequest
+	(*v1.MoveRequest)(nil),                          // 41: execenv.v1.MoveRequest
+	(*v1.RemoveRequest)(nil),                        // 42: execenv.v1.RemoveRequest
+	(*v1.ImportRequest)(nil),                        // 43: execenv.v1.ImportRequest
+	(*v1.ExportRequest)(nil),                        // 44: execenv.v1.ExportRequest
+	(*v1.Screen)(nil),                               // 45: execenv.v1.Screen
+	(*v1.ProcessPage)(nil),                          // 46: execenv.v1.ProcessPage
+	(*v1.AcknowledgeProcessesResponse)(nil),         // 47: execenv.v1.AcknowledgeProcessesResponse
+	(*v1.ContentReference)(nil),                     // 48: execenv.v1.ContentReference
+	(*v1.ProjectionReceipt)(nil),                    // 49: execenv.v1.ProjectionReceipt
+	(*v1.ObservationPage)(nil),                      // 50: execenv.v1.ObservationPage
+	(*v1.ContentChunk)(nil),                         // 51: execenv.v1.ContentChunk
+	(*v1.ConfirmObservationProjectionResponse)(nil), // 52: execenv.v1.ConfirmObservationProjectionResponse
+	(*v1.AcknowledgeObservationsResponse)(nil),      // 53: execenv.v1.AcknowledgeObservationsResponse
+	(*v1.FileInfo)(nil),                             // 54: execenv.v1.FileInfo
+	(*v1.ListResponse)(nil),                         // 55: execenv.v1.ListResponse
+	(*v1.MakeDirectoryResponse)(nil),                // 56: execenv.v1.MakeDirectoryResponse
+	(*v1.MoveResponse)(nil),                         // 57: execenv.v1.MoveResponse
+	(*v1.RemoveResponse)(nil),                       // 58: execenv.v1.RemoveResponse
+	(*v1.ImportResponse)(nil),                       // 59: execenv.v1.ImportResponse
 }
 var file_execenv_guest_v1_agent_proto_depIdxs = []int32{
-	22, // 0: execenv.guest.v1.SpawnRequest.spec:type_name -> execenv.v1.ProcessSpec
+	23, // 0: execenv.guest.v1.SpawnRequest.spec:type_name -> execenv.v1.ProcessSpec
 	8,  // 1: execenv.guest.v1.ListProcessesResponse.processes:type_name -> execenv.guest.v1.GuestProcess
-	22, // 2: execenv.guest.v1.GuestProcess.spec:type_name -> execenv.v1.ProcessSpec
-	23, // 3: execenv.guest.v1.GuestProcess.info:type_name -> execenv.v1.ProcessInfo
-	20, // 4: execenv.guest.v1.GuestProcess.first:type_name -> execenv.guest.v1.GuestProcess.FirstEntry
-	21, // 5: execenv.guest.v1.OutputRequest.from:type_name -> execenv.guest.v1.OutputRequest.FromEntry
+	23, // 2: execenv.guest.v1.GuestProcess.spec:type_name -> execenv.v1.ProcessSpec
+	24, // 3: execenv.guest.v1.GuestProcess.info:type_name -> execenv.v1.ProcessInfo
+	21, // 4: execenv.guest.v1.GuestProcess.first:type_name -> execenv.guest.v1.GuestProcess.FirstEntry
+	22, // 5: execenv.guest.v1.OutputRequest.from:type_name -> execenv.guest.v1.OutputRequest.FromEntry
 	11, // 6: execenv.guest.v1.OutputResponse.data:type_name -> execenv.guest.v1.Chunk
-	24, // 7: execenv.guest.v1.OutputResponse.exit:type_name -> execenv.v1.ExitStatus
+	25, // 7: execenv.guest.v1.OutputResponse.exit:type_name -> execenv.v1.ExitStatus
 	0,  // 8: execenv.guest.v1.OutputResponse.opened:type_name -> execenv.guest.v1.Empty
-	25, // 9: execenv.guest.v1.ResizeRequest.window:type_name -> execenv.v1.Window
+	26, // 9: execenv.guest.v1.ResizeRequest.window:type_name -> execenv.v1.Window
 	1,  // 10: execenv.guest.v1.AgentService.Hello:input_type -> execenv.guest.v1.HelloRequest
 	3,  // 11: execenv.guest.v1.AgentService.Spawn:input_type -> execenv.guest.v1.SpawnRequest
 	6,  // 12: execenv.guest.v1.AgentService.ListProcesses:input_type -> execenv.guest.v1.ListProcessesRequest
@@ -1186,57 +1235,59 @@ var file_execenv_guest_v1_agent_proto_depIdxs = []int32{
 	12, // 14: execenv.guest.v1.AgentService.Feed:input_type -> execenv.guest.v1.FeedRequest
 	5,  // 15: execenv.guest.v1.AgentService.CloseFeed:input_type -> execenv.guest.v1.ProcessRef
 	14, // 16: execenv.guest.v1.AgentService.ResizeProcess:input_type -> execenv.guest.v1.ResizeRequest
-	15, // 17: execenv.guest.v1.AgentService.SignalProcess:input_type -> execenv.guest.v1.SignalRequest
-	16, // 18: execenv.guest.v1.AgentService.Freeze:input_type -> execenv.guest.v1.FreezeRequest
-	18, // 19: execenv.guest.v1.AgentService.Thaw:input_type -> execenv.guest.v1.ThawRequest
-	26, // 20: execenv.guest.v1.AgentService.ObserveProcesses:input_type -> execenv.v1.ObserveProcessesRequest
-	27, // 21: execenv.guest.v1.AgentService.AcknowledgeProcesses:input_type -> execenv.v1.AcknowledgeProcessesRequest
-	28, // 22: execenv.guest.v1.AgentService.UploadContent:input_type -> execenv.v1.UploadContentRequest
-	29, // 23: execenv.guest.v1.AgentService.InitializeProjection:input_type -> execenv.v1.InitializeProjectionRequest
-	30, // 24: execenv.guest.v1.AgentService.ApplyProjection:input_type -> execenv.v1.ApplyProjectionRequest
-	31, // 25: execenv.guest.v1.AgentService.Observe:input_type -> execenv.v1.ObserveRequest
-	32, // 26: execenv.guest.v1.AgentService.ReadObservationContent:input_type -> execenv.v1.ReadObservationContentRequest
-	33, // 27: execenv.guest.v1.AgentService.ConfirmObservationProjection:input_type -> execenv.v1.ConfirmObservationProjectionRequest
-	34, // 28: execenv.guest.v1.AgentService.AcknowledgeObservations:input_type -> execenv.v1.AcknowledgeObservationsRequest
-	35, // 29: execenv.guest.v1.AgentService.Stat:input_type -> execenv.v1.StatRequest
-	36, // 30: execenv.guest.v1.AgentService.List:input_type -> execenv.v1.ListRequest
-	37, // 31: execenv.guest.v1.AgentService.ReadFile:input_type -> execenv.v1.ReadFileRequest
-	38, // 32: execenv.guest.v1.AgentService.WriteFile:input_type -> execenv.v1.WriteFileRequest
-	39, // 33: execenv.guest.v1.AgentService.MakeDirectory:input_type -> execenv.v1.MakeDirectoryRequest
-	40, // 34: execenv.guest.v1.AgentService.Move:input_type -> execenv.v1.MoveRequest
-	41, // 35: execenv.guest.v1.AgentService.Remove:input_type -> execenv.v1.RemoveRequest
-	42, // 36: execenv.guest.v1.AgentService.Import:input_type -> execenv.v1.ImportRequest
-	43, // 37: execenv.guest.v1.AgentService.Export:input_type -> execenv.v1.ExportRequest
-	2,  // 38: execenv.guest.v1.AgentService.Hello:output_type -> execenv.guest.v1.HelloResponse
-	4,  // 39: execenv.guest.v1.AgentService.Spawn:output_type -> execenv.guest.v1.SpawnResponse
-	7,  // 40: execenv.guest.v1.AgentService.ListProcesses:output_type -> execenv.guest.v1.ListProcessesResponse
-	10, // 41: execenv.guest.v1.AgentService.Output:output_type -> execenv.guest.v1.OutputResponse
-	13, // 42: execenv.guest.v1.AgentService.Feed:output_type -> execenv.guest.v1.FeedResponse
-	0,  // 43: execenv.guest.v1.AgentService.CloseFeed:output_type -> execenv.guest.v1.Empty
-	0,  // 44: execenv.guest.v1.AgentService.ResizeProcess:output_type -> execenv.guest.v1.Empty
-	0,  // 45: execenv.guest.v1.AgentService.SignalProcess:output_type -> execenv.guest.v1.Empty
-	17, // 46: execenv.guest.v1.AgentService.Freeze:output_type -> execenv.guest.v1.FreezeResponse
-	19, // 47: execenv.guest.v1.AgentService.Thaw:output_type -> execenv.guest.v1.ThawResponse
-	44, // 48: execenv.guest.v1.AgentService.ObserveProcesses:output_type -> execenv.v1.ProcessPage
-	45, // 49: execenv.guest.v1.AgentService.AcknowledgeProcesses:output_type -> execenv.v1.AcknowledgeProcessesResponse
-	46, // 50: execenv.guest.v1.AgentService.UploadContent:output_type -> execenv.v1.ContentReference
-	47, // 51: execenv.guest.v1.AgentService.InitializeProjection:output_type -> execenv.v1.ProjectionReceipt
-	47, // 52: execenv.guest.v1.AgentService.ApplyProjection:output_type -> execenv.v1.ProjectionReceipt
-	48, // 53: execenv.guest.v1.AgentService.Observe:output_type -> execenv.v1.ObservationPage
-	49, // 54: execenv.guest.v1.AgentService.ReadObservationContent:output_type -> execenv.v1.ContentChunk
-	50, // 55: execenv.guest.v1.AgentService.ConfirmObservationProjection:output_type -> execenv.v1.ConfirmObservationProjectionResponse
-	51, // 56: execenv.guest.v1.AgentService.AcknowledgeObservations:output_type -> execenv.v1.AcknowledgeObservationsResponse
-	52, // 57: execenv.guest.v1.AgentService.Stat:output_type -> execenv.v1.FileInfo
-	53, // 58: execenv.guest.v1.AgentService.List:output_type -> execenv.v1.ListResponse
-	49, // 59: execenv.guest.v1.AgentService.ReadFile:output_type -> execenv.v1.ContentChunk
-	52, // 60: execenv.guest.v1.AgentService.WriteFile:output_type -> execenv.v1.FileInfo
-	54, // 61: execenv.guest.v1.AgentService.MakeDirectory:output_type -> execenv.v1.MakeDirectoryResponse
-	55, // 62: execenv.guest.v1.AgentService.Move:output_type -> execenv.v1.MoveResponse
-	56, // 63: execenv.guest.v1.AgentService.Remove:output_type -> execenv.v1.RemoveResponse
-	57, // 64: execenv.guest.v1.AgentService.Import:output_type -> execenv.v1.ImportResponse
-	49, // 65: execenv.guest.v1.AgentService.Export:output_type -> execenv.v1.ContentChunk
-	38, // [38:66] is the sub-list for method output_type
-	10, // [10:38] is the sub-list for method input_type
+	16, // 17: execenv.guest.v1.AgentService.SignalProcess:input_type -> execenv.guest.v1.SignalRequest
+	15, // 18: execenv.guest.v1.AgentService.ProcessScreen:input_type -> execenv.guest.v1.ProcessScreenRequest
+	17, // 19: execenv.guest.v1.AgentService.Freeze:input_type -> execenv.guest.v1.FreezeRequest
+	19, // 20: execenv.guest.v1.AgentService.Thaw:input_type -> execenv.guest.v1.ThawRequest
+	27, // 21: execenv.guest.v1.AgentService.ObserveProcesses:input_type -> execenv.v1.ObserveProcessesRequest
+	28, // 22: execenv.guest.v1.AgentService.AcknowledgeProcesses:input_type -> execenv.v1.AcknowledgeProcessesRequest
+	29, // 23: execenv.guest.v1.AgentService.UploadContent:input_type -> execenv.v1.UploadContentRequest
+	30, // 24: execenv.guest.v1.AgentService.InitializeProjection:input_type -> execenv.v1.InitializeProjectionRequest
+	31, // 25: execenv.guest.v1.AgentService.ApplyProjection:input_type -> execenv.v1.ApplyProjectionRequest
+	32, // 26: execenv.guest.v1.AgentService.Observe:input_type -> execenv.v1.ObserveRequest
+	33, // 27: execenv.guest.v1.AgentService.ReadObservationContent:input_type -> execenv.v1.ReadObservationContentRequest
+	34, // 28: execenv.guest.v1.AgentService.ConfirmObservationProjection:input_type -> execenv.v1.ConfirmObservationProjectionRequest
+	35, // 29: execenv.guest.v1.AgentService.AcknowledgeObservations:input_type -> execenv.v1.AcknowledgeObservationsRequest
+	36, // 30: execenv.guest.v1.AgentService.Stat:input_type -> execenv.v1.StatRequest
+	37, // 31: execenv.guest.v1.AgentService.List:input_type -> execenv.v1.ListRequest
+	38, // 32: execenv.guest.v1.AgentService.ReadFile:input_type -> execenv.v1.ReadFileRequest
+	39, // 33: execenv.guest.v1.AgentService.WriteFile:input_type -> execenv.v1.WriteFileRequest
+	40, // 34: execenv.guest.v1.AgentService.MakeDirectory:input_type -> execenv.v1.MakeDirectoryRequest
+	41, // 35: execenv.guest.v1.AgentService.Move:input_type -> execenv.v1.MoveRequest
+	42, // 36: execenv.guest.v1.AgentService.Remove:input_type -> execenv.v1.RemoveRequest
+	43, // 37: execenv.guest.v1.AgentService.Import:input_type -> execenv.v1.ImportRequest
+	44, // 38: execenv.guest.v1.AgentService.Export:input_type -> execenv.v1.ExportRequest
+	2,  // 39: execenv.guest.v1.AgentService.Hello:output_type -> execenv.guest.v1.HelloResponse
+	4,  // 40: execenv.guest.v1.AgentService.Spawn:output_type -> execenv.guest.v1.SpawnResponse
+	7,  // 41: execenv.guest.v1.AgentService.ListProcesses:output_type -> execenv.guest.v1.ListProcessesResponse
+	10, // 42: execenv.guest.v1.AgentService.Output:output_type -> execenv.guest.v1.OutputResponse
+	13, // 43: execenv.guest.v1.AgentService.Feed:output_type -> execenv.guest.v1.FeedResponse
+	0,  // 44: execenv.guest.v1.AgentService.CloseFeed:output_type -> execenv.guest.v1.Empty
+	0,  // 45: execenv.guest.v1.AgentService.ResizeProcess:output_type -> execenv.guest.v1.Empty
+	0,  // 46: execenv.guest.v1.AgentService.SignalProcess:output_type -> execenv.guest.v1.Empty
+	45, // 47: execenv.guest.v1.AgentService.ProcessScreen:output_type -> execenv.v1.Screen
+	18, // 48: execenv.guest.v1.AgentService.Freeze:output_type -> execenv.guest.v1.FreezeResponse
+	20, // 49: execenv.guest.v1.AgentService.Thaw:output_type -> execenv.guest.v1.ThawResponse
+	46, // 50: execenv.guest.v1.AgentService.ObserveProcesses:output_type -> execenv.v1.ProcessPage
+	47, // 51: execenv.guest.v1.AgentService.AcknowledgeProcesses:output_type -> execenv.v1.AcknowledgeProcessesResponse
+	48, // 52: execenv.guest.v1.AgentService.UploadContent:output_type -> execenv.v1.ContentReference
+	49, // 53: execenv.guest.v1.AgentService.InitializeProjection:output_type -> execenv.v1.ProjectionReceipt
+	49, // 54: execenv.guest.v1.AgentService.ApplyProjection:output_type -> execenv.v1.ProjectionReceipt
+	50, // 55: execenv.guest.v1.AgentService.Observe:output_type -> execenv.v1.ObservationPage
+	51, // 56: execenv.guest.v1.AgentService.ReadObservationContent:output_type -> execenv.v1.ContentChunk
+	52, // 57: execenv.guest.v1.AgentService.ConfirmObservationProjection:output_type -> execenv.v1.ConfirmObservationProjectionResponse
+	53, // 58: execenv.guest.v1.AgentService.AcknowledgeObservations:output_type -> execenv.v1.AcknowledgeObservationsResponse
+	54, // 59: execenv.guest.v1.AgentService.Stat:output_type -> execenv.v1.FileInfo
+	55, // 60: execenv.guest.v1.AgentService.List:output_type -> execenv.v1.ListResponse
+	51, // 61: execenv.guest.v1.AgentService.ReadFile:output_type -> execenv.v1.ContentChunk
+	54, // 62: execenv.guest.v1.AgentService.WriteFile:output_type -> execenv.v1.FileInfo
+	56, // 63: execenv.guest.v1.AgentService.MakeDirectory:output_type -> execenv.v1.MakeDirectoryResponse
+	57, // 64: execenv.guest.v1.AgentService.Move:output_type -> execenv.v1.MoveResponse
+	58, // 65: execenv.guest.v1.AgentService.Remove:output_type -> execenv.v1.RemoveResponse
+	59, // 66: execenv.guest.v1.AgentService.Import:output_type -> execenv.v1.ImportResponse
+	51, // 67: execenv.guest.v1.AgentService.Export:output_type -> execenv.v1.ContentChunk
+	39, // [39:68] is the sub-list for method output_type
+	10, // [10:39] is the sub-list for method input_type
 	10, // [10:10] is the sub-list for extension type_name
 	10, // [10:10] is the sub-list for extension extendee
 	0,  // [0:10] is the sub-list for field type_name
@@ -1262,7 +1313,7 @@ func file_execenv_guest_v1_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_execenv_guest_v1_agent_proto_rawDesc), len(file_execenv_guest_v1_agent_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   22,
+			NumMessages:   23,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

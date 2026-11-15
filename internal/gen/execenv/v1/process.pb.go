@@ -1092,6 +1092,169 @@ func (*SignalProcessResponse) Descriptor() ([]byte, []int) {
 	return file_execenv_v1_process_proto_rawDescGZIP(), []int{16}
 }
 
+type GetScreenRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	GrantId       string                 `protobuf:"bytes,1,opt,name=grant_id,json=grantId,proto3" json:"grant_id,omitempty"`
+	Epoch         string                 `protobuf:"bytes,2,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	Tag           string                 `protobuf:"bytes,3,opt,name=tag,proto3" json:"tag,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetScreenRequest) Reset() {
+	*x = GetScreenRequest{}
+	mi := &file_execenv_v1_process_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetScreenRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetScreenRequest) ProtoMessage() {}
+
+func (x *GetScreenRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_execenv_v1_process_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetScreenRequest.ProtoReflect.Descriptor instead.
+func (*GetScreenRequest) Descriptor() ([]byte, []int) {
+	return file_execenv_v1_process_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *GetScreenRequest) GetGrantId() string {
+	if x != nil {
+		return x.GrantId
+	}
+	return ""
+}
+
+func (x *GetScreenRequest) GetEpoch() string {
+	if x != nil {
+		return x.Epoch
+	}
+	return ""
+}
+
+func (x *GetScreenRequest) GetTag() string {
+	if x != nil {
+		return x.Tag
+	}
+	return ""
+}
+
+// Screen is a terminal process's screen as of an output offset. data
+// redraws it on a blank terminal of window's size; attaching from offset
+// continues it.
+type Screen struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Data          []byte                 `protobuf:"bytes,1,opt,name=data,proto3" json:"data,omitempty"`
+	Offset        uint64                 `protobuf:"varint,2,opt,name=offset,proto3" json:"offset,omitempty"`
+	Window        *Window                `protobuf:"bytes,3,opt,name=window,proto3" json:"window,omitempty"`
+	AltScreen     bool                   `protobuf:"varint,4,opt,name=alt_screen,json=altScreen,proto3" json:"alt_screen,omitempty"`
+	CursorRow     int32                  `protobuf:"varint,5,opt,name=cursor_row,json=cursorRow,proto3" json:"cursor_row,omitempty"`
+	CursorCol     int32                  `protobuf:"varint,6,opt,name=cursor_col,json=cursorCol,proto3" json:"cursor_col,omitempty"`
+	CursorHidden  bool                   `protobuf:"varint,7,opt,name=cursor_hidden,json=cursorHidden,proto3" json:"cursor_hidden,omitempty"`
+	Text          []string               `protobuf:"bytes,8,rep,name=text,proto3" json:"text,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Screen) Reset() {
+	*x = Screen{}
+	mi := &file_execenv_v1_process_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Screen) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Screen) ProtoMessage() {}
+
+func (x *Screen) ProtoReflect() protoreflect.Message {
+	mi := &file_execenv_v1_process_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Screen.ProtoReflect.Descriptor instead.
+func (*Screen) Descriptor() ([]byte, []int) {
+	return file_execenv_v1_process_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *Screen) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+func (x *Screen) GetOffset() uint64 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+func (x *Screen) GetWindow() *Window {
+	if x != nil {
+		return x.Window
+	}
+	return nil
+}
+
+func (x *Screen) GetAltScreen() bool {
+	if x != nil {
+		return x.AltScreen
+	}
+	return false
+}
+
+func (x *Screen) GetCursorRow() int32 {
+	if x != nil {
+		return x.CursorRow
+	}
+	return 0
+}
+
+func (x *Screen) GetCursorCol() int32 {
+	if x != nil {
+		return x.CursorCol
+	}
+	return 0
+}
+
+func (x *Screen) GetCursorHidden() bool {
+	if x != nil {
+		return x.CursorHidden
+	}
+	return false
+}
+
+func (x *Screen) GetText() []string {
+	if x != nil {
+		return x.Text
+	}
+	return nil
+}
+
 var File_execenv_v1_process_proto protoreflect.FileDescriptor
 
 const file_execenv_v1_process_proto_rawDesc = "" +
@@ -1174,14 +1337,30 @@ const file_execenv_v1_process_proto_rawDesc = "" +
 	"\x05fence\x18\x01 \x01(\v2\x11.execenv.v1.FenceR\x05fence\x12\x10\n" +
 	"\x03tag\x18\x02 \x01(\tR\x03tag\x12\x16\n" +
 	"\x06signal\x18\x03 \x01(\tR\x06signal\"\x17\n" +
-	"\x15SignalProcessResponse*\x8a\x01\n" +
+	"\x15SignalProcessResponse\"U\n" +
+	"\x10GetScreenRequest\x12\x19\n" +
+	"\bgrant_id\x18\x01 \x01(\tR\agrantId\x12\x14\n" +
+	"\x05epoch\x18\x02 \x01(\tR\x05epoch\x12\x10\n" +
+	"\x03tag\x18\x03 \x01(\tR\x03tag\"\xf6\x01\n" +
+	"\x06Screen\x12\x12\n" +
+	"\x04data\x18\x01 \x01(\fR\x04data\x12\x16\n" +
+	"\x06offset\x18\x02 \x01(\x04R\x06offset\x12*\n" +
+	"\x06window\x18\x03 \x01(\v2\x12.execenv.v1.WindowR\x06window\x12\x1d\n" +
+	"\n" +
+	"alt_screen\x18\x04 \x01(\bR\taltScreen\x12\x1d\n" +
+	"\n" +
+	"cursor_row\x18\x05 \x01(\x05R\tcursorRow\x12\x1d\n" +
+	"\n" +
+	"cursor_col\x18\x06 \x01(\x05R\tcursorCol\x12#\n" +
+	"\rcursor_hidden\x18\a \x01(\bR\fcursorHidden\x12\x12\n" +
+	"\x04text\x18\b \x03(\tR\x04text*\x8a\x01\n" +
 	"\n" +
 	"OutputKind\x12\x1b\n" +
 	"\x17OUTPUT_KIND_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10OUTPUT_KIND_DATA\x10\x01\x12\x19\n" +
 	"\x15OUTPUT_KIND_TRUNCATED\x10\x02\x12\x14\n" +
 	"\x10OUTPUT_KIND_EXIT\x10\x03\x12\x18\n" +
-	"\x14OUTPUT_KIND_ATTACHED\x10\x042\x8a\x05\n" +
+	"\x14OUTPUT_KIND_ATTACHED\x10\x042\xc9\x05\n" +
 	"\x0eProcessService\x12H\n" +
 	"\fStartProcess\x12\x1f.execenv.v1.StartProcessRequest\x1a\x17.execenv.v1.ProcessInfo\x12D\n" +
 	"\n" +
@@ -1193,7 +1372,8 @@ const file_execenv_v1_process_proto_rawDesc = "" +
 	"\n" +
 	"CloseInput\x12\x1d.execenv.v1.CloseInputRequest\x1a\x1e.execenv.v1.CloseInputResponse\x12T\n" +
 	"\rResizeProcess\x12 .execenv.v1.ResizeProcessRequest\x1a!.execenv.v1.ResizeProcessResponse\x12T\n" +
-	"\rSignalProcess\x12 .execenv.v1.SignalProcessRequest\x1a!.execenv.v1.SignalProcessResponseBAZ?github.com/sudosylabs/execenv/internal/gen/execenv/v1;execenvv1b\x06proto3"
+	"\rSignalProcess\x12 .execenv.v1.SignalProcessRequest\x1a!.execenv.v1.SignalProcessResponse\x12=\n" +
+	"\tGetScreen\x12\x1c.execenv.v1.GetScreenRequest\x1a\x12.execenv.v1.ScreenBAZ?github.com/sudosylabs/execenv/internal/gen/execenv/v1;execenvv1b\x06proto3"
 
 var (
 	file_execenv_v1_process_proto_rawDescOnce sync.Once
@@ -1208,7 +1388,7 @@ func file_execenv_v1_process_proto_rawDescGZIP() []byte {
 }
 
 var file_execenv_v1_process_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_execenv_v1_process_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
+var file_execenv_v1_process_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
 var file_execenv_v1_process_proto_goTypes = []any{
 	(OutputKind)(0),               // 0: execenv.v1.OutputKind
 	(*ProcessSpec)(nil),           // 1: execenv.v1.ProcessSpec
@@ -1228,54 +1408,59 @@ var file_execenv_v1_process_proto_goTypes = []any{
 	(*ResizeProcessResponse)(nil), // 15: execenv.v1.ResizeProcessResponse
 	(*SignalProcessRequest)(nil),  // 16: execenv.v1.SignalProcessRequest
 	(*SignalProcessResponse)(nil), // 17: execenv.v1.SignalProcessResponse
-	nil,                           // 18: execenv.v1.ProcessSpec.EnvEntry
-	nil,                           // 19: execenv.v1.ProcessInfo.OutputEntry
-	nil,                           // 20: execenv.v1.AttachProcessRequest.FromEntry
-	(*Window)(nil),                // 21: execenv.v1.Window
-	(*durationpb.Duration)(nil),   // 22: google.protobuf.Duration
-	(*timestamppb.Timestamp)(nil), // 23: google.protobuf.Timestamp
-	(*Fence)(nil),                 // 24: execenv.v1.Fence
+	(*GetScreenRequest)(nil),      // 18: execenv.v1.GetScreenRequest
+	(*Screen)(nil),                // 19: execenv.v1.Screen
+	nil,                           // 20: execenv.v1.ProcessSpec.EnvEntry
+	nil,                           // 21: execenv.v1.ProcessInfo.OutputEntry
+	nil,                           // 22: execenv.v1.AttachProcessRequest.FromEntry
+	(*Window)(nil),                // 23: execenv.v1.Window
+	(*durationpb.Duration)(nil),   // 24: google.protobuf.Duration
+	(*timestamppb.Timestamp)(nil), // 25: google.protobuf.Timestamp
+	(*Fence)(nil),                 // 26: execenv.v1.Fence
 }
 var file_execenv_v1_process_proto_depIdxs = []int32{
-	18, // 0: execenv.v1.ProcessSpec.env:type_name -> execenv.v1.ProcessSpec.EnvEntry
-	21, // 1: execenv.v1.ProcessSpec.pty:type_name -> execenv.v1.Window
-	22, // 2: execenv.v1.ProcessSpec.detach_grace:type_name -> google.protobuf.Duration
-	22, // 3: execenv.v1.ProcessSpec.timeout:type_name -> google.protobuf.Duration
-	23, // 4: execenv.v1.ProcessInfo.started:type_name -> google.protobuf.Timestamp
+	20, // 0: execenv.v1.ProcessSpec.env:type_name -> execenv.v1.ProcessSpec.EnvEntry
+	23, // 1: execenv.v1.ProcessSpec.pty:type_name -> execenv.v1.Window
+	24, // 2: execenv.v1.ProcessSpec.detach_grace:type_name -> google.protobuf.Duration
+	24, // 3: execenv.v1.ProcessSpec.timeout:type_name -> google.protobuf.Duration
+	25, // 4: execenv.v1.ProcessInfo.started:type_name -> google.protobuf.Timestamp
 	2,  // 5: execenv.v1.ProcessInfo.exit:type_name -> execenv.v1.ExitStatus
-	19, // 6: execenv.v1.ProcessInfo.output:type_name -> execenv.v1.ProcessInfo.OutputEntry
-	24, // 7: execenv.v1.StartProcessRequest.fence:type_name -> execenv.v1.Fence
+	21, // 6: execenv.v1.ProcessInfo.output:type_name -> execenv.v1.ProcessInfo.OutputEntry
+	26, // 7: execenv.v1.StartProcessRequest.fence:type_name -> execenv.v1.Fence
 	1,  // 8: execenv.v1.StartProcessRequest.spec:type_name -> execenv.v1.ProcessSpec
 	3,  // 9: execenv.v1.ListProcessesResponse.processes:type_name -> execenv.v1.ProcessInfo
-	20, // 10: execenv.v1.AttachProcessRequest.from:type_name -> execenv.v1.AttachProcessRequest.FromEntry
+	22, // 10: execenv.v1.AttachProcessRequest.from:type_name -> execenv.v1.AttachProcessRequest.FromEntry
 	0,  // 11: execenv.v1.OutputEvent.kind:type_name -> execenv.v1.OutputKind
 	2,  // 12: execenv.v1.OutputEvent.exit:type_name -> execenv.v1.ExitStatus
-	24, // 13: execenv.v1.WriteInputRequest.fence:type_name -> execenv.v1.Fence
-	24, // 14: execenv.v1.CloseInputRequest.fence:type_name -> execenv.v1.Fence
-	24, // 15: execenv.v1.ResizeProcessRequest.fence:type_name -> execenv.v1.Fence
-	21, // 16: execenv.v1.ResizeProcessRequest.window:type_name -> execenv.v1.Window
-	24, // 17: execenv.v1.SignalProcessRequest.fence:type_name -> execenv.v1.Fence
-	4,  // 18: execenv.v1.ProcessService.StartProcess:input_type -> execenv.v1.StartProcessRequest
-	5,  // 19: execenv.v1.ProcessService.GetProcess:input_type -> execenv.v1.GetProcessRequest
-	6,  // 20: execenv.v1.ProcessService.ListProcesses:input_type -> execenv.v1.ListProcessesRequest
-	8,  // 21: execenv.v1.ProcessService.AttachProcess:input_type -> execenv.v1.AttachProcessRequest
-	10, // 22: execenv.v1.ProcessService.WriteInput:input_type -> execenv.v1.WriteInputRequest
-	12, // 23: execenv.v1.ProcessService.CloseInput:input_type -> execenv.v1.CloseInputRequest
-	14, // 24: execenv.v1.ProcessService.ResizeProcess:input_type -> execenv.v1.ResizeProcessRequest
-	16, // 25: execenv.v1.ProcessService.SignalProcess:input_type -> execenv.v1.SignalProcessRequest
-	3,  // 26: execenv.v1.ProcessService.StartProcess:output_type -> execenv.v1.ProcessInfo
-	3,  // 27: execenv.v1.ProcessService.GetProcess:output_type -> execenv.v1.ProcessInfo
-	7,  // 28: execenv.v1.ProcessService.ListProcesses:output_type -> execenv.v1.ListProcessesResponse
-	9,  // 29: execenv.v1.ProcessService.AttachProcess:output_type -> execenv.v1.OutputEvent
-	11, // 30: execenv.v1.ProcessService.WriteInput:output_type -> execenv.v1.WriteInputResponse
-	13, // 31: execenv.v1.ProcessService.CloseInput:output_type -> execenv.v1.CloseInputResponse
-	15, // 32: execenv.v1.ProcessService.ResizeProcess:output_type -> execenv.v1.ResizeProcessResponse
-	17, // 33: execenv.v1.ProcessService.SignalProcess:output_type -> execenv.v1.SignalProcessResponse
-	26, // [26:34] is the sub-list for method output_type
-	18, // [18:26] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	26, // 13: execenv.v1.WriteInputRequest.fence:type_name -> execenv.v1.Fence
+	26, // 14: execenv.v1.CloseInputRequest.fence:type_name -> execenv.v1.Fence
+	26, // 15: execenv.v1.ResizeProcessRequest.fence:type_name -> execenv.v1.Fence
+	23, // 16: execenv.v1.ResizeProcessRequest.window:type_name -> execenv.v1.Window
+	26, // 17: execenv.v1.SignalProcessRequest.fence:type_name -> execenv.v1.Fence
+	23, // 18: execenv.v1.Screen.window:type_name -> execenv.v1.Window
+	4,  // 19: execenv.v1.ProcessService.StartProcess:input_type -> execenv.v1.StartProcessRequest
+	5,  // 20: execenv.v1.ProcessService.GetProcess:input_type -> execenv.v1.GetProcessRequest
+	6,  // 21: execenv.v1.ProcessService.ListProcesses:input_type -> execenv.v1.ListProcessesRequest
+	8,  // 22: execenv.v1.ProcessService.AttachProcess:input_type -> execenv.v1.AttachProcessRequest
+	10, // 23: execenv.v1.ProcessService.WriteInput:input_type -> execenv.v1.WriteInputRequest
+	12, // 24: execenv.v1.ProcessService.CloseInput:input_type -> execenv.v1.CloseInputRequest
+	14, // 25: execenv.v1.ProcessService.ResizeProcess:input_type -> execenv.v1.ResizeProcessRequest
+	16, // 26: execenv.v1.ProcessService.SignalProcess:input_type -> execenv.v1.SignalProcessRequest
+	18, // 27: execenv.v1.ProcessService.GetScreen:input_type -> execenv.v1.GetScreenRequest
+	3,  // 28: execenv.v1.ProcessService.StartProcess:output_type -> execenv.v1.ProcessInfo
+	3,  // 29: execenv.v1.ProcessService.GetProcess:output_type -> execenv.v1.ProcessInfo
+	7,  // 30: execenv.v1.ProcessService.ListProcesses:output_type -> execenv.v1.ListProcessesResponse
+	9,  // 31: execenv.v1.ProcessService.AttachProcess:output_type -> execenv.v1.OutputEvent
+	11, // 32: execenv.v1.ProcessService.WriteInput:output_type -> execenv.v1.WriteInputResponse
+	13, // 33: execenv.v1.ProcessService.CloseInput:output_type -> execenv.v1.CloseInputResponse
+	15, // 34: execenv.v1.ProcessService.ResizeProcess:output_type -> execenv.v1.ResizeProcessResponse
+	17, // 35: execenv.v1.ProcessService.SignalProcess:output_type -> execenv.v1.SignalProcessResponse
+	19, // 36: execenv.v1.ProcessService.GetScreen:output_type -> execenv.v1.Screen
+	28, // [28:37] is the sub-list for method output_type
+	19, // [19:28] is the sub-list for method input_type
+	19, // [19:19] is the sub-list for extension type_name
+	19, // [19:19] is the sub-list for extension extendee
+	0,  // [0:19] is the sub-list for field type_name
 }
 
 func init() { file_execenv_v1_process_proto_init() }
@@ -1290,7 +1475,7 @@ func file_execenv_v1_process_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_execenv_v1_process_proto_rawDesc), len(file_execenv_v1_process_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   20,
+			NumMessages:   22,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

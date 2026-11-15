@@ -3,6 +3,7 @@ package execenvtest
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -130,6 +131,81 @@ func runProcessAPI(t *testing.T, factory Factory) {
 		out, _, err = drain(t.Context(), again)
 		if err != nil || strings.TrimSpace(out[execenv.StreamStdout]) != "hello" {
 			t.Fatalf("re-reading an exited command = %q %v", out, err)
+		}
+	})
+
+	t.Run("a terminal's screen redraws it and continues from its offset", func(t *testing.T) {
+		host := factory(t, Config{})
+		env, fence := occupyRunning(t, host, "screen")
+		sh := StartShell(t, env, fence, "sh")
+		if err := sh.Type(`echo scr""een-check`); err != nil {
+			t.Fatal(err)
+		}
+		sh.Expect("screen-check")
+		var s execenv.Screen
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			var err error
+			s, err = env.Screen(t.Context(), "sh")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if s.Offset >= sh.offset {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("screen offset %d behind output %d", s.Offset, sh.offset)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if s.Window != (execenv.Window{Cols: 80, Rows: 24}) || len(s.Text) != 24 || len(s.Data) == 0 {
+			t.Fatalf("screen = %+v", s)
+		}
+		if !slices.ContainsFunc(s.Text, func(row string) bool { return strings.Contains(row, "screen-check") }) {
+			t.Fatalf("screen text %q lacks the output", s.Text)
+		}
+		// Attaching from the screen's offset continues it: what follows is
+		// only what came after.
+		a, err := env.AttachProcess(t.Context(), "sh", map[execenv.Stream]uint64{execenv.StreamPTY: s.Offset})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer a.Close()
+		if err := sh.Type(`echo aft""er-screen`); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		var seen strings.Builder
+		for !strings.Contains(seen.String(), "after-screen") {
+			ev, err := a.Next(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ev.Kind == execenv.OutputData {
+				if ev.Offset < s.Offset {
+					t.Fatalf("continued from %d before the screen's %d", ev.Offset, s.Offset)
+				}
+				seen.Write(ev.Data)
+			}
+		}
+		if strings.Contains(seen.String(), "screen-check") {
+			t.Fatal("output the screen already showed came again")
+		}
+		if err := env.Resize(t.Context(), fence, "sh", execenv.Window{Cols: 100, Rows: 30}); err != nil {
+			t.Fatal(err)
+		}
+		if s, err := env.Screen(t.Context(), "sh"); err != nil || s.Window != (execenv.Window{Cols: 100, Rows: 30}) {
+			t.Fatalf("Screen() after resize = %+v, %v", s.Window, err)
+		}
+		if _, err := env.Start(t.Context(), fence, execenv.ProcessSpec{Tag: "plain", Argv: []string{"true"}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.Screen(t.Context(), "plain"); !errors.Is(err, execenv.ErrInvalid) {
+			t.Fatalf("Screen() of a process without a terminal = %v, want ErrInvalid", err)
+		}
+		if _, err := env.Screen(t.Context(), "nobody"); !errors.Is(err, execenv.ErrNotFound) {
+			t.Fatalf("Screen() of no process = %v, want ErrNotFound", err)
 		}
 	})
 

@@ -57,6 +57,9 @@ const (
 	// ProcessServiceSignalProcessProcedure is the fully-qualified name of the ProcessService's
 	// SignalProcess RPC.
 	ProcessServiceSignalProcessProcedure = "/execenv.v1.ProcessService/SignalProcess"
+	// ProcessServiceGetScreenProcedure is the fully-qualified name of the ProcessService's GetScreen
+	// RPC.
+	ProcessServiceGetScreenProcedure = "/execenv.v1.ProcessService/GetScreen"
 )
 
 // ProcessServiceClient is a client for the execenv.v1.ProcessService service.
@@ -73,6 +76,8 @@ type ProcessServiceClient interface {
 	CloseInput(context.Context, *connect.Request[v1.CloseInputRequest]) (*connect.Response[v1.CloseInputResponse], error)
 	ResizeProcess(context.Context, *connect.Request[v1.ResizeProcessRequest]) (*connect.Response[v1.ResizeProcessResponse], error)
 	SignalProcess(context.Context, *connect.Request[v1.SignalProcessRequest]) (*connect.Response[v1.SignalProcessResponse], error)
+	// Screen is a terminal process's screen now, as of an output offset.
+	GetScreen(context.Context, *connect.Request[v1.GetScreenRequest]) (*connect.Response[v1.Screen], error)
 }
 
 // NewProcessServiceClient constructs a client for the execenv.v1.ProcessService service. By
@@ -134,6 +139,12 @@ func NewProcessServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(processServiceMethods.ByName("SignalProcess")),
 			connect.WithClientOptions(opts...),
 		),
+		getScreen: connect.NewClient[v1.GetScreenRequest, v1.Screen](
+			httpClient,
+			baseURL+ProcessServiceGetScreenProcedure,
+			connect.WithSchema(processServiceMethods.ByName("GetScreen")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -147,6 +158,7 @@ type processServiceClient struct {
 	closeInput    *connect.Client[v1.CloseInputRequest, v1.CloseInputResponse]
 	resizeProcess *connect.Client[v1.ResizeProcessRequest, v1.ResizeProcessResponse]
 	signalProcess *connect.Client[v1.SignalProcessRequest, v1.SignalProcessResponse]
+	getScreen     *connect.Client[v1.GetScreenRequest, v1.Screen]
 }
 
 // StartProcess calls execenv.v1.ProcessService.StartProcess.
@@ -189,6 +201,11 @@ func (c *processServiceClient) SignalProcess(ctx context.Context, req *connect.R
 	return c.signalProcess.CallUnary(ctx, req)
 }
 
+// GetScreen calls execenv.v1.ProcessService.GetScreen.
+func (c *processServiceClient) GetScreen(ctx context.Context, req *connect.Request[v1.GetScreenRequest]) (*connect.Response[v1.Screen], error) {
+	return c.getScreen.CallUnary(ctx, req)
+}
+
 // ProcessServiceHandler is an implementation of the execenv.v1.ProcessService service.
 type ProcessServiceHandler interface {
 	StartProcess(context.Context, *connect.Request[v1.StartProcessRequest]) (*connect.Response[v1.ProcessInfo], error)
@@ -203,6 +220,8 @@ type ProcessServiceHandler interface {
 	CloseInput(context.Context, *connect.Request[v1.CloseInputRequest]) (*connect.Response[v1.CloseInputResponse], error)
 	ResizeProcess(context.Context, *connect.Request[v1.ResizeProcessRequest]) (*connect.Response[v1.ResizeProcessResponse], error)
 	SignalProcess(context.Context, *connect.Request[v1.SignalProcessRequest]) (*connect.Response[v1.SignalProcessResponse], error)
+	// Screen is a terminal process's screen now, as of an output offset.
+	GetScreen(context.Context, *connect.Request[v1.GetScreenRequest]) (*connect.Response[v1.Screen], error)
 }
 
 // NewProcessServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -260,6 +279,12 @@ func NewProcessServiceHandler(svc ProcessServiceHandler, opts ...connect.Handler
 		connect.WithSchema(processServiceMethods.ByName("SignalProcess")),
 		connect.WithHandlerOptions(opts...),
 	)
+	processServiceGetScreenHandler := connect.NewUnaryHandler(
+		ProcessServiceGetScreenProcedure,
+		svc.GetScreen,
+		connect.WithSchema(processServiceMethods.ByName("GetScreen")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/execenv.v1.ProcessService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case ProcessServiceStartProcessProcedure:
@@ -278,6 +303,8 @@ func NewProcessServiceHandler(svc ProcessServiceHandler, opts ...connect.Handler
 			processServiceResizeProcessHandler.ServeHTTP(w, r)
 		case ProcessServiceSignalProcessProcedure:
 			processServiceSignalProcessHandler.ServeHTTP(w, r)
+		case ProcessServiceGetScreenProcedure:
+			processServiceGetScreenHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -317,4 +344,8 @@ func (UnimplementedProcessServiceHandler) ResizeProcess(context.Context, *connec
 
 func (UnimplementedProcessServiceHandler) SignalProcess(context.Context, *connect.Request[v1.SignalProcessRequest]) (*connect.Response[v1.SignalProcessResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.v1.ProcessService.SignalProcess is not implemented"))
+}
+
+func (UnimplementedProcessServiceHandler) GetScreen(context.Context, *connect.Request[v1.GetScreenRequest]) (*connect.Response[v1.Screen], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.v1.ProcessService.GetScreen is not implemented"))
 }

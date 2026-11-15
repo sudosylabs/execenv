@@ -36,6 +36,9 @@ service AgentService {
   rpc CloseFeed(ProcessRef) returns (Empty);
   rpc ResizeProcess(ResizeRequest) returns (Empty);
   rpc SignalProcess(SignalRequest) returns (Empty);
+  // ProcessScreen is a terminal process's screen, from the helper's own
+  // headless terminal fed every byte the process wrote.
+  rpc ProcessScreen(ProcessScreenRequest) returns (execenv.v1.Screen);
 
   // Freeze closes I/O before the host pauses the machine; Thaw reopens it.
   rpc Freeze(FreezeRequest) returns (FreezeResponse);
@@ -136,6 +139,10 @@ message FeedResponse {}
 message ResizeRequest {
   string tag = 1;
   execenv.v1.Window window = 2;
+}
+
+message ProcessScreenRequest {
+  string tag = 1;
 }
 
 message SignalRequest {

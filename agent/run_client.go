@@ -185,6 +185,16 @@ func (b *guestBackend) Resize(ctx context.Context, w execenv.Window) error {
 	return b.client.failure("resize", err)
 }
 
+func (b *guestBackend) Screen(ctx context.Context) (execenv.Screen, error) {
+	ctx, cancel := b.client.call(ctx)
+	defer cancel()
+	resp, err := b.client.agent.ProcessScreen(ctx, connect.NewRequest(&guestv1.ProcessScreenRequest{Tag: b.tag}))
+	if err != nil {
+		return execenv.Screen{}, b.client.failure("screen", err)
+	}
+	return wire.ScreenFrom(resp.Msg), nil
+}
+
 func (b *guestBackend) Signal(s execenv.Signal) error {
 	ctx, cancel := b.client.call(context.Background())
 	defer cancel()

@@ -546,6 +546,21 @@ func ProcessPageFrom(p *execenvv1.ProcessPage) execenv.ProcessPage {
 	return out
 }
 
+func ScreenTo(s execenv.Screen) *execenvv1.Screen {
+	return &execenvv1.Screen{
+		Data: s.Data, Offset: s.Offset, Window: WindowTo(s.Window), AltScreen: s.AltScreen,
+		CursorRow: int32(s.CursorRow), CursorCol: int32(s.CursorCol), CursorHidden: s.CursorHidden, Text: s.Text,
+	}
+}
+
+func ScreenFrom(s *execenvv1.Screen) execenv.Screen {
+	win, _ := WindowFrom(s.GetWindow())
+	return execenv.Screen{
+		Data: s.GetData(), Offset: s.GetOffset(), Window: win, AltScreen: s.GetAltScreen(),
+		CursorRow: int(s.GetCursorRow()), CursorCol: int(s.GetCursorCol()), CursorHidden: s.GetCursorHidden(), Text: s.GetText(),
+	}
+}
+
 func WindowTo(w execenv.Window) *execenvv1.Window {
 	return &execenvv1.Window{Cols: uint32(w.Cols), Rows: uint32(w.Rows)}
 }

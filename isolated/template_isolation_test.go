@@ -130,3 +130,33 @@ func TestLiveSuspendResumes(t *testing.T) {
 	}
 	typeAndExpect(t, env, thawed, "sh", info, "echo $kept-y", "asleep-y")
 }
+
+// A full-screen program's screen is read back as it shows it: on the
+// alternate screen, with its text where it drew it.
+func TestLiveScreenOfAFullScreenProgram(t *testing.T) {
+	host := liveHost(t, 1, "")
+	t.Cleanup(func() { revokeAll(host) })
+	env, err := host.Ensure(t.Context(), execenv.Spec{ID: "screen", Image: "default"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence := runningFence(t, env)
+	sh := execenvtest.StartShell(t, env, fence, "sh")
+	if err := sh.Type(`printf '\033[?1049h\033[2J\033[HFULL\033[3;3Hmid'; sleep 30`); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		s, err := env.Screen(t.Context(), "sh")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.AltScreen && s.Text[0] == "FULL" && s.Text[2] == "  mid" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("screen = alt %v %q", s.AltScreen, s.Text[:3])
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}

@@ -40,6 +40,9 @@ func (p *pipeProc) Resize(context.Context, execenv.Window) error { return nil }
 func (p *pipeProc) Signal(execenv.Signal) error                  { p.exit(); return nil }
 func (p *pipeProc) Wait() execenv.ExitStatus                     { <-p.done; return execenv.ExitStatus{Signal: 9} }
 func (p *pipeProc) PID() int                                     { return 1 }
+func (p *pipeProc) Screen(context.Context) (execenv.Screen, error) {
+	return execenv.Screen{Offset: 1}, nil
+}
 func (p *pipeProc) exit() {
 	p.once.Do(func() { _ = p.w.Close(); close(p.done) })
 }

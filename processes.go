@@ -124,11 +124,23 @@ type Attachment interface {
 	Close() error
 }
 
-// Screen is a terminal process's screen as of an output offset: bytes that
-// redraw it on a blank terminal. Attaching from Offset then continues it.
+// Screen is a terminal process's screen as its terminal shows it, as of an
+// output offset. Data redraws it on a blank terminal of Window's size:
+// its text and styles, the cursor, and whether the program is on the
+// alternate screen. Attaching from Offset then continues it exactly.
 type Screen struct {
 	Data   []byte
 	Offset uint64
+	Window Window
+	// AltScreen is set while a full-screen program has the alternate
+	// screen. The main screen behind it is not in Data.
+	AltScreen bool
+	// CursorRow and CursorCol are 0-based; CursorHidden is set when the
+	// program hid it.
+	CursorRow, CursorCol int
+	CursorHidden         bool
+	// Text is each row as plain text, trailing blanks trimmed.
+	Text []string
 }
 
 // Processes runs processes in a grant. Starting and every input or signal
@@ -148,6 +160,9 @@ type Processes interface {
 	CloseInput(ctx context.Context, fence ProjectionFence, tag string) error
 	Resize(ctx context.Context, fence ProjectionFence, tag string, window Window) error
 	SignalProcess(ctx context.Context, fence ProjectionFence, tag string, signal Signal) error
+	// Screen is a terminal process's screen now. A process without a
+	// terminal is ErrInvalid. It keeps working after the process exits.
+	Screen(ctx context.Context, tag string) (Screen, error)
 }
 
 // ValidateProcessSpec refuses a spec that can never start.

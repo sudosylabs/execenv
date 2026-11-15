@@ -751,6 +751,25 @@ err = env.CloseInput(ctx, fence, "test") // a command started with Stdin
 
 Zero Cols or Rows means 80×24.
 
+`Screen` is a terminal process's screen as its terminal shows it now. The
+guest helper keeps a headless terminal for each one, fed every byte the
+process writes, so even a full-screen program reads back exactly:
+
+```go
+s, err := env.Screen(ctx, "sh")
+_, _ = os.Stdout.Write(s.Data) // redraws it on a blank terminal of s.Window
+a, err := env.AttachProcess(ctx, "sh", map[execenv.Stream]uint64{execenv.StreamPTY: s.Offset})
+```
+
+`Data` redraws the screen's text and styles, the cursor and whether the
+program has the alternate screen; `Offset` is the output it reflects, so
+attaching from it continues the screen with nothing missed or repeated.
+`Text` is each row as plain text, and `AltScreen`, `CursorRow`, `CursorCol`
+and `CursorHidden` say the rest. While a full-screen program has the
+alternate screen, the main screen behind it is not included. A process
+without a terminal is `ErrInvalid`; an exited one's screen stays readable
+until its tag is started again.
+
 A process starts in `/workspace` (`execenv.GuestWorkspace`), the projected
 tree, or `Dir` within it. Its `$HOME` is `/run/execenv/home`
 (`execenv.GuestHome`), guest-local scratch outside the tree: it is not

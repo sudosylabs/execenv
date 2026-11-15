@@ -24,6 +24,8 @@ service ProcessService {
   rpc CloseInput(CloseInputRequest) returns (CloseInputResponse);
   rpc ResizeProcess(ResizeProcessRequest) returns (ResizeProcessResponse);
   rpc SignalProcess(SignalProcessRequest) returns (SignalProcessResponse);
+  // Screen is a terminal process's screen now, as of an output offset.
+  rpc GetScreen(GetScreenRequest) returns (Screen);
 }
 
 message ProcessSpec {
@@ -133,3 +135,23 @@ message SignalProcessRequest {
 }
 
 message SignalProcessResponse {}
+
+message GetScreenRequest {
+  string grant_id = 1;
+  string epoch = 2;
+  string tag = 3;
+}
+
+// Screen is a terminal process's screen as of an output offset. data
+// redraws it on a blank terminal of window's size; attaching from offset
+// continues it.
+message Screen {
+  bytes data = 1;
+  uint64 offset = 2;
+  Window window = 3;
+  bool alt_screen = 4;
+  int32 cursor_row = 5;
+  int32 cursor_col = 6;
+  bool cursor_hidden = 7;
+  repeated string text = 8;
+}

@@ -17,6 +17,9 @@ import (
 // FeatureProcess is a host that runs processes by tag.
 const FeatureProcess = "process"
 
+// FeatureScreen is a host that reads a terminal process's screen.
+const FeatureScreen = "screen"
+
 // Host side. Every call is stateless: a process lives on the host, not on
 // the connection that started it, and an attachment is one stream.
 
@@ -46,6 +49,18 @@ func (h *server) GetProcess(ctx context.Context, req *connect.Request[execenvv1.
 		return nil, wire.Error(err)
 	}
 	return connect.NewResponse(wire.ProcessInfoTo(info)), nil
+}
+
+func (h *server) GetScreen(ctx context.Context, req *connect.Request[execenvv1.GetScreenRequest]) (*connect.Response[execenvv1.Screen], error) {
+	env, err := h.env(execenv.ID(req.Msg.GetGrantId()), req.Msg.GetEpoch())
+	if err != nil {
+		return nil, wire.Error(err)
+	}
+	s, err := env.Screen(ctx, req.Msg.GetTag())
+	if err != nil {
+		return nil, wire.Error(err)
+	}
+	return connect.NewResponse(wire.ScreenTo(s)), nil
 }
 
 func (h *server) ListProcesses(ctx context.Context, req *connect.Request[execenvv1.ListProcessesRequest]) (*connect.Response[execenvv1.ListProcessesResponse], error) {
@@ -181,6 +196,19 @@ func (e *remoteEnv) Process(ctx context.Context, tag string) (execenv.ProcessInf
 		return execenv.ProcessInfo{}, wire.HostError("process", err)
 	}
 	return wire.ProcessInfoFrom(resp.Msg), nil
+}
+
+func (e *remoteEnv) Screen(ctx context.Context, tag string) (execenv.Screen, error) {
+	if err := e.alive(); err != nil {
+		return execenv.Screen{}, err
+	}
+	ctx, cancel := e.client.call(ctx)
+	defer cancel()
+	resp, err := e.client.procs.GetScreen(ctx, connect.NewRequest(&execenvv1.GetScreenRequest{GrantId: string(e.id), Epoch: e.epoch, Tag: tag}))
+	if err != nil {
+		return execenv.Screen{}, wire.HostError("screen", err)
+	}
+	return wire.ScreenFrom(resp.Msg), nil
 }
 
 func (e *remoteEnv) ListProcesses(ctx context.Context) ([]execenv.ProcessInfo, error) {

@@ -27,6 +27,8 @@ type Backend interface {
 	CloseInput() error
 	Resize(ctx context.Context, w execenv.Window) error
 	Signal(s execenv.Signal) error
+	// Screen is the terminal's screen; only a terminal process is asked.
+	Screen(ctx context.Context) (execenv.Screen, error)
 	// Wait blocks until the process has exited.
 	Wait() execenv.ExitStatus
 	PID() int
@@ -398,6 +400,25 @@ func (m *Manager) Resize(ctx context.Context, tag string, w execenv.Window) erro
 		return execenv.ErrInvalid
 	}
 	return p.backend.Resize(ctx, w)
+}
+
+// Screen is a terminal process's screen, running or exited.
+func (m *Manager) Screen(ctx context.Context, tag string) (execenv.Screen, error) {
+	m.mu.Lock()
+	if m.ended != nil {
+		err := m.ended
+		m.mu.Unlock()
+		return execenv.Screen{}, err
+	}
+	p, err := m.get(tag)
+	m.mu.Unlock()
+	if err != nil {
+		return execenv.Screen{}, err
+	}
+	if p.spec.PTY == nil {
+		return execenv.Screen{}, execenv.ErrInvalid
+	}
+	return p.backend.Screen(ctx)
 }
 
 func (m *Manager) Signal(tag string, s execenv.Signal) error {
