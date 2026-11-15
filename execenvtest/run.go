@@ -137,7 +137,9 @@ func runProcessAPI(t *testing.T, factory Factory) {
 		host := factory(t, Config{})
 		env, fence := occupyRunning(t, host, "resume")
 		sh := StartShell(t, env, fence, "sh")
-		if err := sh.Type("echo first"); err != nil {
+		// A terminal echoes what is typed: the quotes keep the echo from
+		// matching the output.
+		if err := sh.Type(`echo fir""st`); err != nil {
 			t.Fatal(err)
 		}
 		sh.Expect("first")
@@ -147,7 +149,7 @@ func runProcessAPI(t *testing.T, factory Factory) {
 			t.Fatal(err)
 		}
 		defer second.Close()
-		if err := sh.Type("echo after"); err != nil {
+		if err := sh.Type(`echo aft""er`); err != nil {
 			t.Fatal(err)
 		}
 		sh.Expect("after")

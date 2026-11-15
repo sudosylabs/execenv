@@ -141,9 +141,9 @@ func TestLiveScratchHomeAndDiskWorkspace(t *testing.T) {
 }
 
 // TestLiveStaleCleanupAfterCrash abandons a running grant without revoke,
-// as a crashed daemon would, then constructs a new host on the same work
-// directory. The new host must release the grant's processes, jails and
-// grant links.
+// as a crashed daemon would, and loses its state file, so the new host on
+// the same work directory has nothing to adopt it by. The new host must
+// release the grant's processes, jails and grant links.
 func TestLiveStaleCleanupAfterCrash(t *testing.T) {
 	workDir := t.TempDir()
 	first := liveHost(t, 1, workDir)
@@ -152,6 +152,9 @@ func TestLiveStaleCleanupAfterCrash(t *testing.T) {
 	}
 	// A crash: the jailed monitor keeps running, the lock is released.
 	_ = first.lock.Close()
+	if err := os.Remove(statePath(workDir, "grant-1")); err != nil {
+		t.Fatal(err)
+	}
 	second := liveHost(t, 1, workDir)
 	t.Cleanup(func() { revokeAll(second) })
 	pool := newJailUIDs(0)
@@ -164,8 +167,9 @@ func TestLiveStaleCleanupAfterCrash(t *testing.T) {
 			t.Fatalf("jailed process %s survived restart", entry.Name())
 		}
 	}
-	if _, err := os.Stat(filepath.Join(workDir, jailsDir)); err == nil {
-		if left, _ := os.ReadDir(filepath.Join(workDir, jailsDir)); len(left) != 0 {
+	execs, _ := os.ReadDir(filepath.Join(workDir, jailsDir))
+	for _, exec := range execs {
+		if left, _ := os.ReadDir(filepath.Join(workDir, jailsDir, exec.Name())); len(left) != 0 {
 			t.Fatalf("stale jails survived: %v", left)
 		}
 	}

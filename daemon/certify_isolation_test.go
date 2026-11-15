@@ -3,6 +3,7 @@
 package daemon_test
 
 import (
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"io"
@@ -102,8 +103,9 @@ func freeLoopback(t *testing.T) string {
 func startHostProcess(t *testing.T, bin, configPath, addr string) {
 	t.Helper()
 	cmd := exec.Command(bin, "-config", configPath)
+	var stderr bytes.Buffer
 	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
+	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +122,7 @@ func startHostProcess(t *testing.T, bin, configPath, addr string) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatal("host process did not listen")
+	t.Fatalf("host process did not listen: %s", stderr.String())
 }
 
 func harvestTLS(t *testing.T, certPath string) *tls.Config {
