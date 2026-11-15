@@ -45,10 +45,13 @@ and attach a shell.
 go get github.com/sudosylabs/execenv@v1.2.3
 ```
 
-Pin the same tag the host binaries were built from. The remote protocol also
-requires its exact wire revision, and the host verifies the guest-helper
-protocol and its native journal before admitting an environment. A `v1.2.3`
-client refuses to occupy a host stamped `v1.4.0`.
+Client and host need not share a release. The wire is the protobuf schema in
+[`proto/execenv/v1`](proto/execenv/v1), spoken with Connect over HTTP/2, so
+callers in other languages can generate a client from it. When it connects,
+a client names the features it needs; a host that lacks one is refused at
+once with `ErrFeature`, before any grant is occupied. The host separately
+verifies the guest helper and its native journal before admitting an
+environment.
 
 Import the occupancy API and, in production, the remote dialer:
 
@@ -140,11 +143,14 @@ func Dial() (execenv.Host, error) {
 }
 ```
 
-`remote.New` dials, authenticates with the token, and checks the process
-stamp. A verified client certificate may replace the token when the host
-enables mutual TLS. Keep one client per host for the life of the process.
-`Timeout` bounds dialing and authentication; `OperationTimeout` caps every
-call and defaults to 30 seconds.
+`remote.New` dials, sends the token as a bearer credential, and checks that
+the host offers the features this client needs. A verified client
+certificate may replace the token when the host enables mutual TLS. Keep one
+client per host for the life of the process: it holds two HTTP/2
+connections, one for control, terminals and logs, one for file content, so
+a large upload never delays a keystroke. `Timeout` bounds dialing and the
+first exchange; `OperationTimeout` caps every call and defaults to 30
+seconds.
 
 Cleartext is loopback-only:
 
@@ -177,8 +183,8 @@ if !rep.Usable {
 `Images` is the catalog ids on that machine. `Networks` is the network modes
 the host offers. `Slots` is how many more grants it has room for. `Grants`
 is how many it holds now, and `Lost` how many it has lost since it started
-(see Lost grants). `Release` is the process stamp (display only; a mismatch
-already failed at dial). One client talks to one host. If you have several
+(see Lost grants). `Release` is the host's release, for display. One client
+talks to one host. If you have several
 machines, you choose among them.
 
 `Usable` false means the host takes no new grants; `Reason` says why.
@@ -272,8 +278,8 @@ Revocation is terminal even if destruction initially fails. Failed destruction
 retains the occupancy's slot until a successful retry. Administrative
 `Host.Revoke(id)` destroys the current grant; `Env.Revoke` targets only the
 captured epoch and cannot destroy a replacement. Remote attach requests bind
-their captured epoch, while PTY frames bind one connection's unique stream
-identity.
+their captured epoch; input, resize and hangup name the attachment by an
+unguessable id the host hands only to the client that attached.
 
 ### Project the workspace
 
@@ -634,7 +640,8 @@ Match with `errors.Is`. Wrappers preserve the sentinel.
 | `ErrCapacity` | no remaining slots |
 | `ErrDraining` | host is draining; it serves held grants only |
 | `ErrConflict` | live grant mismatch, stale fence, or unobserved guest change |
-| `ErrUnavailable` | host unusable, release stamp or protocol mismatch |
+| `ErrUnavailable` | host unusable, or it refused the client's credentials |
+| `ErrFeature` | the host does not offer a feature this client needs |
 | `ErrFrozen` | I/O while frozen |
 | `ErrRevoked` | grant is gone |
 | `ErrLost` | grant's environment ended without a revoke; Revoke, then Ensure again |
@@ -666,9 +673,9 @@ Do not log tokens, tree bodies, or PTY octets.
 | Reported working directory | 4096 bytes |
 | Ignore file read | 64 KiB (larger uses the fallback) |
 | Ignore fallback | 256 patterns, 16 KiB |
-| Encoded protocol frame | 72 MiB |
-| PTY frame | 64 KiB |
-| Remote PTY flow-control window | 256 KiB per terminal and direction |
+| Content and terminal output per message | 64 KiB |
+| HTTP/2 stream window, client receiving | 256 KiB interactive, 4 MiB content |
+| HTTP/2 stream window, host receiving | 4 MiB |
 | Path length | 1024 bytes UTF-8 |
 | Path segments | 16 |
 | One segment | 255 bytes |
@@ -978,7 +985,8 @@ binaries move. When everything already matches: `upgraded=already current`.
 ## This repository
 
 ```sh
-make check    # test, race, vet
+make check    # generated code current, test, race, vet
+make generate # rewrite internal/gen from proto/ (commit the result)
 make build    # stamps Release, Build, and Tag when HEAD is an exact git tag
 ```
 

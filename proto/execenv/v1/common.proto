@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package execenv.v1;
+
+option go_package = "github.com/sudosylabs/execenv/internal/gen/execenv/v1;execenvv1";
+
+enum Network {
+  NETWORK_UNSPECIFIED = 0;
+  NETWORK_NONE = 1;
+  NETWORK_ALLOWLIST = 2;
+}
+
+// Fence names one incarnation of a grant and the newest control revision
+// its caller has issued.
+message Fence {
+  string grant_id = 1;
+  string epoch = 2;
+  uint64 revision = 3;
+}
+
+message ContentReference {
+  int64 size = 1;
+  string sha256 = 2;
+  string transfer_id = 3;
+}
+
+// ErrorDetail rides on every error the host returns. sentinel names the
+// execenv error, for example "conflict" or "capacity".
+message ErrorDetail {
+  string sentinel = 1;
+  // feature is the missing feature of a refused Hello.
+  string feature = 2;
+}

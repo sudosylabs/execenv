@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package execenv.v1;
+
+import "execenv/v1/common.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/sudosylabs/execenv/internal/gen/execenv/v1;execenvv1";
+
+// ProcessLogService pages the record of every process the workload starts,
+// kept out of the workload's reach until the caller acknowledges it.
+service ProcessLogService {
+  rpc ObserveProcesses(ObserveProcessesRequest) returns (ProcessPage);
+  rpc AcknowledgeProcesses(AcknowledgeProcessesRequest) returns (AcknowledgeProcessesResponse);
+}
+
+enum ProcessKind {
+  PROCESS_KIND_UNSPECIFIED = 0;
+  PROCESS_KIND_STARTED = 1;
+  PROCESS_KIND_EXITED = 2;
+  PROCESS_KIND_DROPPED = 3;
+}
+
+message ProcessEvent {
+  uint64 sequence = 1;
+  ProcessKind kind = 2;
+  int32 pid = 3;
+  int32 parent_pid = 4;
+  repeated string argv = 5;
+  bool truncated = 6;
+  bool unread = 7;
+  string dir = 8;
+  google.protobuf.Timestamp at = 9;
+  optional int32 exit_code = 10;
+  int32 signal = 11;
+  uint64 dropped = 12;
+}
+
+message ObserveProcessesRequest {
+  Fence fence = 1;
+  uint64 after = 2;
+  int32 limit = 3;
+}
+
+message ProcessPage {
+  repeated ProcessEvent events = 1;
+  uint64 next = 2;
+}
+
+message AcknowledgeProcessesRequest {
+  Fence fence = 1;
+  uint64 through = 2;
+}
+
+message AcknowledgeProcessesResponse {}

@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+package execenv.v1;
+
+import "execenv/v1/common.proto";
+
+option go_package = "github.com/sudosylabs/execenv/internal/gen/execenv/v1;execenvv1";
+
+// HostService is one machine that occupies grants.
+service HostService {
+  // Hello is the first call a client makes. It names the features the
+  // client needs; the host refuses with failed_precondition and an
+  // ErrorDetail naming the first one it does not offer.
+  rpc Hello(HelloRequest) returns (HelloResponse);
+  rpc GetReport(GetReportRequest) returns (Report);
+  // EnsureGrant creates the grant named by the spec, or returns it when it
+  // exists with the same spec.
+  rpc EnsureGrant(EnsureGrantRequest) returns (EnsureGrantResponse);
+  rpc RevokeGrant(RevokeGrantRequest) returns (RevokeGrantResponse);
+}
+
+message HelloRequest {
+  repeated string required_features = 1;
+}
+
+message HelloResponse {
+  // protocol is the major version of this schema the host serves.
+  uint32 protocol = 1;
+  repeated string features = 2;
+  bool isolated = 3;
+  string release = 4;
+}
+
+message GetReportRequest {}
+
+enum Isolation {
+  ISOLATION_UNSPECIFIED = 0;
+  ISOLATION_NONE = 1;
+  ISOLATION_VM = 2;
+}
+
+message Report {
+  bool usable = 1;
+  string reason = 2;
+  repeated string images = 3;
+  repeated Network networks = 4;
+  int64 slots = 5;
+  int64 grants = 6;
+  int64 lost = 7;
+  string release = 8;
+  Isolation isolation = 9;
+}
+
+message Spec {
+  string id = 1;
+  string image = 2;
+  Network network = 3;
+}
+
+message EnsureGrantRequest {
+  Spec spec = 1;
+}
+
+message EnsureGrantResponse {
+  string epoch = 1;
+}
+
+message RevokeGrantRequest {
+  string grant_id = 1;
+  // epoch, when set, revokes only that incarnation; another one is
+  // ErrConflict.
+  string epoch = 2;
+}
+
+message RevokeGrantResponse {}

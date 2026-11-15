@@ -61,6 +61,10 @@ var (
 	// offer. The caller cannot supply destinations; only the host allowlist
 	// exists, and it may be empty.
 	ErrNetwork = errors.New("execenv: network not offered")
+	// ErrFeature indicates the host does not offer a feature the caller
+	// needs. The client asks for its features when it connects, so a host
+	// too old or too new for it is refused at once, not halfway through.
+	ErrFeature = errors.New("execenv: feature not offered")
 )
 
 // OpError adds operation context while preserving errors.Is matching.

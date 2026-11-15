@@ -1,0 +1,103 @@
+package remote
+
+import (
+	"context"
+	"errors"
+
+	"connectrpc.com/connect"
+
+	"github.com/sudosylabs/execenv"
+	execenvv1 "github.com/sudosylabs/execenv/internal/gen/execenv/v1"
+)
+
+// sentinels maps every execenv error to the name it carries on the wire and
+// the Connect code a caller in any language sees.
+var sentinels = []struct {
+	err  error
+	name string
+	code connect.Code
+}{
+	{execenv.ErrInvalid, "invalid", connect.CodeInvalidArgument},
+	{execenv.ErrUnknownImage, "unknown_image", connect.CodeFailedPrecondition},
+	{execenv.ErrCapacity, "capacity", connect.CodeResourceExhausted},
+	{execenv.ErrDraining, "draining", connect.CodeUnavailable},
+	{execenv.ErrLost, "lost", connect.CodeFailedPrecondition},
+	{execenv.ErrConflict, "conflict", connect.CodeAborted},
+	{execenv.ErrUnavailable, "unavailable", connect.CodeUnavailable},
+	{execenv.ErrFrozen, "frozen", connect.CodeFailedPrecondition},
+	{execenv.ErrRevoked, "revoked", connect.CodeFailedPrecondition},
+	{execenv.ErrBusy, "busy", connect.CodeResourceExhausted},
+	{execenv.ErrSuperseded, "superseded", connect.CodeAborted},
+	{execenv.ErrClosed, "closed", connect.CodeFailedPrecondition},
+	{execenv.ErrNotFound, "not_found", connect.CodeNotFound},
+	{execenv.ErrLagged, "lagged", connect.CodeFailedPrecondition},
+	{execenv.ErrTooLarge, "too_large", connect.CodeResourceExhausted},
+	{execenv.ErrConnection, "connection", connect.CodeUnavailable},
+	{execenv.ErrNetwork, "network", connect.CodeFailedPrecondition},
+	{execenv.ErrFeature, "feature", connect.CodeFailedPrecondition},
+}
+
+// wireError turns a host error into a Connect error. Its message is the
+// sentinel's own text: host errors never carry file bodies, PTY bytes or
+// tokens, and nothing else of the inner error crosses the wire.
+func wireError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.Canceled) {
+		return connect.NewError(connect.CodeCanceled, err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return connect.NewError(connect.CodeDeadlineExceeded, err)
+	}
+	for _, s := range sentinels {
+		if errors.Is(err, s.err) {
+			return withDetail(connect.NewError(s.code, s.err), &execenvv1.ErrorDetail{Sentinel: s.name})
+		}
+	}
+	return withDetail(connect.NewError(connect.CodeUnavailable, execenv.ErrUnavailable), &execenvv1.ErrorDetail{Sentinel: "unavailable"})
+}
+
+func withDetail(err *connect.Error, detail *execenvv1.ErrorDetail) *connect.Error {
+	if d, derr := connect.NewErrorDetail(detail); derr == nil {
+		err.AddDetail(d)
+	}
+	return err
+}
+
+// hostError turns a wire error back into the execenv sentinel. A response
+// without a detail is not from an execenv host, or the connection failed.
+func hostError(op string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return execenv.Error(op, err)
+	}
+	var cerr *connect.Error
+	if !errors.As(err, &cerr) {
+		return execenv.Error(op, execenv.ErrConnection)
+	}
+	for _, d := range cerr.Details() {
+		value, verr := d.Value()
+		detail, ok := value.(*execenvv1.ErrorDetail)
+		if verr != nil || !ok {
+			continue
+		}
+		for _, s := range sentinels {
+			if s.name == detail.GetSentinel() {
+				return execenv.Error(op, s.err)
+			}
+		}
+	}
+	switch cerr.Code() {
+	case connect.CodeCanceled:
+		return execenv.Error(op, context.Canceled)
+	case connect.CodeDeadlineExceeded:
+		return execenv.Error(op, context.DeadlineExceeded)
+	case connect.CodeUnauthenticated:
+		return execenv.Error(op, execenv.ErrUnavailable)
+	default:
+		return execenv.Error(op, execenv.ErrConnection)
+	}
+}
