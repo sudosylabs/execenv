@@ -29,6 +29,7 @@ func (e *environment) change(ctx context.Context, fence execenv.ProjectionFence,
 	return e.control.Run(ctx, fence, func() error {
 		e.guestMu.Lock()
 		defer e.guestMu.Unlock()
+		defer e.dirty.touch()
 		return fn()
 	})
 }

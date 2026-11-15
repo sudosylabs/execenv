@@ -86,6 +86,7 @@ type environment struct {
 	grantDir  string
 	workspace string
 	journal   *journal.Journal
+	dirty     dirty
 	files     *files.FS
 	journalMu sync.Mutex
 	guestMu   sync.Mutex
@@ -255,6 +256,8 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		workspace: workspace,
 	}
 	env.journal = journal.New(workspace, store, lockBarrier{&env.guestMu}, nil)
+	env.dirty.touch()
+	env.journal.Watch(&env.dirty)
 	if env.files, err = files.New(workspace, filepath.Join(grantDir, "staging")); err != nil {
 		_ = os.RemoveAll(grantDir)
 		h.pool.Release(spec.ID)

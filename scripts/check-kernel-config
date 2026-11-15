@@ -58,8 +58,9 @@ require UNIX98_PTYS "one terminal per grant"
 # refuses to serve without it.
 require CONNECTOR "process log"
 require PROC_EVENTS "process log"
-# Event-driven watcher; without it the agent falls back to a 1s rescan.
-recommend INOTIFY_USER "event-driven Watch"
+# Workspace watcher: one fanotify filesystem mark (Linux 5.9 or later).
+# Without it every Observe walks the workspace.
+recommend FANOTIFY "workspace watcher, so an idle workspace is not walked"
 # Memory reclamation through the balloon with free page reporting.
 recommend MEMORY_BALLOON "balloon device"
 recommend VIRTIO_BALLOON "balloon device"

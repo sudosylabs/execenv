@@ -2,7 +2,6 @@ package guesttree
 
 import (
 	"maps"
-	"os"
 	"path"
 	"slices"
 	"strings"
@@ -32,8 +31,6 @@ type Change struct {
 	Recursive   bool
 	// Content is a created or written file's body, as captured.
 	Content content.Blob
-	// File is the captured node's open file, for copying Content.
-	File *os.File
 }
 
 // Diff constructs semantic operations only when stable captured identities
@@ -63,7 +60,7 @@ func Diff(before, after *Snapshot) ([]Change, error) {
 	current := maps.Clone(before.Nodes)
 	var changes []Change
 	appendChange := func(op Operation, name, destination string, node Node, recursive bool) {
-		changes = append(changes, Change{Operation: op, Identity: node.Identity, Kind: node.Kind, Path: name, Destination: destination, Recursive: recursive, Content: node.Content, File: node.file})
+		changes = append(changes, Change{Operation: op, Identity: node.Identity, Kind: node.Kind, Path: name, Destination: destination, Recursive: recursive, Content: node.Content})
 	}
 	parentReady := func(name string) bool {
 		parent := path.Dir(name)

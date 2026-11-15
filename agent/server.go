@@ -21,6 +21,7 @@ import (
 	"github.com/sudosylabs/execenv/internal/gen/execenv/guest/v1/guestv1connect"
 	execenvv1 "github.com/sudosylabs/execenv/internal/gen/execenv/v1"
 	"github.com/sudosylabs/execenv/internal/journal"
+	workspace "github.com/sudosylabs/execenv/internal/watch"
 	"github.com/sudosylabs/execenv/internal/wire"
 	"github.com/sudosylabs/execenv/internal/workload"
 )
@@ -127,6 +128,11 @@ func Serve(ctx context.Context, conn net.Conn, cfg Config) error {
 	}
 	if group != nil {
 		fs.Own = group.OwnHome
+		// A real guest watches its workspace, so an idle one is not walked.
+		if w, err := workspace.New(cfg.Home); err == nil && s.journal != nil {
+			s.journal.Watch(w)
+			defer w.Close()
+		}
 	}
 	s.files = fs
 	if s.journal != nil {

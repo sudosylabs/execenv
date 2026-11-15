@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/internal/content"
@@ -41,6 +42,8 @@ type Journal struct {
 	snapshot *guesttree.Snapshot
 	fence    execenv.ProjectionFence
 	own      func(string) error
+	watcher  Watcher
+	walked   time.Time
 }
 
 // New journals home, keeping bodies in store, which must not be under home.
@@ -231,11 +234,30 @@ func (j *Journal) Observe(ctx context.Context, fence execenv.ProjectionFence, af
 	if !j.state.Initialized() {
 		return execenv.ObservationPage{}, execenv.ErrConflict
 	}
-	if err := j.barrier.Stopped(ctx, j.observeCaptured); err != nil {
-		return execenv.ObservationPage{}, err
+	// With a watcher, a workspace nothing has touched is not walked at all;
+	// the periodic walk catches what no event reports (writes through mmap).
+	if j.watcher == nil || j.watcher.Changed() || time.Since(j.walked) >= WalkInterval {
+		if err := j.barrier.Stopped(ctx, j.observeCaptured); err != nil {
+			return execenv.ObservationPage{}, err
+		}
+		j.walked = time.Now()
 	}
 	return j.log.Page(after, limit)
 }
+
+// Watcher reports whether anything under the workspace may have changed
+// since it was last asked. Overflowing its queue counts as a change.
+type Watcher interface {
+	Changed() bool
+}
+
+// WalkInterval is the longest an Observe trusts the watcher without walking
+// the workspace.
+const WalkInterval = 30 * time.Second
+
+// Watch makes Observe capture only when w reports a change, or the walk
+// interval has passed.
+func (j *Journal) Watch(w Watcher) { j.watcher = w }
 func (j *Journal) observeCaptured() error {
 	// A capture that raced a writer is tried again: the barrier normally
 	// stops every writer, so this happens only without one.
@@ -416,24 +438,12 @@ func (j *Journal) Content(fence execenv.ProjectionFence, reference execenv.Conte
 // keep copies a captured file's body into the store, refusing one that no
 // longer matches its capture.
 func (j *Journal) keep(change guesttree.Change) (content.Blob, error) {
+	// The capture copied every new or changed body into the store as it
+	// hashed it.
 	if j.store.Has(change.Content) {
 		return change.Content, nil
 	}
-	file := change.File
-	if file == nil {
-		return content.Blob{}, execenv.ErrLagged
-	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return content.Blob{}, execenv.ErrLagged
-	}
-	blob, err := j.store.Put(file)
-	if err != nil {
-		return content.Blob{}, err
-	}
-	if blob != change.Content {
-		return content.Blob{}, execenv.ErrLagged
-	}
-	return blob, nil
+	return content.Blob{}, execenv.ErrLagged
 }
 func (j *Journal) Acknowledge(fence execenv.ProjectionFence, through uint64) error {
 	if err := j.Bind(fence); err != nil {

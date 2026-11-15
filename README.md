@@ -563,8 +563,14 @@ re-included.
 The rules last for the epoch: initialization happens once, and an exact retry
 is a replay.
 
-The guest captures changes behind a kernel-acknowledged workload barrier with
-pinned filesystem identities, not content hashes. The agent's
+The guest captures changes behind a kernel-acknowledged workload barrier.
+Identities come from the filesystem itself (file handles that carry the inode
+generation), not content hashes, so nothing is held open between captures and
+a tree of any size costs no descriptors. A capture hashes only files whose
+size or times changed. One fanotify mark on the workspace's filesystem tells
+the agent when anything under the workspace changed; an `Observe` with
+nothing new does not walk the workspace or freeze anything, and a walk at
+least every 30 seconds catches what no event reports. The agent's
 `-contain-workload` option requires a dedicated Linux guest with a usable
 unified workload hierarchy. It launches unprivileged processes inside that
 hierarchy before execution and prevents privilege escalation. Uncertain

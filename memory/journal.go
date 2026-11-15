@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 
 	"github.com/sudosylabs/execenv"
 )
@@ -19,6 +20,13 @@ import (
 // lockBarrier stops the simulated guest: every guest hook below takes the
 // same lock to write.
 type lockBarrier struct{ mu *sync.Mutex }
+
+// dirty is the in-memory host's watcher: every guest write and file API
+// change sets it, so an Observe with nothing new does not walk.
+type dirty struct{ changed atomic.Bool }
+
+func (d *dirty) Changed() bool { return d.changed.Swap(false) }
+func (d *dirty) touch()        { d.changed.Store(true) }
 
 func (b lockBarrier) Stopped(ctx context.Context, fn func() error) error {
 	if err := ctx.Err(); err != nil {
@@ -220,6 +228,7 @@ func (h *Host) guest(ctx context.Context, id execenv.ID, path string, fn func(e 
 	}
 	e.guestMu.Lock()
 	defer e.guestMu.Unlock()
+	defer e.dirty.touch()
 	if err := fn(e, full); err != nil {
 		if errors.Is(err, execenv.ErrNotFound) || errors.Is(err, execenv.ErrConflict) {
 			return execenv.Error("guest", err)
