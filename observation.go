@@ -46,6 +46,13 @@ const (
 
 // ExecutionObservation retains the original projected baseline and captured
 // content of one guest effect. It never means reading the current path later.
+//
+// ProcessTag is the tag of the process, started with Processes.Start, that
+// the program which made the change descends from: the started process
+// itself or anything it ran. A path several programs changed before one
+// capture names the last of them. It is empty when the host cannot say:
+// the change was made by nothing a caller started, the host could not
+// trace it, or the host cannot attribute changes at all.
 type ExecutionObservation struct {
 	Fence                      ProjectionFence      `json:"fence"`
 	HostSequence               uint64               `json:"host_sequence"`
@@ -59,6 +66,7 @@ type ExecutionObservation struct {
 	Recursive                  *bool                `json:"recursive,omitempty"`
 	Content                    *ContentReference    `json:"content,omitempty"`
 	OriginProjectionMutationID string               `json:"origin_projection_mutation_id,omitempty"`
+	ProcessTag                 string               `json:"process_tag,omitempty"`
 }
 
 type ObservationPage struct {
@@ -83,6 +91,9 @@ func ValidateExecutionObservation(event ExecutionObservation) error {
 		return ErrInvalid
 	}
 	if event.OriginProjectionMutationID != "" && validateName(event.OriginProjectionMutationID) != nil {
+		return ErrInvalid
+	}
+	if event.ProcessTag != "" && (len(event.ProcessTag) > MaxTagBytes || validateName(event.ProcessTag) != nil) {
 		return ErrInvalid
 	}
 	if event.Content != nil && ValidateContentReference(*event.Content) != nil {

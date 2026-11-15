@@ -31,9 +31,12 @@ const (
 	FeatureProcessLog = "process_log"
 	// FeatureObserveWait is a host whose Observe waits for a change.
 	FeatureObserveWait = "observe_wait"
+	// FeatureObservationTag is a host that names, on each observation, the
+	// started process the change's writer descends from, where it can.
+	FeatureObservationTag = "observation_tag"
 )
 
-var features = []string{FeatureControl, FeatureJournal, FeatureProcess, FeatureProcessLog, FeatureSeed, FeatureFiles, FeatureScreen, FeatureGrants, FeatureObserveWait}
+var features = []string{FeatureControl, FeatureJournal, FeatureProcess, FeatureProcessLog, FeatureSeed, FeatureFiles, FeatureScreen, FeatureGrants, FeatureObserveWait, FeatureObservationTag}
 
 // Window sizes for HTTP/2 flow control. The host receives uploads and
 // keystrokes; uploads need the large window.

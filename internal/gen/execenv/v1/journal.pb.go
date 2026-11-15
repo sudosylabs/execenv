@@ -799,8 +799,11 @@ type Observation struct {
 	Recursive                  *bool                  `protobuf:"varint,10,opt,name=recursive,proto3,oneof" json:"recursive,omitempty"`
 	Content                    *ContentReference      `protobuf:"bytes,11,opt,name=content,proto3" json:"content,omitempty"`
 	OriginProjectionMutationId string                 `protobuf:"bytes,12,opt,name=origin_projection_mutation_id,json=originProjectionMutationId,proto3" json:"origin_projection_mutation_id,omitempty"`
-	unknownFields              protoimpl.UnknownFields
-	sizeCache                  protoimpl.SizeCache
+	// process_tag is the tag of the started process the change's writer
+	// descends from, empty when the host cannot say.
+	ProcessTag    string `protobuf:"bytes,13,opt,name=process_tag,json=processTag,proto3" json:"process_tag,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Observation) Reset() {
@@ -913,6 +916,13 @@ func (x *Observation) GetContent() *ContentReference {
 func (x *Observation) GetOriginProjectionMutationId() string {
 	if x != nil {
 		return x.OriginProjectionMutationId
+	}
+	return ""
+}
+
+func (x *Observation) GetProcessTag() string {
+	if x != nil {
+		return x.ProcessTag
 	}
 	return ""
 }
@@ -1340,7 +1350,7 @@ const file_execenv_v1_journal_proto_rawDesc = "" +
 	"mutationId\x128\n" +
 	"\x18applied_workspace_cursor\x18\x03 \x01(\x04R\x16appliedWorkspaceCursor\x12\x1f\n" +
 	"\vhost_cursor\x18\x04 \x01(\x04R\n" +
-	"hostCursor\"\xd0\x04\n" +
+	"hostCursor\"\xf1\x04\n" +
 	"\vObservation\x12'\n" +
 	"\x05fence\x18\x01 \x01(\v2\x11.execenv.v1.FenceR\x05fence\x12#\n" +
 	"\rhost_sequence\x18\x02 \x01(\x04R\fhostSequence\x129\n" +
@@ -1354,7 +1364,9 @@ const file_execenv_v1_journal_proto_rawDesc = "" +
 	"\trecursive\x18\n" +
 	" \x01(\bH\x00R\trecursive\x88\x01\x01\x126\n" +
 	"\acontent\x18\v \x01(\v2\x1c.execenv.v1.ContentReferenceR\acontent\x12A\n" +
-	"\x1dorigin_projection_mutation_id\x18\f \x01(\tR\x1aoriginProjectionMutationIdB\f\n" +
+	"\x1dorigin_projection_mutation_id\x18\f \x01(\tR\x1aoriginProjectionMutationId\x12\x1f\n" +
+	"\vprocess_tag\x18\r \x01(\tR\n" +
+	"processTagB\f\n" +
 	"\n" +
 	"_recursive\"\x94\x01\n" +
 	"\x0eObserveRequest\x12'\n" +

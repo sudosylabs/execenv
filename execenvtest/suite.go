@@ -12,7 +12,8 @@
 //
 // Process subtests drive shells and commands with a small POSIX subset every
 // adapter supports: NAME=value, echo with $NAME and quotes, seq, true,
-// false, and exit.
+// false, exit, and one "> path" or ">> path" redirection to a workspace
+// file.
 package execenvtest
 
 import (

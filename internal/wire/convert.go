@@ -502,6 +502,7 @@ func ObservationPageTo(p execenv.ObservationPage) *execenvv1.ObservationPage {
 			Recursive:                  o.Recursive,
 			Content:                    ContentTo(o.Content),
 			OriginProjectionMutationId: o.OriginProjectionMutationID,
+			ProcessTag:                 o.ProcessTag,
 		})
 	}
 	return out
@@ -527,6 +528,7 @@ func ObservationPageFrom(p *execenvv1.ObservationPage) execenv.ObservationPage {
 			Recursive:                  o.Recursive,
 			Content:                    ContentFrom(o.GetContent()),
 			OriginProjectionMutationID: o.GetOriginProjectionMutationId(),
+			ProcessTag:                 o.GetProcessTag(),
 		})
 	}
 	return out

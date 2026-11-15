@@ -119,6 +119,9 @@ message Observation {
   optional bool recursive = 10;
   ContentReference content = 11;
   string origin_projection_mutation_id = 12;
+  // process_tag is the tag of the started process the change's writer
+  // descends from, empty when the host cannot say.
+  string process_tag = 13;
 }
 
 message ObserveRequest {

@@ -287,6 +287,25 @@ func TestLiveProcessConformance(t *testing.T) {
 	})
 }
 
+// TestLiveObservationConformance runs the observation suite through a real
+// guest: waits end on real changes, and each change names the started
+// process whose descendant made it, through the guest kernel's process
+// events and its filesystem events.
+func TestLiveObservationConformance(t *testing.T) {
+	requireLive(t)
+	execenvtest.RunObservations(t, func(t *testing.T) execenvtest.Observed {
+		t.Helper()
+		host := liveHost(t, 1, "")
+		t.Cleanup(func() { revokeAll(host) })
+		env, err := host.Ensure(t.Context(), execenv.Spec{ID: "observed", Image: "default"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		fence := runningFence(t, env)
+		return execenvtest.Observed{Workspace: env, Fence: fence, Guest: execenvtest.FilesGuest(env, fence), Processes: env}
+	})
+}
+
 // An Observe after one change in a 5,000-file workspace reads that change,
 // not the workspace: it reports exactly it, and it is quick.
 func TestLiveObserveCostsTheChangeNotTheTree(t *testing.T) {

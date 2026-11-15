@@ -39,18 +39,19 @@ const (
 // openKernelProcesses subscribes to the guest kernel's process events and
 // filters them to the workload hierarchy at group. It fails when the kernel
 // lacks the connector or its process events, so the helper can refuse to
-// advertise a process log it cannot keep.
-func openKernelProcesses(group, home, scratch string, launched func(int) (launch, bool)) (ProcessSource, error) {
+// advertise a process log it cannot keep. tagOf maps a workload process to
+// the tag of the process Start created that it descends from.
+func openKernelProcesses(group, home, scratch string, launched func(int) (launch, bool)) (source ProcessSource, tagOf func(int) string, err error) {
 	if group == "" {
-		return nil, execenv.ErrUnavailable
+		return nil, nil, execenv.ErrUnavailable
 	}
 	reader, err := openConnector()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	tracker := newTracker(procfs{}, group, os.Getpid(), home, scratch)
 	tracker.launched = launched
-	return &kernelProcesses{reader: reader, tracker: tracker}, nil
+	return &kernelProcesses{reader: reader, tracker: tracker}, tracker.tagOf, nil
 }
 
 type connector struct {

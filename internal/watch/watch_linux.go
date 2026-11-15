@@ -9,6 +9,10 @@
 // workspace on the same disk are left out. A queue overflow, or an event it
 // cannot place, means everything may have changed: the watcher errs towards
 // walking, never towards missing a change.
+//
+// Every event also names the process that caused it. Given a way to map a
+// process to the tag of the started process it descends from, the watcher
+// keeps, for each changed path, the tag of its last writer.
 package watch
 
 import (
@@ -44,11 +48,16 @@ type Watcher struct {
 	mu    sync.Mutex
 	dirty map[string]struct{}
 	all   bool
+	// writer maps a process id to the tag its process descends from, ""
+	// for none; writers holds that tag for each changed path's last writer.
+	writer  func(pid int) string
+	writers map[string]string
 }
 
 // New watches home. It needs CAP_SYS_ADMIN and Linux 5.9 or later; without
-// them it fails and the journal walks on every Observe instead.
-func New(home string) (*Watcher, error) {
+// them it fails and the journal walks on every Observe instead. writer, when
+// set, maps the process behind each event to the tag Writers reports.
+func New(home string, writer func(pid int) string) (*Watcher, error) {
 	real, err := realPath(home)
 	if err != nil {
 		return nil, err
@@ -66,7 +75,7 @@ func New(home string) (*Watcher, error) {
 		_ = unix.Close(fd)
 		return nil, err
 	}
-	w := &Watcher{home: real, queue: fd, mount: mount, buf: make([]byte, 64<<10), dirty: map[string]struct{}{}, all: true}
+	w := &Watcher{home: real, queue: fd, mount: mount, buf: make([]byte, 64<<10), dirty: map[string]struct{}{}, all: true, writer: writer}
 	return w, nil
 }
 
@@ -90,6 +99,16 @@ func (w *Watcher) Take() (paths []string, all bool) {
 	return paths, false
 }
 
+// Writers returns, and forgets, the tag of each changed path's last writer
+// that the events Take has read so far named, where the writer mapped one.
+func (w *Watcher) Writers() map[string]string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	writers := w.writers
+	w.writers = nil
+	return writers
+}
+
 // everything marks that the watcher cannot name what changed.
 func (w *Watcher) everything() {
 	w.mu.Lock()
@@ -98,9 +117,23 @@ func (w *Watcher) everything() {
 	w.mu.Unlock()
 }
 
-func (w *Watcher) mark(rel string) {
+func (w *Watcher) mark(rel string, pid int) {
+	tag := ""
+	if w.writer != nil && pid > 0 {
+		tag = w.writer(pid)
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	// The last writer wins, and an unknown one clears an earlier tag.
+	if tag != "" || w.writers[rel] != "" {
+		if w.writers == nil {
+			w.writers = make(map[string]string)
+		}
+		if len(w.writers) >= maxDirty {
+			w.writers = make(map[string]string)
+		}
+		w.writers[rel] = tag
+	}
 	if w.all {
 		return
 	}
@@ -155,7 +188,10 @@ func (w *Watcher) parse(b []byte) {
 		if mask&unix.FAN_Q_OVERFLOW != 0 {
 			w.everything()
 		} else {
-			w.place(b[metaLen:length])
+			// The metadata's pid is the thread group of the process that
+			// caused the event.
+			pid := int(int32(binary.NativeEndian.Uint32(b[20:24])))
+			w.place(b[metaLen:length], pid)
 		}
 		b = b[length:]
 	}
@@ -163,7 +199,7 @@ func (w *Watcher) parse(b []byte) {
 
 // place marks the path an event's directory-and-name record names. An
 // event it cannot place marks everything.
-func (w *Watcher) place(info []byte) {
+func (w *Watcher) place(info []byte, pid int) {
 	for len(info) >= 4 {
 		kind := info[0]
 		size := int(binary.NativeEndian.Uint16(info[2:4]))
@@ -177,7 +213,7 @@ func (w *Watcher) place(info []byte) {
 			case !ok:
 				w.everything()
 			case inside:
-				w.mark(rel)
+				w.mark(rel, pid)
 			}
 			return
 		}

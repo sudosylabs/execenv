@@ -44,7 +44,7 @@ func observedInner(t *testing.T) execenvtest.Observed {
 	if _, err := env.Control(t.Context(), execenv.ControlRequest{Fence: fence, State: execenv.ControlRunning}); err != nil {
 		t.Fatal(err)
 	}
-	return execenvtest.Observed{Workspace: env, Fence: fence, Guest: innerGuest{host: inner, id: env.ID()}}
+	return execenvtest.Observed{Workspace: env, Fence: fence, Guest: innerGuest{host: inner, id: env.ID()}, Processes: env}
 }
 
 // The remote wire carries IgnoreRules through InitializeProjection.

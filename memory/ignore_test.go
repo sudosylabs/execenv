@@ -55,7 +55,15 @@ func TestIgnoreConformance(t *testing.T) {
 func TestObservationConformance(t *testing.T) {
 	execenvtest.RunObservations(t, func(t *testing.T) execenvtest.Observed {
 		host, env, fence := running(t)
-		return execenvtest.Observed{Workspace: env, Fence: fence, Guest: memoryGuest{host: host, id: env.ID()}}
+		return execenvtest.Observed{Workspace: env, Fence: fence, Guest: memoryGuest{host: host, id: env.ID()}, Processes: env}
+	})
+}
+
+// The suite's file API guest, which live hosts use, writes as no process.
+func TestObservationConformanceThroughFiles(t *testing.T) {
+	execenvtest.RunObservations(t, func(t *testing.T) execenvtest.Observed {
+		_, env, fence := running(t)
+		return execenvtest.Observed{Workspace: env, Fence: fence, Guest: execenvtest.FilesGuest(env, fence), Processes: env}
 	})
 }
 

@@ -15,7 +15,10 @@ import (
 // input like a terminal in canonical mode and runs each line. It knows only
 // what tests need: NAME=value, echo with $NAME expansion and quote removal,
 // seq [FIRST] LAST, true, and exit. A command is found by its last path
-// element, so /bin/true is true. Anything else prints "not found".
+// element, so /bin/true is true. Anything else prints "not found". A
+// command's output can be redirected to a workspace file with "> path" or
+// appended with ">> path"; the file is written as the shell's started
+// process, so observations name its tag.
 //
 // It records itself in the process log as /bin/sh -l, and every command
 // line it runs as a start and exit pair: exit 0, or 127 when not found.
@@ -44,12 +47,17 @@ type shell struct {
 	code int
 	// signal is what ended the shell when Close did, if anything.
 	signal int
+	// write writes a redirected command's output to a workspace path.
+	write func(path string, data []byte, appending bool) error
+	// redirecting is set while a command's output goes to a file: lines
+	// then end with LF even on a terminal.
+	redirecting bool
 }
 
 // newShell starts a fake shell under tag. With argv it stands for that one
 // command, which the log records as the tagged process, as a guest's does.
-func newShell(win execenv.Window, log *processLog, terminal bool, tag string, argv []string) *shell {
-	s := &shell{vars: make(map[string]string), win: win, log: log, terminal: terminal, command: len(argv) > 0}
+func newShell(win execenv.Window, log *processLog, terminal bool, tag string, argv []string, write func(path string, data []byte, appending bool) error) *shell {
+	s := &shell{vars: make(map[string]string), win: win, log: log, terminal: terminal, command: len(argv) > 0, write: write}
 	s.cond = sync.NewCond(&s.mu)
 	started := []string{"/bin/sh", "-l"}
 	if len(argv) > 0 {
@@ -60,7 +68,7 @@ func newShell(win execenv.Window, log *processLog, terminal bool, tag string, ar
 }
 
 func (s *shell) newline() string {
-	if s.terminal {
+	if s.terminal && !s.redirecting {
 		return "\r\n"
 	}
 	return "\n"
@@ -151,6 +159,28 @@ func (s *shell) run(line string) {
 		s.log.exit(s.pid, s.code)
 		return
 	}
+	words, target, appending, ok := redirection(words)
+	if !ok {
+		s.print("sh: syntax error")
+		s.code = 2
+		return
+	}
+	if target != "" {
+		before := len(s.out)
+		s.redirecting = true
+		defer func() {
+			s.redirecting = false
+			data := append([]byte(nil), s.out[before:]...)
+			s.out = s.out[:before]
+			if err := s.write(s.expand(target), data, appending); err != nil {
+				s.print("sh: " + target + ": cannot create")
+				s.code = 1
+			}
+		}()
+	}
+	if len(words) == 0 {
+		return
+	}
 	argv := make([]string, 0, len(words))
 	for _, word := range words {
 		argv = append(argv, s.expand(word))
@@ -183,6 +213,29 @@ func (s *shell) run(line string) {
 		s.log.exit(pid, code)
 	}
 	s.code = code
+}
+
+// redirection takes one "> path" or ">> path", spaced or not, out of
+// words. ok is false when an operator names no path.
+func redirection(words []string) (rest []string, target string, appending, ok bool) {
+	rest = make([]string, 0, len(words))
+	for i := 0; i < len(words); i++ {
+		word := words[i]
+		if !strings.HasPrefix(word, ">") {
+			rest = append(rest, word)
+			continue
+		}
+		appending = strings.HasPrefix(word, ">>")
+		target = strings.TrimLeft(word, ">")
+		if target == "" {
+			if i+1 >= len(words) {
+				return nil, "", false, false
+			}
+			i++
+			target = words[i]
+		}
+	}
+	return rest, target, appending, true
 }
 
 func (s *shell) seq(args []string) {

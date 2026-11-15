@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/journal"
 	"github.com/sudosylabs/execenv/internal/observations"
 )
 
@@ -24,22 +25,45 @@ type lockBarrier struct{ mu *sync.Mutex }
 
 // dirty is the in-memory host's watcher: every guest write and file API
 // change sets it, so an Observe with nothing new does not walk, and wakes
-// an Observe waiting for a change.
+// an Observe waiting for a change. It knows who wrote each path: a process
+// the fake shell runs writes under its started process's tag, and the test
+// hooks under none.
 type dirty struct {
 	changed atomic.Bool
 	wake    chan struct{}
+	mu      sync.Mutex
+	writers map[string]string
 }
 
 func newDirty() *dirty { return &dirty{wake: make(chan struct{}, 1)} }
 
 // Take reports a touched workspace as changed everywhere: the in-memory
 // host walks it whole.
-func (d *dirty) Take() ([]string, bool) { return nil, d.changed.Swap(false) }
+func (d *dirty) Take() journal.Changes {
+	d.mu.Lock()
+	writers := d.writers
+	d.writers = nil
+	d.mu.Unlock()
+	return journal.Changes{All: d.changed.Swap(false), Writers: writers}
+}
+
 func (d *dirty) touch() {
 	d.changed.Store(true)
 	select {
 	case d.wake <- struct{}{}:
 	default:
+	}
+}
+
+// wrote records tag, or "" for none, as the last writer of each path.
+func (d *dirty) wrote(tag string, paths ...string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.writers == nil {
+		d.writers = make(map[string]string)
+	}
+	for _, p := range paths {
+		d.writers[p] = tag
 	}
 }
 
@@ -215,6 +239,7 @@ func (h *Host) MoveGuest(ctx context.Context, id execenv.ID, from, to string) er
 		if err := e.parent(dest); err != nil {
 			return err
 		}
+		e.dirty.wrote("", to)
 		return os.Rename(full, dest)
 	})
 }
@@ -246,6 +271,8 @@ func (h *Host) guest(ctx context.Context, id execenv.ID, path string, fn func(e 
 	e.guestMu.Lock()
 	defer e.guestMu.Unlock()
 	defer e.dirty.touch()
+	// A test hook is no started process.
+	e.dirty.wrote("", path)
 	if err := fn(e, full); err != nil {
 		if errors.Is(err, execenv.ErrNotFound) || errors.Is(err, execenv.ErrConflict) {
 			return execenv.Error("guest", err)
@@ -253,6 +280,39 @@ func (h *Host) guest(ctx context.Context, id execenv.ID, path string, fn func(e 
 		return execenv.Error("guest", execenv.ErrUnavailable)
 	}
 	return nil
+}
+
+// shellWrite writes data to path in the workspace for a process the fake
+// shell runs under tag, as a redirection does: it creates or truncates the
+// file, or appends to it.
+func (e *environment) shellWrite(tag, path string, data []byte, appending bool) error {
+	if execenv.ValidatePath(path) != nil {
+		return execenv.ErrInvalid
+	}
+	full, err := execenv.ResolvePath(e.workspace, path)
+	if err != nil {
+		return err
+	}
+	e.guestMu.Lock()
+	defer e.guestMu.Unlock()
+	defer e.dirty.touch()
+	if err := e.parent(full); err != nil {
+		return err
+	}
+	flags := os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+	if appending {
+		flags = os.O_WRONLY | os.O_CREATE | os.O_APPEND
+	}
+	f, err := os.OpenFile(full, flags, 0o644)
+	if err != nil {
+		return err
+	}
+	e.dirty.wrote(tag, path)
+	_, err = f.Write(data)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 func (e *environment) parent(full string) error {

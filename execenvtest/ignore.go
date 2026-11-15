@@ -33,10 +33,13 @@ type Guest interface {
 
 // Observed is one running environment whose projection is not yet
 // initialized, the fence that drives it, and a guest acting inside it.
+// Processes, when set, runs processes in the same environment, and the host
+// names on each observation the started process its writer descends from.
 type Observed struct {
 	Workspace Workspace
 	Fence     execenv.ProjectionFence
 	Guest     Guest
+	Processes execenv.Processes
 }
 
 // ObservedFactory returns a fresh Observed for one subtest.

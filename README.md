@@ -559,7 +559,17 @@ hostCursor = page.HostCursor
 
 Each ordered event binds its original projected cursor and version, an
 epoch-stable node identity, and the size and SHA-256 of a created or written
-file as it was observed. The body is not copied: `OpenObservationContent`
+file as it was observed. `ProcessTag` names the process you started with
+`Start` that the program which made the change descends from (the started
+process itself, or anything it ran); a path several programs changed before
+one capture names the last of them. It is empty when the host cannot say:
+nothing you started made the change (the file API, for one), or the host
+did not see who did. A guest learns the writer from the filesystem event
+that reported the change and the guest kernel's process events, so a change
+only the periodic walk found (a write through `mmap`, or after the event
+queue overflowed) has none, and so may one whose writer ended long before
+the capture. The in-memory host names the started process for what its
+shell's redirections (`> path`, `>> path`) write. The body is not copied: `OpenObservationContent`
 reads the file from the workspace as it is now, as one stream of 64-KiB
 messages, hashing it as it goes. A file changed since then ends the stream
 with `ErrStale` instead of its end, and a file gone or replaced fails with

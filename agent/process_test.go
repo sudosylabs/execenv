@@ -136,6 +136,39 @@ func TestTrackerRecordsTheShellAndItsCommands(t *testing.T) {
 	}
 }
 
+// Every workload process knows the tag of the started process it descends
+// from, while it runs and after it ends; a reused pid forgets it, and what
+// no started process ran has none.
+func TestTrackerTagsDescendants(t *testing.T) {
+	proc := fakeProc{}
+	tr := newTestTracker(proc)
+	tr.launched = func(pid int) (launch, bool) {
+		if pid == 10 {
+			return launch{tag: "build"}, true
+		}
+		return launch{}, false
+	}
+	run(t, tr, proc,
+		set(10, fakeTask{cgroup: testGroup, parent: testAgent, cmdline: "/usr/local/libexec/execenv-guest\x00workload-exec\x00make\x00"}, fork(testAgent, 10)),
+		same(execOf(10)),
+		set(10, fakeTask{cgroup: testGroup, parent: testAgent, cmdline: "make\x00"}, execOf(10)),
+		set(11, fakeTask{cgroup: testGroup, parent: 10, cmdline: "cc\x00"}, fork(10, 11)),
+		same(execOf(11)),
+		set(12, fakeTask{cgroup: testGroup, parent: 11}, fork(11, 12)),
+		gone(12, exitOf(12, 0)),
+		set(20, fakeTask{cgroup: testGroup, parent: 1, cmdline: "cron\x00"}, execOf(20)),
+	)
+	for pid, want := range map[int]string{10: "build", 11: "build", 12: "build", 20: "", 99: ""} {
+		if got := tr.tagOf(pid); got != want {
+			t.Fatalf("tagOf(%d) = %q, want %q", pid, got, want)
+		}
+	}
+	run(t, tr, proc, set(12, fakeTask{cgroup: testGroup, parent: 20}, fork(20, 12)))
+	if got := tr.tagOf(12); got != "" {
+		t.Fatalf("a reused pid kept the ended process's tag %q", got)
+	}
+}
+
 // Processes outside the workload hierarchy, the helper and init among them,
 // are never recorded; threads are not processes.
 func TestTrackerFiltersByWorkloadHierarchy(t *testing.T) {

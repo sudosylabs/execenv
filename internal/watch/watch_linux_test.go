@@ -10,12 +10,16 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func event(mask uint64, info []byte) []byte {
+func event(mask uint64, info []byte) []byte { return eventBy(mask, 0, info) }
+
+func eventBy(mask uint64, pid int32, info []byte) []byte {
 	b := make([]byte, unix.FAN_EVENT_METADATA_LEN+len(info))
 	binary.NativeEndian.PutUint32(b[0:4], uint32(len(b)))
 	b[4] = 3 // version
 	binary.NativeEndian.PutUint16(b[6:8], unix.FAN_EVENT_METADATA_LEN)
 	binary.NativeEndian.PutUint64(b[8:16], mask)
+	binary.NativeEndian.PutUint32(b[16:20], ^uint32(0)) // FAN_NOFD
+	binary.NativeEndian.PutUint32(b[20:24], uint32(pid))
 	copy(b[unix.FAN_EVENT_METADATA_LEN:], info)
 	return b
 }
@@ -38,6 +42,28 @@ func TestParseErrsTowardsWalking(t *testing.T) {
 	}
 }
 
+// The last writer of a path names its tag; an unknown writer after a known
+// one clears it.
+func TestMarkKeepsTheLastWritersTag(t *testing.T) {
+	tags := map[int]string{10: "build", 11: "shell"}
+	w := &Watcher{queue: -1, dirty: map[string]struct{}{}, writer: func(pid int) string { return tags[pid] }}
+	w.mark("a", 10)
+	w.mark("a", 11)
+	w.mark("b", 10)
+	w.mark("c", 10)
+	w.mark("c", 99)
+	if paths, all := w.Take(); all || len(paths) != 3 {
+		t.Fatalf("Take() = %v, %v", paths, all)
+	}
+	writers := w.Writers()
+	if writers["a"] != "shell" || writers["b"] != "build" || writers["c"] != "" {
+		t.Fatalf("Writers() = %v", writers)
+	}
+	if again := w.Writers(); len(again) != 0 {
+		t.Fatalf("Writers() kept %v", again)
+	}
+}
+
 // Live: needs root and fanotify. A change in the workspace is reported by
 // its path, at any depth; one outside it on the same filesystem is not.
 func TestWatcherNamesWorkspaceChanges(t *testing.T) {
@@ -52,7 +78,7 @@ func TestWatcherNamesWorkspaceChanges(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	w, err := New(home)
+	w, err := New(home, nil)
 	if err != nil {
 		t.Skipf("fanotify unavailable: %v", err)
 	}
