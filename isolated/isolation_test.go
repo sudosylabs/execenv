@@ -286,3 +286,50 @@ func TestLiveProcessConformance(t *testing.T) {
 		return execenvtest.Traced{Env: env, Fence: fence, Workload: execenvtest.ShellWorkload(t, env, fence)}
 	})
 }
+
+// An Observe after one change in a 5,000-file workspace reads that change,
+// not the workspace: it reports exactly it, and it is quick.
+func TestLiveObserveCostsTheChangeNotTheTree(t *testing.T) {
+	host := liveHost(t, 1, "")
+	t.Cleanup(func() { revokeAll(host) })
+	env, err := host.Ensure(t.Context(), execenv.Spec{ID: "big-tree", Image: "default"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence := liveJournal(t, env)
+	sh := execenvtest.StartShell(t, env, fence, "sh")
+	// Built in halves and acknowledged as read: the log keeps at most 4096
+	// unacknowledged events.
+	var cursor uint64
+	for _, half := range []string{"1 25", "26 50"} {
+		if err := sh.Type(`for d in $(seq ` + half + `); do mkdir -p t/$d; for f in $(seq 1 100); do echo $d-$f > t/$d/$f; done; done; echo half""-made`); err != nil {
+			t.Fatal(err)
+		}
+		sh.Expect("half-made")
+		sh = execenvtest.StartShell(t, env, fence, "sh-"+strings.ReplaceAll(half, " ", "-"))
+		for {
+			page, err := env.Observe(t.Context(), fence, cursor, 128)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(page.Observations) == 0 {
+				break
+			}
+			cursor = page.Observations[len(page.Observations)-1].HostSequence
+			if err := env.AcknowledgeObservations(t.Context(), fence, cursor); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := sh.Type(`echo changed > t/25/50; echo one""-change`); err != nil {
+		t.Fatal(err)
+	}
+	sh.Expect("one-change")
+	started := time.Now()
+	page, err := env.Observe(t.Context(), fence, cursor, 128)
+	took := time.Since(started)
+	if err != nil || len(page.Observations) != 1 || page.Observations[0].Path != "t/25/50" {
+		t.Fatalf("Observe() after one change = %+v, %v", page.Observations, err)
+	}
+	t.Logf("Observe after one change in 5,000 files took %v", took)
+}

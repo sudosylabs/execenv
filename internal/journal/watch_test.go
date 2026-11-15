@@ -8,32 +8,44 @@ import (
 	"testing"
 )
 
-type fakeWatcher struct{ changed bool }
-
-func (w *fakeWatcher) Changed() bool {
-	c := w.changed
-	w.changed = false
-	return c
+type fakeWatcher struct {
+	paths []string
+	all   bool
 }
 
-// With a watcher, Observe walks the workspace only when it reports a change.
-func TestObserveWalksOnlyWhenTheWatcherSaysSo(t *testing.T) {
+func (w *fakeWatcher) Take() ([]string, bool) {
+	paths, all := w.paths, w.all
+	w.paths, w.all = nil, false
+	return paths, all
+}
+
+// With a watcher, Observe reads only the paths it names, and nothing when
+// it names none.
+func TestObserveReadsOnlyWhatTheWatcherNames(t *testing.T) {
 	j, fence, _ := journalFixture(t)
 	w := &fakeWatcher{}
 	j.Watch(w)
 	if _, err := j.Observe(t.Context(), fence, 0, 128); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(j.home, "dir/new.txt"), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"dir/named.txt", "dir/unnamed.txt"} {
+		if err := os.WriteFile(filepath.Join(j.home, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	page, err := j.Observe(t.Context(), fence, 0, 128)
 	if err != nil || len(page.Observations) != 0 {
-		t.Fatalf("Observe() walked though the watcher saw nothing: %+v %v", page, err)
+		t.Fatalf("Observe() read though the watcher named nothing: %+v %v", page, err)
 	}
-	w.changed = true
+	w.paths = []string{"dir/named.txt"}
 	page, err = j.Observe(t.Context(), fence, 0, 128)
-	if err != nil || len(page.Observations) != 1 || page.Observations[0].Path != "dir/new.txt" {
-		t.Fatalf("Observe() after a reported change = %+v %v", page, err)
+	if err != nil || len(page.Observations) != 1 || page.Observations[0].Path != "dir/named.txt" {
+		t.Fatalf("Observe() of one named path = %+v %v", page, err)
+	}
+	// When the watcher cannot say, the whole workspace is walked.
+	w.all = true
+	page, err = j.Observe(t.Context(), fence, 0, 128)
+	if err != nil || len(page.Observations) != 2 || page.Observations[1].Path != "dir/unnamed.txt" {
+		t.Fatalf("Observe() after an unnamed change = %+v %v", page, err)
 	}
 }

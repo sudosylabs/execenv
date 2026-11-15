@@ -1,13 +1,14 @@
-// Package watch tells the journal when a workspace may have changed, so an
-// idle workspace is never walked.
+// Package watch tells the journal which paths of a workspace changed, so it
+// reads those again and never walks an idle workspace.
 //
 // On Linux it places one fanotify mark on the workspace's whole filesystem
 // (FAN_MARK_FILESYSTEM, reporting directory handles and names), which sees
 // every create, write, move and delete at any depth without one watch per
-// directory and without the race a new subdirectory gives inotify. Events
-// from outside the workspace on the same disk are left out. A queue
-// overflow, or an event it cannot place, counts as a change: the watcher
-// errs towards walking, never towards missing one.
+// directory and without the race a new subdirectory gives inotify. Each
+// event names an entry by its directory and name; events from outside the
+// workspace on the same disk are left out. A queue overflow, or an event it
+// cannot place, means everything may have changed: the watcher errs towards
+// walking, never towards missing a change.
 package watch
 
 import (
@@ -15,10 +16,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 
 	"golang.org/x/sys/unix"
 )
@@ -26,15 +27,23 @@ import (
 const events = unix.FAN_CREATE | unix.FAN_DELETE | unix.FAN_DELETE_SELF | unix.FAN_MOVED_FROM |
 	unix.FAN_MOVED_TO | unix.FAN_MODIFY | unix.FAN_CLOSE_WRITE | unix.FAN_ATTRIB | unix.FAN_ONDIR
 
+// maxDirty is how many changed paths the watcher keeps before it gives up
+// naming them and reports that everything may have changed.
+const maxDirty = 100_000
+
 // Watcher watches one workspace.
 type Watcher struct {
-	home    string
-	queue   *os.File
-	mount   int
-	changed atomic.Bool
+	home string
+	// queue is the fanotify descriptor, non-blocking. Take reads it dry:
+	// the kernel queues an event within the syscall that caused it, so
+	// every change finished before Take is in what Take returns.
+	queue int
+	mount int
+	buf   []byte
 
 	mu    sync.Mutex
-	known map[string]bool
+	dirty map[string]struct{}
+	all   bool
 }
 
 // New watches home. It needs CAP_SYS_ADMIN and Linux 5.9 or later; without
@@ -57,36 +66,77 @@ func New(home string) (*Watcher, error) {
 		_ = unix.Close(fd)
 		return nil, err
 	}
-	w := &Watcher{home: real, queue: os.NewFile(uintptr(fd), "fanotify"), mount: mount, known: make(map[string]bool)}
-	w.changed.Store(true)
-	go w.read()
+	w := &Watcher{home: real, queue: fd, mount: mount, buf: make([]byte, 64<<10), dirty: map[string]struct{}{}, all: true}
 	return w, nil
 }
 
-// Changed reports, and forgets, whether anything under the workspace may
-// have changed since the last call.
-func (w *Watcher) Changed() bool { return w.changed.Swap(false) }
+// Take returns, and forgets, the paths under the workspace that changed
+// since the last call, relative to it; all is set when the watcher cannot
+// say which, and then paths is empty.
+func (w *Watcher) Take() (paths []string, all bool) {
+	w.drain()
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.all {
+		w.all = false
+		w.dirty = map[string]struct{}{}
+		return nil, true
+	}
+	paths = make([]string, 0, len(w.dirty))
+	for p := range w.dirty {
+		paths = append(paths, p)
+	}
+	w.dirty = map[string]struct{}{}
+	return paths, false
+}
+
+// everything marks that the watcher cannot name what changed.
+func (w *Watcher) everything() {
+	w.mu.Lock()
+	w.all = true
+	w.dirty = map[string]struct{}{}
+	w.mu.Unlock()
+}
+
+func (w *Watcher) mark(rel string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.all {
+		return
+	}
+	w.dirty[rel] = struct{}{}
+	if len(w.dirty) > maxDirty {
+		w.all = true
+		w.dirty = map[string]struct{}{}
+	}
+}
 
 // Close stops watching.
 func (w *Watcher) Close() error {
-	err := w.queue.Close()
+	err := unix.Close(w.queue)
 	_ = unix.Close(w.mount)
 	return err
 }
 
-func (w *Watcher) read() {
-	buf := make([]byte, 64<<10)
+// drain reads every queued event. A watcher with no queue (-1) has none.
+func (w *Watcher) drain() {
+	if w.queue < 0 {
+		return
+	}
 	for {
-		n, err := w.queue.Read(buf)
-		if err != nil {
-			if errors.Is(err, os.ErrClosed) {
-				return
-			}
-			// A broken queue cannot vouch for anything.
-			w.changed.Store(true)
+		n, err := unix.Read(w.queue, w.buf)
+		if errors.Is(err, unix.EINTR) {
+			continue
+		}
+		if errors.Is(err, unix.EAGAIN) {
 			return
 		}
-		w.parse(buf[:n])
+		if err != nil || n <= 0 {
+			// A broken queue cannot vouch for anything.
+			w.everything()
+			return
+		}
+		w.parse(w.buf[:n])
 	}
 }
 
@@ -99,69 +149,86 @@ func (w *Watcher) parse(b []byte) {
 		metaLen := int(binary.NativeEndian.Uint16(b[6:8]))
 		mask := binary.NativeEndian.Uint64(b[8:16])
 		if length < metaLen || length > len(b) {
-			w.changed.Store(true)
+			w.everything()
 			return
 		}
-		if mask&unix.FAN_Q_OVERFLOW != 0 || w.relevant(b[metaLen:length]) {
-			w.changed.Store(true)
+		if mask&unix.FAN_Q_OVERFLOW != 0 {
+			w.everything()
+		} else {
+			w.place(b[metaLen:length])
 		}
 		b = b[length:]
 	}
 }
 
-// relevant reports whether an event's directory lies in the workspace.
-func (w *Watcher) relevant(info []byte) bool {
+// place marks the path an event's directory-and-name record names. An
+// event it cannot place marks everything.
+func (w *Watcher) place(info []byte) {
 	for len(info) >= 4 {
 		kind := info[0]
 		size := int(binary.NativeEndian.Uint16(info[2:4]))
 		if size < 4 || size > len(info) {
-			return true
+			w.everything()
+			return
 		}
 		if kind == unix.FAN_EVENT_INFO_TYPE_DFID_NAME || kind == unix.FAN_EVENT_INFO_TYPE_DFID || kind == unix.FAN_EVENT_INFO_TYPE_FID {
-			return w.inside(info[4:size])
+			rel, inside, ok := w.resolve(info[4:size], kind == unix.FAN_EVENT_INFO_TYPE_DFID_NAME)
+			switch {
+			case !ok:
+				w.everything()
+			case inside:
+				w.mark(rel)
+			}
+			return
 		}
 		info = info[size:]
 	}
-	return true
+	w.everything()
 }
 
-// inside resolves the record's directory handle and checks it is under the
-// workspace. Anything it cannot resolve counts as inside.
-func (w *Watcher) inside(record []byte) bool {
-	// __kernel_fsid_t (8 bytes), then struct file_handle.
+// resolve turns a record into a path relative to the workspace: its
+// directory's handle, then for a named record the entry's name. ok is
+// false when the handle no longer opens.
+func (w *Watcher) resolve(record []byte, named bool) (rel string, inside, ok bool) {
+	// __kernel_fsid_t (8 bytes), then struct file_handle, then the name.
 	if len(record) < 16 {
-		return true
+		return "", false, false
 	}
 	bytes := int(binary.NativeEndian.Uint32(record[8:12]))
 	kind := int32(binary.NativeEndian.Uint32(record[12:16]))
-	if len(record) < 16+bytes {
-		return true
+	if bytes < 0 || len(record) < 16+bytes {
+		return "", false, false
 	}
 	handle := record[16 : 16+bytes]
-	key := fmt.Sprintf("%d:%x", kind, handle)
-	w.mu.Lock()
-	known, ok := w.known[key]
-	w.mu.Unlock()
-	if ok {
-		return known
-	}
 	fd, err := unix.OpenByHandleAt(w.mount, unix.NewFileHandle(kind, handle), unix.O_PATH|unix.O_CLOEXEC)
 	if err != nil {
-		return true
+		return "", false, false
 	}
-	path, err := os.Readlink(fmt.Sprintf("/proc/self/fd/%d", fd))
+	dir, err := os.Readlink(fmt.Sprintf("/proc/self/fd/%d", fd))
 	_ = unix.Close(fd)
 	if err != nil {
-		return true
+		return "", false, false
 	}
-	inside := path == w.home || strings.HasPrefix(path, w.home+"/")
-	w.mu.Lock()
-	if len(w.known) > 4096 {
-		w.known = make(map[string]bool)
+	var base string
+	switch {
+	case dir == w.home:
+		base = "."
+	case strings.HasPrefix(dir, w.home+"/"):
+		base = strings.TrimPrefix(dir, w.home+"/")
+	default:
+		return "", false, true
 	}
-	w.known[key] = inside
-	w.mu.Unlock()
-	return inside
+	if !named {
+		return base, true, true
+	}
+	name := record[16+bytes:]
+	if i := strings.IndexByte(string(name), 0); i >= 0 {
+		name = name[:i]
+	}
+	if len(name) == 0 || string(name) == "." {
+		return base, true, true
+	}
+	return path.Join(base, string(name)), true, true
 }
 
 func realPath(dir string) (string, error) {

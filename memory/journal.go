@@ -25,7 +25,9 @@ type lockBarrier struct{ mu *sync.Mutex }
 // change sets it, so an Observe with nothing new does not walk.
 type dirty struct{ changed atomic.Bool }
 
-func (d *dirty) Changed() bool { return d.changed.Swap(false) }
+// Take reports a touched workspace as changed everywhere: the in-memory
+// host walks it whole.
+func (d *dirty) Take() ([]string, bool) { return nil, d.changed.Swap(false) }
 func (d *dirty) touch()        { d.changed.Store(true) }
 
 func (b lockBarrier) Stopped(ctx context.Context, fn func() error) error {

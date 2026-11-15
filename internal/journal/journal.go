@@ -195,7 +195,7 @@ func (j *Journal) Apply(ctx context.Context, request execenv.ProjectionApply) (e
 			resultErr = execenv.ErrConflict
 			return nil
 		}
-		if err := j.observeCaptured(); err != nil {
+		if err := j.catchUp(); err != nil {
 			return err
 		}
 		touched := false
@@ -248,23 +248,62 @@ func (j *Journal) Observe(ctx context.Context, fence execenv.ProjectionFence, af
 	if !j.state.Initialized() {
 		return execenv.ObservationPage{}, execenv.ErrConflict
 	}
-	// With a watcher, a workspace nothing has touched is not walked at all;
-	// the periodic walk catches what no event reports (writes through mmap).
-	// The workload keeps running: a capture never freezes it. One that ran
-	// into a change still under way is taken again on the next Observe.
-	if j.unsettled || j.watcher == nil || j.watcher.Changed() || time.Since(j.walked) >= WalkInterval {
-		if err := j.observeCaptured(); err != nil {
-			return execenv.ObservationPage{}, err
-		}
-		j.walked = time.Now()
+	// With a watcher, only the paths it names are read again, and a
+	// workspace nothing has touched is not read at all. A whole walk runs
+	// when the watcher cannot name what changed, when the last capture met
+	// a change still under way, when the ignore file changed, and at least
+	// every WalkInterval, for what no event reports (writes through mmap).
+	// The workload keeps running: a capture never freezes it. Every dirty
+	// path is hashed now, so each Observe reports everything changed before
+	// it was called.
+	if err := j.catchUp(); err != nil {
+		return execenv.ObservationPage{}, err
 	}
 	return j.log.Page(after, limit)
 }
 
-// Watcher reports whether anything under the workspace may have changed
-// since it was last asked. Overflowing its queue counts as a change.
+// catchUp captures what changed since the last capture: the paths the
+// watcher names, or the whole workspace when it cannot say.
+func (j *Journal) catchUp() error {
+	whole := j.unsettled || j.watcher == nil || time.Since(j.walked) >= WalkInterval
+	var dirty []string
+	if j.watcher != nil {
+		var all bool
+		dirty, all = j.watcher.Take()
+		whole = whole || all || j.ignoreChanged(dirty)
+	}
+	if !whole && len(dirty) == 0 {
+		return nil
+	}
+	if err := j.observeCaptured(dirty, whole); err != nil {
+		return err
+	}
+	if whole {
+		j.walked = time.Now()
+	}
+	return nil
+}
+
+// ignoreChanged reports whether paths include the ignore file, whose
+// change can admit or leave out any path.
+func (j *Journal) ignoreChanged(paths []string) bool {
+	rules := j.state.Ignore()
+	if rules == nil {
+		return false
+	}
+	for _, p := range paths {
+		if p == rules.File() {
+			return true
+		}
+	}
+	return false
+}
+
+// Watcher names the paths under the workspace that changed since it was
+// last asked, relative to it. all is set when it cannot say which, as after
+// its queue overflowed.
 type Watcher interface {
-	Changed() bool
+	Take() (paths []string, all bool)
 }
 
 // WalkInterval is the longest an Observe trusts the watcher without walking
@@ -274,8 +313,17 @@ const WalkInterval = 30 * time.Second
 // Watch makes Observe capture only when w reports a change, or the walk
 // interval has passed.
 func (j *Journal) Watch(w Watcher) { j.watcher = w }
-func (j *Journal) observeCaptured() error {
-	next, err := guesttree.Capture(j.home, j.snapshot, j.observePolicy())
+
+// observeCaptured captures the workspace, walking it whole or reading only
+// the dirty paths, and logs what changed since the last capture.
+func (j *Journal) observeCaptured(dirty []string, whole bool) error {
+	var next *guesttree.Snapshot
+	var err error
+	if whole {
+		next, err = guesttree.Capture(j.home, j.snapshot, j.observePolicy())
+	} else {
+		next, err = guesttree.CaptureDirty(j.home, j.snapshot, j.observePolicy(), dirty)
+	}
 	if err != nil {
 		j.log.Lagged()
 		return err
@@ -332,7 +380,23 @@ func (j *Journal) captureProjection(mutations []tree.Mutation) error {
 	if j.state.Ignore() != nil {
 		observe = func(name string, _, held bool) bool { return held || j.state.Holds(name) }
 	}
-	next, err := guesttree.Capture(j.home, j.snapshot, observe)
+	// A commit changed only its mutations' paths: those are read again.
+	// Initialization (nil) wrote the whole tree.
+	var next *guesttree.Snapshot
+	var err error
+	if mutations == nil {
+		next, err = guesttree.Capture(j.home, j.snapshot, observe)
+	} else {
+		roots := make([]string, 0, 2*len(mutations))
+		for _, m := range mutations {
+			for _, root := range []string{m.Path, m.From} {
+				if root != "" {
+					roots = append(roots, root)
+				}
+			}
+		}
+		next, err = guesttree.CaptureDirty(j.home, j.snapshot, observe, roots)
+	}
 	if err != nil {
 		return err
 	}

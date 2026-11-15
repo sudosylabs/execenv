@@ -13,6 +13,8 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
+	"strings"
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/internal/content"
@@ -103,132 +105,243 @@ func (s *Snapshot) node(name string) (Node, bool) {
 	return node, ok
 }
 
-// Capture neither closes nor mutates previous. Keep previous's descriptors
-// open until this call succeeds and the observation transaction is retained.
+// Capture walks the whole tree. It neither closes nor mutates previous.
 // Failure is a typed resynchronization error, never a plausible empty tree.
-// observe leaves ignored paths out; see Observe.
-// Only new or changed files are hashed; nothing is copied.
-func Capture(home string, previous *Snapshot, observe Observe) (result *Snapshot, err error) {
+// observe leaves ignored paths out; see Observe. Only new or changed files
+// are hashed; nothing is copied.
+func Capture(home string, previous *Snapshot, observe Observe) (*Snapshot, error) {
+	c, err := newCapturer(home, previous, observe, map[string]Node{})
+	if err != nil {
+		return nil, err
+	}
+	defer c.root.Close()
+	if err := c.visit("."); err != nil {
+		return nil, err
+	}
+	return c.result, nil
+}
+
+// CaptureDirty is Capture for a tree that changed only at paths: it starts
+// from previous and reads again just those paths and what is under them,
+// so its cost is the change's, not the tree's. A path whose parent previous
+// does not hold, or "." itself, is a whole walk.
+func CaptureDirty(home string, previous *Snapshot, observe Observe, paths []string) (*Snapshot, error) {
+	if previous == nil {
+		return Capture(home, previous, observe)
+	}
+	roots, whole := dirtyRoots(paths)
+	if whole {
+		return Capture(home, previous, observe)
+	}
+	nodes := make(map[string]Node, len(previous.Nodes))
+	for name, node := range previous.Nodes {
+		if !underAny(name, roots) {
+			nodes[name] = node
+		}
+	}
+	for _, r := range roots {
+		if parent := path.Dir(r); parent != "." {
+			if node, ok := nodes[parent]; !ok || node.Kind != execenv.ProjectionDirectory {
+				// A path under a directory it does not hold: the events
+				// that would explain it are not here.
+				return Capture(home, previous, observe)
+			}
+		}
+	}
+	c, err := newCapturer(home, previous, observe, nodes)
+	if err != nil {
+		return nil, err
+	}
+	defer c.root.Close()
+	for _, r := range roots {
+		info, err := c.root.Lstat(r)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue // gone: previous's nodes under it are already dropped
+		}
+		if err != nil {
+			return nil, execenv.ErrLagged
+		}
+		if c.observe != nil {
+			_, held := previous.node(r)
+			if !c.observe(r, info.IsDir(), held) && !moved(home, c.root, r, c.identities, c.observe) {
+				continue
+			}
+		}
+		if err := c.entry(r); err != nil {
+			return nil, err
+		}
+	}
+	return c.result, nil
+}
+
+// dirtyRoots is the smallest set of paths that covers every dirty one,
+// sorted; whole is set when one of them is the tree itself.
+func dirtyRoots(paths []string) (roots []string, whole bool) {
+	clean := make([]string, 0, len(paths))
+	for _, p := range paths {
+		p = path.Clean(p)
+		if p == "." || p == "" || p == "/" {
+			return nil, true
+		}
+		if execenv.ValidatePath(p) != nil {
+			return nil, true
+		}
+		clean = append(clean, p)
+	}
+	slices.Sort(clean)
+	for _, p := range slices.Compact(clean) {
+		if !underAny(p, roots) {
+			roots = append(roots, p)
+		}
+	}
+	return roots, false
+}
+
+// underAny reports whether name is one of roots or below one.
+func underAny(name string, roots []string) bool {
+	for _, r := range roots {
+		if name == r || strings.HasPrefix(name, r+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// capturer is one capture under way. result starts with the nodes it
+// keeps from previous; visit and entry add the ones it reads.
+type capturer struct {
+	home          string
+	root          *os.Root
+	previous      *Snapshot
+	observe       Observe
+	identities    map[physicalKey]string
+	previousByKey map[physicalKey]Node
+	seen          map[physicalKey]string
+	result        *Snapshot
+}
+
+func newCapturer(home string, previous *Snapshot, observe Observe, kept map[string]Node) (*capturer, error) {
 	root, err := os.OpenRoot(home)
 	if err != nil {
 		return nil, execenv.ErrLagged
 	}
-	defer root.Close()
-	result = &Snapshot{Nodes: make(map[string]Node)}
-	defer func() {
-		if err != nil {
-			result.Close()
-			result = nil
-		}
-	}()
-	identities := make(map[physicalKey]string)
+	c := &capturer{
+		home: home, root: root, previous: previous, observe: observe,
+		identities:    make(map[physicalKey]string),
+		previousByKey: make(map[physicalKey]Node),
+		seen:          make(map[physicalKey]string, len(kept)),
+		result:        &Snapshot{Nodes: kept},
+	}
 	if previous != nil {
 		for _, node := range previous.Nodes {
-			identities[node.key] = node.Identity
+			c.identities[node.key] = node.Identity
+			c.previousByKey[node.key] = node
 		}
 	}
-	seen := make(map[physicalKey]string)
-	previousByKey := make(map[physicalKey]Node)
-	if previous != nil {
-		for _, node := range previous.Nodes {
-			previousByKey[node.key] = node
-		}
+	for name, node := range kept {
+		c.seen[node.key] = name
 	}
-	var visit func(string) error
-	visit = func(directory string) error {
-		parent, err := root.Open(directory)
-		if errors.Is(err, fs.ErrNotExist) {
-			// Moved or removed since it was listed.
-			result.Unsettled = true
-			return nil
-		}
-		if err != nil {
-			return execenv.ErrLagged
-		}
-		entries, err := admitted(home, root, parent, directory, previous, identities, observe)
-		_ = parent.Close()
-		if err != nil {
-			return err
-		}
-		for _, entry := range entries {
-			name := path.Join(directory, entry.Name())
-			if execenv.ValidatePath(name) != nil {
-				return execenv.ErrLagged
-			}
-			info, err := root.Lstat(name)
-			if errors.Is(err, fs.ErrNotExist) {
-				result.Unsettled = true
-				continue
-			}
-			if err != nil {
-				return execenv.ErrLagged
-			}
-			kind := execenv.ProjectionFile
-			if info.IsDir() {
-				kind = execenv.ProjectionDirectory
-			} else if !info.Mode().IsRegular() {
-				return execenv.ErrLagged
-			}
-			key, err := physicalIdentity(filepath.Join(home, filepath.FromSlash(name)), info)
-			if err != nil {
-				// A node it cannot name is unsupported (a hard link) unless
-				// it is simply gone.
-				if _, lerr := root.Lstat(name); !errors.Is(lerr, fs.ErrNotExist) {
-					return execenv.ErrLagged
-				}
-			}
-			if err == nil && seen[key] != "" {
-				// One file under two names is a hard link, which a tree
-				// cannot hold, unless the first name is gone: then a move
-				// ran while the walk did.
-				if first, ferr := root.Lstat(seen[key]); ferr == nil && os.SameFile(first, info) {
-					return execenv.ErrLagged
-				}
-			}
-			if err != nil || seen[key] != "" {
-				// Gone, or moved while the walk ran: the next capture sees
-				// where it went.
-				result.Unsettled = true
-				continue
-			}
-			identity := identities[key]
-			if identity == "" {
-				identity = rand.Text()
-			}
-			node := Node{Identity: identity, Kind: kind, key: key}
-			result.Nodes[name] = node
-			seen[key] = name
-			if kind == execenv.ProjectionFile {
-				st := stampOf(info)
-				if old, ok := previousByKey[key]; ok && old.Kind == kind && old.stamp == st && old.Content.Digest != "" {
-					node.Content, node.stamp = old.Content, st
-					result.Nodes[name] = node
-					continue
-				}
-				blob, settled, err := hashFile(root, name, info, st)
-				if errors.Is(err, fs.ErrNotExist) {
-					delete(result.Nodes, name)
-					result.Unsettled = true
-					continue
-				}
-				if err != nil {
-					return err
-				}
-				// A file written while it was hashed keeps the stamp it was
-				// listed with, so the next capture hashes it again.
-				node.Content, node.stamp = blob, st
-				result.Nodes[name] = node
-				if !settled {
-					result.Unsettled = true
-				}
-			} else if err := visit(name); err != nil {
-				return err
-			}
-		}
+	return c, nil
+}
+
+// visit reads one directory's admitted entries.
+func (c *capturer) visit(directory string) error {
+	parent, err := c.root.Open(directory)
+	if errors.Is(err, fs.ErrNotExist) {
+		// Moved or removed since it was listed.
+		c.result.Unsettled = true
 		return nil
 	}
-	err = visit(".")
-	return result, err
+	if err != nil {
+		return execenv.ErrLagged
+	}
+	entries, err := admitted(c.home, c.root, parent, directory, c.previous, c.identities, c.observe)
+	_ = parent.Close()
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := c.entry(path.Join(directory, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// entry reads one admitted path: a file is hashed unless its stamp is as
+// previous had it, a directory is visited.
+func (c *capturer) entry(name string) error {
+	if execenv.ValidatePath(name) != nil {
+		return execenv.ErrLagged
+	}
+	info, err := c.root.Lstat(name)
+	if errors.Is(err, fs.ErrNotExist) {
+		c.result.Unsettled = true
+		return nil
+	}
+	if err != nil {
+		return execenv.ErrLagged
+	}
+	kind := execenv.ProjectionFile
+	if info.IsDir() {
+		kind = execenv.ProjectionDirectory
+	} else if !info.Mode().IsRegular() {
+		return execenv.ErrLagged
+	}
+	key, err := physicalIdentity(filepath.Join(c.home, filepath.FromSlash(name)), info)
+	if err != nil {
+		// A node it cannot name is unsupported (a hard link) unless it is
+		// simply gone.
+		if _, lerr := c.root.Lstat(name); !errors.Is(lerr, fs.ErrNotExist) {
+			return execenv.ErrLagged
+		}
+	}
+	if err == nil && c.seen[key] != "" {
+		// One file under two names is a hard link, which a tree cannot
+		// hold, unless the first name is gone: then a move ran while the
+		// walk did, or its old name's change is still to come.
+		if first, ferr := c.root.Lstat(c.seen[key]); ferr == nil && os.SameFile(first, info) {
+			return execenv.ErrLagged
+		}
+	}
+	if err != nil || c.seen[key] != "" {
+		c.result.Unsettled = true
+		return nil
+	}
+	identity := c.identities[key]
+	if identity == "" {
+		identity = rand.Text()
+	}
+	node := Node{Identity: identity, Kind: kind, key: key}
+	c.result.Nodes[name] = node
+	c.seen[key] = name
+	if kind == execenv.ProjectionDirectory {
+		return c.visit(name)
+	}
+	st := stampOf(info)
+	if old, ok := c.previousByKey[key]; ok && old.Kind == kind && old.stamp == st && old.Content.Digest != "" {
+		node.Content, node.stamp = old.Content, st
+		c.result.Nodes[name] = node
+		return nil
+	}
+	blob, settled, err := hashFile(c.root, name, info, st)
+	if errors.Is(err, fs.ErrNotExist) {
+		delete(c.result.Nodes, name)
+		delete(c.seen, key)
+		c.result.Unsettled = true
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	// A file written while it was hashed keeps the stamp it was listed with,
+	// so the next capture hashes it again.
+	node.Content, node.stamp = blob, st
+	c.result.Nodes[name] = node
+	if !settled {
+		c.result.Unsettled = true
+	}
+	return nil
 }
 
 // hashFile reads one file once to hash it. settled is false when the file

@@ -10,5 +10,5 @@ type Watcher struct{}
 // New fails off Linux.
 func New(string) (*Watcher, error) { return nil, execenv.ErrUnavailable }
 
-func (*Watcher) Changed() bool { return true }
-func (*Watcher) Close() error  { return nil }
+func (*Watcher) Take() ([]string, bool) { return nil, true }
+func (*Watcher) Close() error           { return nil }

@@ -20,33 +20,34 @@ func event(mask uint64, info []byte) []byte {
 	return b
 }
 
-// An overflow, or a record the watcher cannot place, counts as a change.
+// An overflow, or a record the watcher cannot place, means everything may
+// have changed.
 func TestParseErrsTowardsWalking(t *testing.T) {
-	w := &Watcher{known: map[string]bool{}}
+	w := &Watcher{queue: -1, dirty: map[string]struct{}{}}
 	w.parse(event(unix.FAN_Q_OVERFLOW, nil))
-	if !w.Changed() {
+	if _, all := w.Take(); !all {
 		t.Fatal("overflow not reported")
 	}
 	w.parse(event(unix.FAN_MODIFY, []byte{unix.FAN_EVENT_INFO_TYPE_DFID_NAME, 0, 2, 0}))
-	if !w.Changed() {
+	if _, all := w.Take(); !all {
 		t.Fatal("unplaceable record not reported")
 	}
 	w.parse([]byte{1, 2, 3})
-	if w.Changed() {
+	if paths, all := w.Take(); all || len(paths) != 0 {
 		t.Fatal("a short read invented a change")
 	}
 }
 
-// Live: needs root and fanotify. A write in the workspace is seen; one
-// outside it on the same filesystem is not.
-func TestWatcherSeesWorkspaceWrites(t *testing.T) {
+// Live: needs root and fanotify. A change in the workspace is reported by
+// its path, at any depth; one outside it on the same filesystem is not.
+func TestWatcherNamesWorkspaceChanges(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("fanotify filesystem marks need root")
 	}
 	base := t.TempDir()
 	home := filepath.Join(base, "workspace")
 	other := filepath.Join(base, "other")
-	for _, d := range []string{home, other} {
+	for _, d := range []string{home, other, filepath.Join(home, "d")} {
 		if err := os.Mkdir(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -56,23 +57,45 @@ func TestWatcherSeesWorkspaceWrites(t *testing.T) {
 		t.Skipf("fanotify unavailable: %v", err)
 	}
 	defer w.Close()
-	w.Changed()
+	if _, all := w.Take(); !all {
+		t.Fatal("a new watcher must start by asking for a walk")
+	}
 	if err := os.WriteFile(filepath.Join(other, "x"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(200 * time.Millisecond)
-	if w.Changed() {
-		t.Fatal("a write outside the workspace counted")
+	if paths, all := w.Take(); all || len(paths) != 0 {
+		t.Fatalf("a write outside the workspace counted: %v %v", paths, all)
 	}
 	if err := os.WriteFile(filepath.Join(home, "y"), []byte("y"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(home, "d", "z"), []byte("z"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(home, "y"), filepath.Join(home, "d", "y2")); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"y": false, "d/z": false, "d/y2": false}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if w.Changed() {
+		paths, all := w.Take()
+		if all {
+			t.Fatal("named changes reported as everything")
+		}
+		for _, p := range paths {
+			if _, ok := want[p]; ok {
+				want[p] = true
+			}
+		}
+		done := true
+		for _, seen := range want {
+			done = done && seen
+		}
+		if done {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatal("a write in the workspace was not seen")
+	t.Fatalf("changes not all named: %v", want)
 }

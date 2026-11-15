@@ -606,14 +606,19 @@ is a replay.
 The guest captures changes while the workload runs: `Observe` never freezes
 it. Identities come from the filesystem itself (file handles that carry the
 inode generation), not content hashes, so nothing is held open between
-captures and a tree of any size costs no descriptors. A capture hashes only
-files whose size or times changed. A change still under way when the walk
-passes it (a file being written, a directory being moved or removed) is
-reported as far as it had got, and the next `Observe` walks again to report
-the rest; a body read after it moved on is `ErrStale`. One fanotify mark on
-the workspace's filesystem tells the agent when anything under the workspace
-changed; an `Observe` with nothing new does not walk the workspace, and a
-walk at least every 30 seconds catches what no event reports. Projection
+captures and a tree of any size costs no descriptors. One fanotify mark on
+the workspace's filesystem names every path that changes, at any depth;
+`Observe` reads again only those paths and what is under them, hashing only
+files whose size or times changed, so its cost is the change's, not the
+tree's, and an `Observe` with nothing new reads nothing. Every path that
+changed before `Observe` was called is in what it reports. The whole
+workspace is walked instead when the watcher cannot name what changed (its
+queue overflowed), after the ignore file changed, and at least every 30
+seconds, for writes through `mmap` that no event reports. A change still
+under way when a capture passes it (a file being written, a directory being
+moved or removed) is reported as far as it had got, and the next `Observe`
+walks again to report the rest; a body read after it moved on is
+`ErrStale`. Projection
 calls (initialize and apply) still stop the workload behind a
 kernel-acknowledged barrier while they change the workspace. The agent's
 `-contain-workload` option requires a dedicated Linux guest with a usable
