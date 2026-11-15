@@ -75,10 +75,13 @@ func TestRestartKeepsASuspendedGrant(t *testing.T) {
 	fence := runningFence(t, env)
 	execenvtest.StartShell(t, env, fence, "sh").Attachment().Close()
 	deadline := time.Now().Add(5 * time.Second)
-	// A restart reads the state file, so wait for that to say suspended.
+	// A restart reads the state file, so wait for that to say suspended,
+	// and for the old host to have stopped the machine: a crash would end
+	// the suspend there, but this host carries on.
 	for {
 		states, _, _ := loadStates(h.cfg.WorkDir)
-		if states["paused"].Suspended {
+		report, _ := h.Ready(t.Context())
+		if states["paused"].Suspended && report.MemoryBytes.Reserved == 0 {
 			break
 		}
 		if time.Now().After(deadline) {

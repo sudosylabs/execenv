@@ -8,7 +8,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -79,7 +78,8 @@ func TestBootstrapWritesConfigWithoutLeakingSecrets(t *testing.T) {
 	if !strings.Contains(stdout, "hash=none") {
 		t.Fatalf("stdout claimed a hash: %q", stdout)
 	}
-	if cfg.Adapter != "isolated" || cfg.Capacity.CPUMillis != int64(runtime.NumCPU())*1000 || cfg.Capacity.MemoryBytes <= 0 || cfg.Capacity.DiskBytes <= 0 {
+	// The operator's capacity is written as given.
+	if cfg.Adapter != "isolated" || cfg.Capacity != opts.Capacity {
 		t.Fatalf("config = %+v", cfg)
 	}
 	if len(cfg.Images) != 0 {
