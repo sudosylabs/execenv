@@ -156,7 +156,7 @@ type Window struct {
 // Host occupies grants on exactly one machine.
 //
 // A grant's environment can end without a revoke: its machine stops or its
-// guest crashes. The host notices on its own, releases the grant's slot and
+// guest crashes. The host notices on its own, releases the grant's
 // resources, and fails every later call on that occupancy, and Ensure of the
 // same id, with ErrLost until the caller calls Revoke for it.
 type Host interface {

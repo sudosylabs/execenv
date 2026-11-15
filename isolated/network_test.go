@@ -13,16 +13,25 @@ import (
 	"github.com/sudosylabs/execenv"
 )
 
+func allows(allow []net.IPNet, ip net.IP) bool {
+	for _, n := range allow {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestParseAllowAcceptsIPv4Only(t *testing.T) {
 	t.Parallel()
 	got, err := parseAllow([]string{"10.0.0.1", "192.168.0.0/16"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 || !containsIP(got, net.ParseIP("10.0.0.1")) || !containsIP(got, net.ParseIP("192.168.1.9")) {
+	if len(got) != 2 || !allows(got, net.ParseIP("10.0.0.1")) || !allows(got, net.ParseIP("192.168.1.9")) {
 		t.Fatalf("allow = %v", got)
 	}
-	if containsIP(got, net.ParseIP("11.0.0.1")) {
+	if allows(got, net.ParseIP("11.0.0.1")) {
 		t.Fatal("11.0.0.1 should be denied")
 	}
 	if _, err := parseAllow([]string{"example.com"}); err == nil {

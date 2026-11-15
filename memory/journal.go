@@ -28,7 +28,7 @@ type dirty struct{ changed atomic.Bool }
 // Take reports a touched workspace as changed everywhere: the in-memory
 // host walks it whole.
 func (d *dirty) Take() ([]string, bool) { return nil, d.changed.Swap(false) }
-func (d *dirty) touch()        { d.changed.Store(true) }
+func (d *dirty) touch()                 { d.changed.Store(true) }
 
 func (b lockBarrier) Stopped(ctx context.Context, fn func() error) error {
 	if err := ctx.Err(); err != nil {

@@ -5,15 +5,16 @@
 // proto/execenv/guest/v1, spoken with Connect over HTTP/2 with prior
 // knowledge. The helper serves it; Client is the host's end. The schema is
 // internal and versioned with the helper baked into each image: Verify
-// refuses a helper on another protocol. The link is never redialled, so its
-// end is the helper session's end.
+// refuses a helper on another protocol. The helper outlives any one link:
+// a host that restarts dials again, its new link takes over from the old,
+// and it finds the workload, its processes, their recent output and the
+// process log as they were.
 //
-// The host never implements a fake PTY. Unit tests run this package over an
-// in-memory pipe; a real machine uses the same protocol on the guest link.
-//
-// Closing the PTY ends the guest shell. The host keeps terminal sessions
-// alive across client detaches above this package and closes the PTY only
-// when it hangs a session up.
+// Unit tests run this package over an in-memory pipe; a real machine uses
+// the same protocol on the guest link. The helper runs each process the
+// host starts, with or without a terminal, keeps each output stream's
+// recent bytes by offset, and a headless terminal per terminal process for
+// its screen.
 //
 // The helper records the contained workload's processes from the guest
 // kernel's process events, outside the workload, and streams them to the

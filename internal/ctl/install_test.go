@@ -309,7 +309,11 @@ func TestInstallRejectsHashMismatch(t *testing.T) {
 
 func TestRepoCatalogHasFixtureRecipe(t *testing.T) {
 	t.Parallel()
-	idx, err := loadIndexFile(filepath.Join("..", "..", "catalog", "index.json"))
+	raw, err := os.ReadFile(filepath.Join("..", "..", "catalog", "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx, err := parseIndex(raw)
 	if err != nil {
 		t.Fatal(err)
 	}

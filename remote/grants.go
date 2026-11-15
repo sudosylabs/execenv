@@ -192,7 +192,9 @@ func (w *grantWatch) Next(ctx context.Context) (execenv.GrantInfo, error) {
 
 func (w *grantWatch) Close() error { w.r.close(); return nil }
 
-type hostWatch struct{ r *follower[execenvv1.HostEvent] }
+type hostWatch struct {
+	r *follower[execenvv1.HostEvent]
+}
 
 func (w *hostWatch) Next(ctx context.Context) (execenv.HostEvent, error) {
 	m, err := w.r.next(ctx)

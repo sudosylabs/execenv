@@ -46,7 +46,7 @@ network proofs are opt-in and need a Linux isolation host.
 ## Command Interface
 
 ```bash
-make check          # test, race, and vet
+make check          # generated code, test, race, and vet
 make build          # execenv and execenvctl, stamped when HEAD is a git tag
 make isolation      # opt-in; needs isolation hardware
 make certify        # opt-in; needs fixture disks
@@ -59,12 +59,14 @@ bake, Docker, or isolation hardware to that gate.
 
 | Path | Purpose |
 |------|---------|
-| `.` | Occupancy contract: `Host`, `Env`, `Terminal`, tree types, errors |
-| `remote/` | Shared wire: `remote.New` and `remote.Serve` |
+| `.` | Contract: `Host`, `Env`, processes, files, the journal, grants, errors |
+| `proto/` | The wire schema; `internal/gen` is generated from it by `make generate` |
+| `remote/` | The wire client and server: `remote.New` and `remote.Serve` |
 | `memory/` | In-process adapter for tests and local development |
 | `isolated/` | Production isolation adapter |
 | `daemon/` | Host process: load configuration and serve the remote contract |
-| `agent/` | Guest helper for home directory and login shell |
+| `agent/` | Guest helper: processes, the workspace journal and files, the process log |
+| `archive/` | The archive format of file import and export, and seeds |
 | `cmd/execenv/` | Daemon and guest agent binary |
 | `cmd/execenvctl/` | Operator manager |
 | `catalog/` | Image recipes published by CI bake |
@@ -101,7 +103,8 @@ From the repository root:
 make check
 ```
 
-That is `go test ./...`, `go test -race ./...`, and `go vet ./...`.
+That is the generated-code check (`internal/gen` matches `proto/`), `go
+test ./...`, `go test -race ./...`, and `go vet ./...`.
 
 Bug fixes need a regression test at the lowest layer that demonstrates the
 failure. Adapter changes should keep the conformance suite green
@@ -116,7 +119,7 @@ network proofs are allowed to stay opt-in.
 Use concise messages that describe the outcome, for example:
 
 ```text
-Refuse a remote dial when Release stamps differ.
+Resume a broken file write from what the host holds.
 ```
 
 Create signed commits when your repository configuration requires signing. Do

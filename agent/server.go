@@ -47,7 +47,7 @@ type Config struct {
 	Content string
 	// ContainWorkload requires a dedicated guest with a usable kernel write
 	// barrier and launches every workload process unprivileged. Unsupported
-	// configurations fail before serving or accepting a terminal. It is how
+	// configurations fail before serving or starting a process. It is how
 	// a real guest serves the journal.
 	ContainWorkload bool
 	// Barrier serves the journal without a contained workload. It must stop

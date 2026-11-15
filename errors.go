@@ -10,7 +10,8 @@ var (
 	ErrInvalid = errors.New("execenv: invalid")
 	// ErrUnknownImage indicates the host does not have the requested image.
 	ErrUnknownImage = errors.New("execenv: unknown image")
-	// ErrCapacity indicates the host has no remaining grant slots.
+	// ErrCapacity indicates the host has no room for the grant's resources.
+	// A *CapacityError says which resource was short.
 	ErrCapacity = errors.New("execenv: no capacity")
 	// ErrDraining indicates the host's operator is draining it before a
 	// restart: it serves the grants it holds but occupies no new ones.
@@ -18,7 +19,10 @@ var (
 	// placing a new grant chooses another host, as for ErrCapacity, until
 	// Ready reports the host Usable again.
 	ErrDraining = errors.New("execenv: host draining")
-	// ErrConflict indicates a live grant was ensured with a different image or network.
+	// ErrConflict indicates a call that disagrees with the grant's current
+	// state: a stale fence, a live grant ensured with another spec, a file
+	// that is not the expected one, or an input or transfer offset that is
+	// not where the host stands.
 	ErrConflict = errors.New("execenv: grant conflict")
 	// ErrUnavailable indicates the host cannot occupy grants.
 	ErrUnavailable = errors.New("execenv: host unavailable")
@@ -28,8 +32,7 @@ var (
 	ErrRevoked = errors.New("execenv: grant revoked")
 	// ErrLost indicates the grant's environment ended without a revoke:
 	// its machine stopped, its guest crashed, or the host lost the guest
-	// link for good. The host has already released the grant's slot and
-	// every resource it held, and every call on that occupancy fails with
+	// link for good. The host has already released every resource it held, and every call on that occupancy fails with
 	// ErrLost. Ensure of the same id also fails with ErrLost until the
 	// caller acknowledges the loss with Revoke; after that Ensure occupies
 	// the id afresh under a new Epoch. The caller rebuilds from its own
@@ -39,8 +42,8 @@ var (
 	ErrBusy = errors.New("execenv: too many processes")
 	// ErrClosed indicates the process, attachment or reader has ended.
 	ErrClosed = errors.New("execenv: closed")
-	// ErrNotFound indicates a path does not exist in the projection, or a
-	// terminal session to resume is gone.
+	// ErrNotFound indicates a grant, path, process, seed or transfer that
+	// does not exist.
 	ErrNotFound = errors.New("execenv: not found")
 	// ErrLagged indicates the host can no longer report guest changes from
 	// the requested position, or could not capture one. The caller must
@@ -51,11 +54,12 @@ var (
 	// its content can no longer be read as observed. A later observation of
 	// the same entry reports the change: skip this one and read on.
 	ErrStale = errors.New("execenv: observation content changed")
-	// ErrTooLarge indicates a file or tree exceeds the documented limits.
+	// ErrTooLarge indicates metadata over its documented bound, or too many
+	// content handles.
 	ErrTooLarge = errors.New("execenv: too large")
 	// ErrConnection indicates the remote session was lost. The host treats
-	// it as a detach: the grant and its terminal session stay, and a new
-	// connection can Resume the terminal.
+	// it as a detach: the grant and its processes stay, and a new connection
+	// attaches again from the output offsets it had.
 	ErrConnection = errors.New("execenv: connection failed")
 	// ErrNetwork indicates the grant requested a network the host does not
 	// offer. The caller cannot supply destinations; only the host allowlist

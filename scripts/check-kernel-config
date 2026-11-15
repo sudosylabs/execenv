@@ -53,7 +53,7 @@ require TMPFS "guest init mounts /run"
 require VSOCKETS "host link"
 require VIRTIO_VSOCKETS "host link"
 require CGROUPS "workload hierarchy for freeze and containment"
-require UNIX98_PTYS "one terminal per grant"
+require UNIX98_PTYS "terminal processes"
 # Process log: the agent reads the kernel process events connector and
 # refuses to serve without it.
 require CONNECTOR "process log"

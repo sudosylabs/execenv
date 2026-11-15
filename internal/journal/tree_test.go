@@ -15,7 +15,7 @@ func TestApplyHomeFailureRestoresHome(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
 	store := testStore(t)
-	if err := rewriteHome(store, home, tree.Snapshot{"blocked": {Kind: tree.KindFile, Version: "v1", Content: put(t, store, "old")}}); err != nil {
+	if err := os.WriteFile(filepath.Join(home, "blocked"), []byte("old"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	err := applyHome(store, home, tree.Batch{Mutations: []tree.Mutation{
@@ -35,7 +35,7 @@ func TestApplyHomeReplaceDoesNotLeaveStash(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
 	store := testStore(t)
-	if err := rewriteHome(store, home, tree.Snapshot{"a.txt": {Kind: tree.KindFile, Version: "v1", Content: put(t, store, "one")}}); err != nil {
+	if err := os.WriteFile(filepath.Join(home, "a.txt"), []byte("one"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(home, "guest.txt"), []byte("hi"), 0o644); err != nil {

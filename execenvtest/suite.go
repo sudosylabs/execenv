@@ -1,7 +1,7 @@
 // Package execenvtest contains a reusable Host conformance suite.
 //
-// Run covers occupancy, terminal sessions, fenced control, and the journal
-// projection. Guest-originated observations need a real or simulated guest:
+// Run covers occupancy, processes and their screens, fenced control,
+// resources, the journal projection, seeds, files and the grant watches. Guest-originated observations need a real or simulated guest:
 // RunIgnore covers IgnoreRules given a Guest that acts inside the
 // workspace, and the rest is covered by each adapter's own tests. The
 // process log needs a workload: RunProcesses covers it given a Workload,

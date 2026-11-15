@@ -3,7 +3,6 @@ package ctl
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/isolated"
@@ -33,14 +32,6 @@ func parseIndex(raw []byte) (Index, error) {
 		idx.Kernel = "vmlinux"
 	}
 	return idx, nil
-}
-
-func loadIndexFile(path string) (Index, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return Index{}, wrap("catalog", err)
-	}
-	return parseIndex(raw)
 }
 
 func (idx Index) lookup(id string) (IndexImage, error) {
