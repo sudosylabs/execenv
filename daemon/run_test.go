@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/execenvtest"
 	"github.com/sudosylabs/execenv/memory"
 	"github.com/sudosylabs/execenv/remote"
 )
@@ -147,11 +148,7 @@ func TestOrdinaryLogsOmitSecrets(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	term, err := env.Attach(t.Context(), execenv.AttachRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = term.Close() })
+	term := execenvtest.OpenShell(t, env, fence, "sh")
 	if _, err := term.Write([]byte(pty)); err != nil {
 		t.Fatal(err)
 	}

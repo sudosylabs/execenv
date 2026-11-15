@@ -17,6 +17,7 @@ import (
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/daemon"
+	"github.com/sudosylabs/execenv/execenvtest"
 	"github.com/sudosylabs/execenv/internal/ctl"
 	"github.com/sudosylabs/execenv/isolated"
 	"github.com/sudosylabs/execenv/remote"
@@ -25,8 +26,8 @@ import (
 const harvestBody = "from-host\n"
 
 // TestCertifyRemoteHarvestsGuestFile is the certification path: a
-// bootstrapped host process, the client is remote.New, Attach is a guest
-// shell, and a guest-created file is harvested as an observation with its
+// bootstrapped host process, the client is remote.New, the process is a
+// guest login shell, and a guest-created file is harvested as an observation with its
 // captured content. Not an echo PTY.
 func TestCertifyRemoteHarvestsGuestFile(t *testing.T) {
 	client := startCertifyHost(t)
@@ -49,11 +50,7 @@ func TestCertifyRemoteHarvestsGuestFile(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	term, err := env.Attach(t.Context(), execenv.AttachRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = term.Close() })
+	term := execenvtest.OpenShell(t, env, fence, "sh")
 	go func() { _, _ = io.Copy(io.Discard, term) }()
 	if _, err := term.Write([]byte("cat hello.txt > seen.txt\n")); err != nil {
 		t.Fatal(err)

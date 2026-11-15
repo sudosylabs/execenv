@@ -27,7 +27,6 @@ var sentinels = []struct {
 	{execenv.ErrFrozen, "frozen", connect.CodeFailedPrecondition},
 	{execenv.ErrRevoked, "revoked", connect.CodeFailedPrecondition},
 	{execenv.ErrBusy, "busy", connect.CodeResourceExhausted},
-	{execenv.ErrSuperseded, "superseded", connect.CodeAborted},
 	{execenv.ErrClosed, "closed", connect.CodeFailedPrecondition},
 	{execenv.ErrNotFound, "not_found", connect.CodeNotFound},
 	{execenv.ErrLagged, "lagged", connect.CodeFailedPrecondition},

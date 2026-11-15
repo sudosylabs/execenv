@@ -235,9 +235,7 @@ func TestInitializeProjectionWritesWorkspaceMount(t *testing.T) {
 func TestConformance(t *testing.T) {
 	execenvtest.Run(t, func(t *testing.T, cfg execenvtest.Config) execenv.Host {
 		t.Helper()
-		host := testHost(t, func() error { return nil }, &recordingLauncher{})
-		host.cfg.TerminalGrace = cfg.TerminalGrace
-		return host
+		return testHost(t, func() error { return nil }, &recordingLauncher{})
 	})
 }
 
@@ -252,12 +250,7 @@ func TestTouchInPtyBecomesObservation(t *testing.T) {
 	if _, err := env.InitializeProjection(t.Context(), execenv.ProjectionInitialization{Fence: fence, MutationID: "init"}); err != nil {
 		t.Fatal(err)
 	}
-	term, err := env.Attach(t.Context(), execenv.AttachRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = term.Close() })
-	if _, err := term.Write([]byte("touch seen.txt\n")); err != nil {
+	if err := execenvtest.StartShell(t, env, fence, "sh").Type("touch seen.txt"); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)

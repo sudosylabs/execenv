@@ -167,7 +167,6 @@ type Env interface {
 	// Epoch is the opaque identity of this occupancy. It is never reused
 	// after the grant is revoked or reconstructed.
 	Epoch() string
-	Attach(ctx context.Context, request AttachRequest) (Terminal, error)
 	Control(ctx context.Context, request ControlRequest) (ControlReceipt, error)
 	ControlStatus(ctx context.Context) (ControlReceipt, error)
 	UploadProjectionContent(ctx context.Context, fence ProjectionFence, body io.Reader) (ContentReference, error)
@@ -190,77 +189,5 @@ type Env interface {
 	UpdateLimits(ctx context.Context, fence ProjectionFence, limits Limits) error
 	Revoke(ctx context.Context) error
 	Files
-}
-
-// TerminalID is the opaque identity of one terminal session: one shell and
-// its output history. Every new shell gets a fresh value; it is never reused.
-type TerminalID string
-
-// Terminal session limits shared by every adapter.
-const (
-	// TerminalHistoryBytes is how much of a terminal session's most recent
-	// output the host keeps for replay. Older output is overwritten.
-	TerminalHistoryBytes = 1 << 20
-	// TerminalTailBytes is how much recent output an attach without Resume
-	// replays before live output.
-	TerminalTailBytes = 16 << 10
-	// DefaultTerminalGrace is how long a detached shell keeps running when
-	// the host configures no grace.
-	DefaultTerminalGrace = 60 * time.Second
-)
-
-// TerminalPosition names a byte in one terminal session's output. Offsets
-// are absolute: offset 0 is the shell's first output byte.
-type TerminalPosition struct {
-	Terminal TerminalID
-	// Offset is the next byte the client has not seen.
-	Offset uint64
-}
-
-// AttachRequest asks for the grant's terminal session.
-//
-// A grant has at most one terminal session, and at most one client is
-// attached to it. With no live session, Attach starts a shell and delivers
-// from offset 0. With Resume naming the live session, Attach delivers from
-// Resume.Offset, or from the start of the retained history when that output
-// was overwritten; Start reports which. A Resume naming any other session is
-// ErrNotFound, and an Offset beyond the output produced so far is
-// ErrInvalid. Without Resume, Attach joins a live session, replays its last
-// TerminalTailBytes and forces full-screen programs to redraw. Window
-// applies on every attach.
-type AttachRequest struct {
-	Window Window
-	// Resume continues a session from a known position. Nil attaches to
-	// the live session, or starts one.
-	Resume *TerminalPosition
-	// Takeover replaces a currently attached client instead of returning
-	// ErrBusy. The replaced Terminal's Read and Write return ErrSuperseded.
-	Takeover bool
-}
-
-// Terminal is one client's attachment to a grant's terminal session.
-//
-// Read delivers the session's output from Start onward and returns io.EOF
-// once the shell has exited and its output is drained. The host never
-// blocks the shell on a slow reader: a reader that falls behind the
-// retained history skips ahead to its oldest byte, which Offset makes
-// visible as a jump. Input is accepted only from the attached client.
-type Terminal interface {
-	// ID is the session this attachment belongs to.
-	ID() TerminalID
-	// Start is the absolute offset of the first byte this attachment
-	// delivers. Start greater than a requested Resume.Offset means the
-	// output in between was lost.
-	Start() uint64
-	// Offset is the absolute offset of the next byte Read will return:
-	// Start plus the bytes read, plus any output skipped by falling behind.
-	Offset() uint64
-	Read(p []byte) (int, error)
-	Write(p []byte) (int, error)
-	Resize(ctx context.Context, win Window) error
-	// Close detaches. The shell keeps running for the host's terminal
-	// grace; a later Attach can resume it.
-	Close() error
-	// Hangup ends the shell now. The session is gone.
-	Hangup(ctx context.Context) error
+	Processes
 }

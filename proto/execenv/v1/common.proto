@@ -4,6 +4,11 @@ package execenv.v1;
 
 option go_package = "github.com/sudosylabs/execenv/internal/gen/execenv/v1;execenvv1";
 
+message Window {
+  uint32 cols = 1;
+  uint32 rows = 2;
+}
+
 enum Network {
   NETWORK_UNSPECIFIED = 0;
   NETWORK_NONE = 1;

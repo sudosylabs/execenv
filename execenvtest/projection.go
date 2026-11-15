@@ -34,11 +34,7 @@ func runProjection(t *testing.T, factory Factory) {
 		if err != nil || receipt != replay {
 			t.Fatalf("initialization retry: %+v %v", replay, err)
 		}
-		terminal, err := env.Attach(t.Context(), execenv.AttachRequest{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer terminal.Close()
+		sh := StartShell(t, env, fence, "sh")
 		saved := bytes.Repeat([]byte("saved\n"), 20000)
 		content, err = projected.UploadProjectionContent(t.Context(), fence, bytes.NewReader(saved))
 		if err != nil {
@@ -56,11 +52,11 @@ func runProjection(t *testing.T, factory Factory) {
 		if err != nil || receipt != replay {
 			t.Fatalf("apply retry: %+v %v", replay, err)
 		}
-		if _, err := terminal.Write([]byte("same terminal\n")); err != nil {
-			t.Fatalf("terminal lost on save: %v", err)
+		if err := sh.Type("echo same shell"); err != nil {
+			t.Fatalf("shell lost on save: %v", err)
 		}
-		if _, err := env.Attach(t.Context(), execenv.AttachRequest{}); !errors.Is(err, execenv.ErrBusy) {
-			t.Fatal("save replaced terminal")
+		if info, err := env.Process(t.Context(), "sh"); err != nil || !info.Running {
+			t.Fatalf("save ended the shell: %+v %v", info, err)
 		}
 		apply.Mutations[1].ResultingContentVersion = "v3"
 		if _, err := projected.ApplyProjection(t.Context(), apply); !errors.Is(err, execenv.ErrConflict) {

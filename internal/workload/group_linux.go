@@ -153,18 +153,26 @@ func (g *Group) Close() error {
 	return err
 }
 
-// ExecShell is called only by the internal workload bootstrap command, after
-// Configure dropped all identities. Pin this thread through exec so inherited
-// no_new_privs also prevents set-ID and file-capability privilege escalation.
-func ExecShell() error {
+// Exec is called only by the internal workload bootstrap command, after
+// Configure dropped all identities. It pins this thread through exec so
+// inherited no_new_privs also prevents set-ID and file-capability privilege
+// escalation, then becomes argv, found on the workload's PATH.
+func Exec(argv []string) error {
 	runtime.LockOSThread()
+	if len(argv) == 0 {
+		return execenv.ErrInvalid
+	}
 	if os.Getuid() != uid || os.Geteuid() != uid || os.Getgid() != uid {
 		return execenv.ErrUnavailable
 	}
 	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
 		return err
 	}
-	return syscall.Exec("/bin/sh", []string{"/bin/sh", "-l"}, os.Environ())
+	path, err := exec.LookPath(argv[0])
+	if err != nil {
+		return execenv.ErrNotFound
+	}
+	return syscall.Exec(path, argv, os.Environ())
 }
 
 func (g *Group) Check() error {

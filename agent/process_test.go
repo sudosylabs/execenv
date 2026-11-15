@@ -107,7 +107,7 @@ func newTestTracker(proc fakeProc) *tracker {
 func TestTrackerRecordsTheShellAndItsCommands(t *testing.T) {
 	proc := fakeProc{}
 	tr := newTestTracker(proc)
-	shell := fakeTask{cgroup: testGroup, parent: testAgent, cmdline: "/usr/local/libexec/execenv-guest\x00workload-shell\x00", cwd: "/workspace"}
+	shell := fakeTask{cgroup: testGroup, parent: testAgent, cmdline: "/usr/local/libexec/execenv-guest\x00workload-exec\x00/bin/sh\x00-l\x00", cwd: "/workspace"}
 	events := run(t, tr, proc,
 		set(10, shell, fork(testAgent, 10)),
 		same(execOf(10)),

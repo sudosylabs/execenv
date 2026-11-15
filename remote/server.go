@@ -2,10 +2,8 @@ package remote
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/subtle"
 	"crypto/tls"
-	"encoding/hex"
 	"errors"
 	"io"
 	"log"
@@ -30,11 +28,10 @@ const protocol = 1
 const (
 	FeatureControl    = "control"
 	FeatureJournal    = "journal"
-	FeatureTerminal   = "terminal"
 	FeatureProcessLog = "process_log"
 )
 
-var features = []string{FeatureControl, FeatureJournal, FeatureTerminal, FeatureProcessLog, FeatureSeed, FeatureFiles}
+var features = []string{FeatureControl, FeatureJournal, FeatureProcess, FeatureProcessLog, FeatureSeed, FeatureFiles}
 
 // Window sizes for HTTP/2 flow control. The host receives uploads and
 // keystrokes; uploads need the large window.
@@ -44,9 +41,8 @@ const (
 )
 
 // Serve accepts connections on ln and serves inner until ctx ends. Ending an
-// Attach stream, or losing the connection that carries it, detaches that
-// terminal: the shell keeps running on inner for its terminal grace, and
-// grants stay.
+// attachment's stream, or losing the connection that carries it, detaches
+// it: the process keeps running on inner, and grants stay.
 func Serve(ctx context.Context, ln net.Listener, inner execenv.Host, cfg ServerConfig) error {
 	if cfg.Security == SecurityTLS && cfg.TLS != nil {
 		cfg.TLS = cfg.TLS.Clone()
@@ -60,13 +56,13 @@ func Serve(ctx context.Context, ln net.Listener, inner execenv.Host, cfg ServerC
 	if inner == nil {
 		return execenv.Error("serve", execenv.ErrInvalid)
 	}
-	h := &server{inner: inner, cfg: cfg, envs: make(map[execenv.ID]execenv.Env), attachments: make(map[string]*attachment)}
+	h := &server{inner: inner, cfg: cfg, envs: make(map[execenv.ID]execenv.Env)}
 	mux := http.NewServeMux()
 	options := connect.WithInterceptors(timeoutInterceptor{operationTimeoutOrDefault(cfg.OperationTimeout)})
 	mux.Handle(execenvv1connect.NewHostServiceHandler(h, options))
 	mux.Handle(execenvv1connect.NewControlServiceHandler(h, options))
 	mux.Handle(execenvv1connect.NewJournalServiceHandler(h, options))
-	mux.Handle(execenvv1connect.NewTerminalServiceHandler(h, options))
+	mux.Handle(execenvv1connect.NewProcessServiceHandler(h, options))
 	mux.Handle(execenvv1connect.NewProcessLogServiceHandler(h, options))
 	mux.Handle(execenvv1connect.NewFileServiceHandler(h, options))
 
@@ -117,16 +113,6 @@ type server struct {
 	mu sync.Mutex
 	// envs holds the environment each grant was last ensured as.
 	envs map[execenv.ID]execenv.Env
-	// attachments are the terminals attached through this host, by an
-	// unguessable id handed only to the client that attached.
-	attachments map[string]*attachment
-}
-
-type attachment struct {
-	grant execenv.ID
-	term  execenv.Terminal
-	// input admits one Input stream at a time, so keystrokes keep their order.
-	input sync.Mutex
 }
 
 // authenticate admits a request that carries the token or a verified
@@ -196,17 +182,7 @@ func (h *server) fenced(fence *execenvv1.Fence) (execenv.Env, execenv.Projection
 func (h *server) forget(id execenv.ID) {
 	h.mu.Lock()
 	delete(h.envs, id)
-	var gone []*attachment
-	for key, a := range h.attachments {
-		if a.grant == id {
-			gone = append(gone, a)
-			delete(h.attachments, key)
-		}
-	}
 	h.mu.Unlock()
-	for _, a := range gone {
-		_ = a.term.Close()
-	}
 }
 
 // HostService
@@ -457,160 +433,6 @@ func (h *server) AcknowledgeProcesses(ctx context.Context, req *connect.Request[
 	return connect.NewResponse(&execenvv1.AcknowledgeProcessesResponse{}), nil
 }
 
-// TerminalService
-
-func (h *server) Attach(ctx context.Context, req *connect.Request[execenvv1.AttachRequest], stream *connect.ServerStream[execenvv1.AttachResponse]) error {
-	id := execenv.ID(req.Msg.GetGrantId())
-	env, err := h.env(id, req.Msg.GetEpoch())
-	if err != nil {
-		return wire.Error(err)
-	}
-	window, ok := wire.WindowFrom(req.Msg.GetWindow())
-	if !ok {
-		return wire.Error(execenv.ErrInvalid)
-	}
-	request := execenv.AttachRequest{Window: window, Takeover: req.Msg.GetTakeover()}
-	if resume := req.Msg.GetResume(); resume != nil {
-		request.Resume = &execenv.TerminalPosition{Terminal: execenv.TerminalID(resume.GetTerminalId()), Offset: resume.GetOffset()}
-	}
-	term, err := env.Attach(ctx, request)
-	if err != nil {
-		return wire.Error(err)
-	}
-	key, err := randomID()
-	if err != nil {
-		_ = term.Close()
-		return wire.Error(execenv.ErrUnavailable)
-	}
-	h.mu.Lock()
-	h.attachments[key] = &attachment{grant: id, term: term}
-	h.mu.Unlock()
-	defer func() {
-		h.mu.Lock()
-		delete(h.attachments, key)
-		h.mu.Unlock()
-		_ = term.Close()
-	}()
-	// Ending the stream, by the client or by a lost connection, detaches.
-	stop := context.AfterFunc(ctx, func() { _ = term.Close() })
-	defer stop()
-	if err := stream.Send(&execenvv1.AttachResponse{Event: &execenvv1.AttachResponse_Attached{Attached: &execenvv1.Attached{
-		AttachmentId: key,
-		TerminalId:   string(term.ID()),
-		Start:        term.Start(),
-	}}}); err != nil {
-		return err
-	}
-	buf := make([]byte, wire.ChunkSize)
-	for {
-		n, err := term.Read(buf)
-		if n > 0 {
-			offset := term.Offset() - uint64(n)
-			if serr := stream.Send(&execenvv1.AttachResponse{Event: &execenvv1.AttachResponse_Output{Output: &execenvv1.Output{Offset: offset, Data: buf[:n]}}}); serr != nil {
-				return serr
-			}
-		}
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
-		if err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			return wire.Error(err)
-		}
-	}
-}
-
-func (h *server) attachment(key string) (*attachment, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	a, ok := h.attachments[key]
-	if !ok {
-		return nil, execenv.ErrClosed
-	}
-	return a, nil
-}
-
-func (h *server) Input(_ context.Context, stream *connect.ClientStream[execenvv1.InputRequest]) (*connect.Response[execenvv1.InputResponse], error) {
-	if !stream.Receive() {
-		return nil, wire.Error(execenv.ErrInvalid)
-	}
-	key := stream.Msg().GetAttachmentId()
-	if key == "" {
-		return nil, wire.Error(execenv.ErrInvalid)
-	}
-	a, err := h.attachment(key)
-	if err != nil {
-		return nil, wire.Error(err)
-	}
-	a.input.Lock()
-	defer a.input.Unlock()
-	for stream.Receive() {
-		data := stream.Msg().GetData()
-		if data == nil {
-			return nil, wire.Error(execenv.ErrInvalid)
-		}
-		for len(data) > 0 {
-			n, err := a.term.Write(data)
-			if err != nil {
-				return nil, wire.Error(err)
-			}
-			data = data[n:]
-		}
-	}
-	if err := stream.Err(); err != nil {
-		return nil, err
-	}
-	return connect.NewResponse(&execenvv1.InputResponse{}), nil
-}
-
-func (h *server) Resize(ctx context.Context, req *connect.Request[execenvv1.ResizeRequest]) (*connect.Response[execenvv1.ResizeResponse], error) {
-	a, err := h.attachment(req.Msg.GetAttachmentId())
-	if err != nil {
-		return nil, wire.Error(err)
-	}
-	window, ok := wire.WindowFrom(req.Msg.GetWindow())
-	if !ok {
-		return nil, wire.Error(execenv.ErrInvalid)
-	}
-	if err := a.term.Resize(ctx, window); err != nil {
-		return nil, wire.Error(err)
-	}
-	return connect.NewResponse(&execenvv1.ResizeResponse{}), nil
-}
-
-func (h *server) Detach(_ context.Context, req *connect.Request[execenvv1.DetachRequest]) (*connect.Response[execenvv1.DetachResponse], error) {
-	key := req.Msg.GetAttachmentId()
-	h.mu.Lock()
-	a, ok := h.attachments[key]
-	delete(h.attachments, key)
-	h.mu.Unlock()
-	if ok {
-		_ = a.term.Close()
-	}
-	return connect.NewResponse(&execenvv1.DetachResponse{}), nil
-}
-
-func (h *server) Hangup(ctx context.Context, req *connect.Request[execenvv1.HangupRequest]) (*connect.Response[execenvv1.HangupResponse], error) {
-	a, err := h.attachment(req.Msg.GetAttachmentId())
-	if err != nil {
-		return nil, wire.Error(err)
-	}
-	if err := a.term.Hangup(ctx); err != nil {
-		return nil, wire.Error(err)
-	}
-	return connect.NewResponse(&execenvv1.HangupResponse{}), nil
-}
-
 // discardLog keeps the HTTP server's own messages, which can quote request
 // lines, out of the host's logs.
 var discardLog = log.New(io.Discard, "", 0)
-
-func randomID() (string, error) {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b[:]), nil
-}

@@ -118,11 +118,10 @@ func newAdapter(cfg Config) (execenv.Host, error) {
 	switch cfg.Adapter {
 	case adapterMemory:
 		return memory.New(memory.Config{
-			Images:        cfg.imageIDs(),
-			Capacity:      cfg.totals(),
-			Defaults:      cfg.GrantDefaults.contract(),
-			GrantMax:      cfg.GrantMax.contract(),
-			TerminalGrace: cfg.Grace,
+			Images:   cfg.imageIDs(),
+			Capacity: cfg.totals(),
+			Defaults: cfg.GrantDefaults.contract(),
+			GrantMax: cfg.GrantMax.contract(),
 		})
 	case adapterIsolated:
 		if cfg.WorkDir == "" {
@@ -149,8 +148,6 @@ func newAdapter(cfg Config) (execenv.Host, error) {
 			Mkfs:        cfg.Mkfs,
 			JailUIDBase: cfg.JailUIDBase,
 			Allow:       append([]string(nil), cfg.Allow...),
-			// Unset grace is execenv.DefaultTerminalGrace.
-			TerminalGrace: cfg.Grace,
 		})
 	default:
 		return nil, execenv.Error("adapter", execenv.ErrInvalid)

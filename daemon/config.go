@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/internal/capacity"
@@ -73,11 +72,6 @@ type Config struct {
 	GrantMax      Resources `json:"grant_max,omitzero"`
 	Network       string    `json:"network,omitempty"`
 	Allow         []string  `json:"allow,omitempty"`
-	// Grace (JSON "grace", a Go duration) is how long a detached terminal
-	// shell keeps running before the host hangs it up. Unset uses
-	// execenv.DefaultTerminalGrace (60s).
-	Grace     time.Duration `json:"-"`
-	GraceText string        `json:"grace,omitempty"`
 	// OperatorSocket is the absolute path of the Unix socket execenvctl
 	// uses to drain this daemon before a restart. Empty serves none, and
 	// execenvctl then cannot tell whether grants are live.
@@ -254,13 +248,6 @@ func (cfg *Config) validate() error {
 	// path must be absolute. A path too long to bind fails at startup.
 	if cfg.OperatorSocket != "" && !filepath.IsAbs(cfg.OperatorSocket) {
 		return execenv.Error("config", execenv.ErrInvalid)
-	}
-	if cfg.GraceText != "" {
-		grace, err := time.ParseDuration(cfg.GraceText)
-		if err != nil || grace <= 0 {
-			return execenv.Error("config", execenv.ErrInvalid)
-		}
-		cfg.Grace = grace
 	}
 	return nil
 }

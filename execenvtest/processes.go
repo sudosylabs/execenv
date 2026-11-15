@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"slices"
 	"strings"
 	"testing"
@@ -34,25 +33,27 @@ type Traced struct {
 // TracedFactory returns a fresh Traced for one subtest.
 type TracedFactory func(t *testing.T) Traced
 
-// TerminalWorkload runs each command by typing it into env's terminal and
-// discards the output. The suite's commands are /bin/true with plain words,
-// so a real shell starts exactly that program with exactly those words.
-func TerminalWorkload(t *testing.T, env execenv.Env) Workload {
+// ShellWorkload runs each command by typing it into a shell started in env
+// and discards the output. The suite's commands are /bin/true with plain
+// words, so a real shell starts exactly that program with exactly those
+// words.
+func ShellWorkload(t *testing.T, env execenv.Env, fence execenv.ProjectionFence) Workload {
 	t.Helper()
-	term, err := env.Attach(t.Context(), execenv.AttachRequest{})
-	if err != nil {
-		t.Fatalf("Attach() error = %v", err)
-	}
-	go func() { _, _ = io.Copy(io.Discard, term) }()
-	t.Cleanup(func() { _ = term.Close() })
-	return terminalWorkload{term: term}
+	sh := StartShell(t, env, fence, "workload")
+	go func() {
+		for {
+			if _, err := sh.a.Next(context.Background()); err != nil {
+				return
+			}
+		}
+	}()
+	return shellWorkload{sh: sh}
 }
 
-type terminalWorkload struct{ term execenv.Terminal }
+type shellWorkload struct{ sh *TestShell }
 
-func (w terminalWorkload) Run(_ context.Context, argv []string) error {
-	_, err := w.term.Write([]byte(strings.Join(argv, " ") + "\n"))
-	return err
+func (w shellWorkload) Run(_ context.Context, argv []string) error {
+	return w.sh.Type(strings.Join(argv, " "))
 }
 
 // RunProcesses exercises the process log against a workload. It needs a

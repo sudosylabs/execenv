@@ -6,11 +6,9 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"connectrpc.com/connect"
 
@@ -101,6 +99,7 @@ func Serve(ctx context.Context, conn net.Conn, cfg Config) error {
 		home:     cfg.Home,
 		scratch:  scratch,
 		events:   make(chan []execenv.ProcessEvent),
+		procs:    make(map[string]*guestProc),
 	}
 	contentDir := cfg.Content
 	if contentDir == "" {
@@ -190,16 +189,10 @@ type server struct {
 
 	mu     sync.Mutex
 	frozen bool
-	term   *shell
-	termID uint64
-	nextID uint64
+	procs  map[string]*guestProc
 }
 
-func (s *server) shutdown() {
-	s.mu.Lock()
-	s.killShell()
-	s.mu.Unlock()
-}
+func (s *server) shutdown() { s.stopAll() }
 
 func (s *server) guard() error {
 	if s.workload != nil {
@@ -222,139 +215,6 @@ func (s *server) Hello(context.Context, *connect.Request[guestv1.HelloRequest]) 
 		Journal:   s.journal != nil,
 		Processes: s.processes.Load(),
 	}), nil
-}
-
-// Attach starts the login shell and streams its output. The shell ends with
-// Detach, with the stream, or with the link.
-func (s *server) Attach(ctx context.Context, req *connect.Request[guestv1.AttachRequest], stream *connect.ServerStream[guestv1.AttachResponse]) error {
-	window, ok := wire.WindowFrom(req.Msg.GetWindow())
-	if !ok {
-		return wire.Error(execenv.ErrInvalid)
-	}
-	s.mu.Lock()
-	if err := s.guard(); err != nil {
-		s.mu.Unlock()
-		return wire.Error(err)
-	}
-	if s.term != nil && !s.term.done() {
-		s.mu.Unlock()
-		return wire.Error(execenv.ErrBusy)
-	}
-	if s.workload != nil {
-		if err := s.workload.Kill(ctx); err != nil {
-			s.workloadErr = err
-			s.mu.Unlock()
-			return wire.Error(err)
-		}
-	}
-	sh, err := startShell(s.home, s.scratch, window, s.workload)
-	if err != nil {
-		s.mu.Unlock()
-		return wire.Error(execenv.ErrUnavailable)
-	}
-	s.nextID++
-	id := s.nextID
-	s.term, s.termID = sh, id
-	s.mu.Unlock()
-	// A stream the host abandons takes its shell with it, unless the guest
-	// is frozen: then the host detaches once it has thawed.
-	stop := context.AfterFunc(ctx, func() {
-		s.mu.Lock()
-		if s.termID == id && !s.frozen {
-			s.killShell()
-		}
-		s.mu.Unlock()
-	})
-	defer stop()
-
-	if err := stream.Send(&guestv1.AttachResponse{Event: &guestv1.AttachResponse_Started{Started: &guestv1.Started{ShellId: id}}}); err != nil {
-		return err
-	}
-	buf := make([]byte, 32<<10)
-	for {
-		n, err := sh.master.Read(buf)
-		if n > 0 {
-			if serr := stream.Send(&guestv1.AttachResponse{Event: &guestv1.AttachResponse_Output{Output: buf[:n]}}); serr != nil {
-				return serr
-			}
-		}
-		if err != nil {
-			s.mu.Lock()
-			frozen := s.frozen
-			if s.term == sh {
-				s.term, s.termID = nil, 0
-			}
-			s.mu.Unlock()
-			return wire.Error(ptyEnd(frozen, err))
-		}
-	}
-}
-
-// ptyEnd is why a shell's output ended: nil for its exit or hangup. A
-// guest frozen under it reports that instead, so the host keeps the shell.
-func ptyEnd(frozen bool, err error) error {
-	switch {
-	case frozen:
-		return execenv.ErrFrozen
-	case err == nil || err == io.EOF || isPtyHangup(err):
-		return nil
-	default:
-		return err
-	}
-}
-
-func (s *server) current(id uint64) (*shell, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.term, s.term != nil && s.termID == id && !s.frozen
-}
-
-// Input writes keystrokes to the shell it names. Input for a shell that has
-// gone, or arriving while frozen, is dropped.
-func (s *server) Input(_ context.Context, stream *connect.ClientStream[guestv1.InputRequest]) (*connect.Response[guestv1.InputResponse], error) {
-	if !stream.Receive() {
-		return nil, wire.Error(execenv.ErrInvalid)
-	}
-	id := stream.Msg().GetShellId()
-	for stream.Receive() {
-		data := stream.Msg().GetData()
-		if sh, ok := s.current(id); ok {
-			_, _ = sh.master.Write(data)
-		}
-	}
-	if err := stream.Err(); err != nil {
-		return nil, err
-	}
-	return connect.NewResponse(&guestv1.InputResponse{}), nil
-}
-
-func (s *server) Resize(_ context.Context, req *connect.Request[guestv1.ResizeRequest]) (*connect.Response[guestv1.ResizeResponse], error) {
-	window, ok := wire.WindowFrom(req.Msg.GetWindow())
-	if !ok {
-		return nil, wire.Error(execenv.ErrInvalid)
-	}
-	s.mu.Lock()
-	term, id, frozen := s.term, s.termID, s.frozen
-	s.mu.Unlock()
-	if frozen {
-		return nil, wire.Error(execenv.ErrFrozen)
-	}
-	if term == nil || id != req.Msg.GetShellId() {
-		return nil, wire.Error(execenv.ErrClosed)
-	}
-	if err := setWindow(term.master, window); err != nil {
-		return nil, wire.Error(err)
-	}
-	return connect.NewResponse(&guestv1.ResizeResponse{}), nil
-}
-
-func (s *server) Detach(_ context.Context, req *connect.Request[guestv1.DetachRequest]) (*connect.Response[guestv1.DetachResponse], error) {
-	s.mu.Lock()
-	if s.termID == req.Msg.GetShellId() {
-		s.killShell()
-	}
-	s.mu.Unlock()
-	return connect.NewResponse(&guestv1.DetachResponse{}), nil
 }
 
 func (s *server) Freeze(context.Context, *connect.Request[guestv1.FreezeRequest]) (*connect.Response[guestv1.FreezeResponse], error) {
@@ -439,7 +299,7 @@ func (s *server) InitializeProjection(ctx context.Context, req *connect.Request[
 	if err := s.journalGuard(); err != nil {
 		return nil, wire.Error(err)
 	}
-	if s.term != nil && !s.journal.Initialized() {
+	if s.runningLocked() && !s.journal.Initialized() {
 		return nil, wire.Error(execenv.ErrConflict)
 	}
 	receipt, err := s.journal.Initialize(ctx, wire.InitializationFrom(req.Msg))
@@ -551,42 +411,4 @@ func (s *server) AcknowledgeObservations(_ context.Context, req *connect.Request
 		return nil, wire.Error(err)
 	}
 	return connect.NewResponse(&execenvv1.AcknowledgeObservationsResponse{}), nil
-}
-
-func (s *server) killShell() {
-	if s.term == nil {
-		return
-	}
-	s.term.close()
-	if s.workload != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		s.workloadErr = s.workload.Kill(ctx)
-		cancel()
-	}
-	s.term, s.termID = nil, 0
-}
-
-type shell struct {
-	master *os.File
-	cmd    *exec.Cmd
-	exited chan struct{}
-}
-
-func (sh *shell) done() bool {
-	if sh == nil {
-		return true
-	}
-	select {
-	case <-sh.exited:
-		return true
-	default:
-		return false
-	}
-}
-
-func (sh *shell) close() {
-	if sh.cmd.Process != nil {
-		hangup(sh.cmd, sh.exited)
-	}
-	_ = sh.master.Close()
 }

@@ -1,16 +1,15 @@
 // Package execenv occupies isolated execution grants on one host.
 //
-// Callers ensure a grant, project a POSIX tree, attach to its terminal,
-// control execution under a fence, and revoke. Isolation machinery stays
-// behind the contract.
+// Callers ensure a grant, project a POSIX tree or work on its files, run
+// processes in it, control execution under a fence, and revoke. Isolation
+// machinery stays behind the contract.
 //
-// A grant has at most one terminal session: one shell and the most recent
-// TerminalHistoryBytes of its output, counted in absolute offsets from the
-// shell's first byte. Clients attach to the session; at most one is
-// attached at a time, and Takeover replaces it. Closing a Terminal
-// detaches: the shell keeps running for the host's terminal grace, and a
-// later Attach resumes it from a TerminalPosition. Hangup, grace expiry,
-// shell exit and revoke end the session.
+// A grant runs processes by tag: a shell is a process with a terminal, a
+// command one without. Each keeps the most recent output of each stream,
+// counted in absolute offsets from its first byte, so any number of readers
+// attach and resume where they left off. Input is taken by offset, so a
+// resend after a lost connection duplicates nothing. A process ends on its
+// own, on a signal, on its timeout, or once left unattached past its grace.
 //
 // The projected tree is not durable authority. The caller owns a journal;
 // InitializeProjection and ApplyProjection push consecutive journal entries
@@ -30,8 +29,7 @@
 // reports the count as one ProcessDropped event, never silently.
 //
 // A grant's environment can end without a revoke, when its machine stops
-// or its guest crashes. The host notices on its own, frees the slot and
-// every resource the grant held, and fails every call on that occupancy
+// or its guest crashes. The host notices on its own, frees every resource the grant held, and fails every call on that occupancy
 // with ErrLost. Ensure of the same id fails with ErrLost too, until the
 // caller acknowledges the loss with Revoke; the next Ensure then occupies
 // the id under a new Epoch, so no fence of the lost epoch can apply to it.

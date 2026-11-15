@@ -24,7 +24,7 @@ import (
 var _ execenv.Host = (*Client)(nil)
 
 // Window sizes for HTTP/2 flow control on the client. The interactive
-// connection keeps terminal streams small so one busy shell cannot starve
+// connection keeps process streams small so one busy process cannot starve
 // another; the bulk connection carries file content.
 const (
 	interactiveStreamWindow = 256 << 10
@@ -51,7 +51,7 @@ type Client struct {
 	// files carries file metadata; bulkFiles carries file bodies.
 	files     execenvv1connect.FileServiceClient
 	bulkFiles execenvv1connect.FileServiceClient
-	terminal  execenvv1connect.TerminalServiceClient
+	procs     execenvv1connect.ProcessServiceClient
 	process   execenvv1connect.ProcessLogServiceClient
 }
 
@@ -81,7 +81,7 @@ func New(cfg Config) (*Client, error) {
 		bulkHost:   execenvv1connect.NewHostServiceClient(bulk, base),
 		files:      execenvv1connect.NewFileServiceClient(interactive, base),
 		bulkFiles:  execenvv1connect.NewFileServiceClient(bulk, base),
-		terminal:   execenvv1connect.NewTerminalServiceClient(interactive, base),
+		procs:      execenvv1connect.NewProcessServiceClient(interactive, base),
 		process:    execenvv1connect.NewProcessLogServiceClient(interactive, base),
 	}
 	hctx, hcancel := context.WithTimeout(ctx, timeoutOrDefault(cfg.Timeout))
@@ -146,7 +146,7 @@ func (b bearer) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 // Close ends every stream and connection. Live grants on the host stay;
-// their terminals detach.
+// their processes keep running.
 func (c *Client) Close() error {
 	c.cancel()
 	for _, t := range c.transports {
@@ -205,8 +205,8 @@ type remoteEnv struct {
 	epoch   string
 	revoked atomic.Bool
 
-	mu    sync.Mutex
-	terms map[*remoteTerminal]struct{}
+	mu   sync.Mutex
+	atts map[*remoteAttachment]struct{}
 }
 
 func (e *remoteEnv) ID() execenv.ID { return e.id }
@@ -236,7 +236,7 @@ func (e *remoteEnv) Revoke(ctx context.Context) error {
 		return wire.HostError("revoke", err)
 	}
 	e.revoked.Store(true)
-	e.endTerminals(execenv.ErrRevoked)
+	e.endAttachments(execenv.ErrRevoked)
 	return nil
 }
 
@@ -246,9 +246,6 @@ func (e *remoteEnv) Control(ctx context.Context, request execenv.ControlRequest)
 	}
 	if err := execenv.ValidateControl(request); err != nil {
 		return execenv.ControlReceipt{}, err
-	}
-	if request.State != execenv.ControlRunning {
-		e.setFrozen(true)
 	}
 	cctx, cancel := e.client.call(ctx)
 	defer cancel()
@@ -262,9 +259,7 @@ func (e *remoteEnv) Control(ctx context.Context, request execenv.ControlRequest)
 	}
 	if request.State == execenv.ControlRevoked {
 		e.revoked.Store(true)
-		e.endTerminals(execenv.ErrRevoked)
-	} else {
-		e.setFrozen(request.State == execenv.ControlFrozen)
+		e.endAttachments(execenv.ErrRevoked)
 	}
 	return receipt, nil
 }

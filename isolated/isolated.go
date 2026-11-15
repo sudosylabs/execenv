@@ -13,8 +13,8 @@ import (
 	"github.com/sudosylabs/execenv/internal/capacity"
 	"github.com/sudosylabs/execenv/internal/control"
 	"github.com/sudosylabs/execenv/internal/lifetime"
+	"github.com/sudosylabs/execenv/internal/procs"
 	"github.com/sudosylabs/execenv/internal/seed"
-	"github.com/sudosylabs/execenv/internal/terminal"
 )
 
 var (
@@ -66,9 +66,6 @@ type Config struct {
 	// Allow is the host's IPv4 dests. Grants cannot add dests. Empty
 	// means this host does not offer NetworkAllowlist.
 	Allow []string
-	// TerminalGrace is how long a detached shell keeps running before the
-	// host hangs it up. Zero uses execenv.DefaultTerminalGrace.
-	TerminalGrace time.Duration
 }
 
 // Host occupies grants as isolated microVMs.
@@ -329,7 +326,7 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		treeDir: treeDir,
 	}
 	env.public = env
-	env.terminal = terminal.New(terminal.Config{Grace: h.cfg.TerminalGrace, Start: env.startShell})
+	env.procs = procs.New(env.startProcess)
 	if err := env.dial(launchCtx); err != nil {
 		_ = env.revoke()
 		return h.completeEnsure(call, nil, execenv.Error("ensure", err), treeDir)

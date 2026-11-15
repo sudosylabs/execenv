@@ -35,37 +35,39 @@ func RunLoss(t *testing.T, factory LossFactory) {
 	t.Run("a lost grant fails every call with ErrLost", func(t *testing.T) {
 		l := factory(t)
 		env, fence := occupyRunning(t, l.Host, "lost-grant")
-		term, err := env.Attach(t.Context(), execenv.AttachRequest{})
-		if err != nil {
-			t.Fatalf("Attach() error = %v", err)
-		}
-		t.Cleanup(func() { _ = term.Close() })
+		sh := StartShell(t, env, fence, "sh")
 		l.Lose(t, env.ID())
 		waitLost(t, env)
 
-		// Output produced before the loss may still drain; the stream then
-		// ends with ErrLost, never a clean end of file.
+		// Output produced before the loss may still drain; the attachment
+		// then ends with ErrLost, never a clean end.
 		readDone := make(chan error, 1)
 		go func() {
-			_, err := io.Copy(io.Discard, term)
-			if err == nil {
-				err = io.EOF
+			for {
+				ev, err := sh.a.Next(context.Background())
+				if err != nil {
+					readDone <- err
+					return
+				}
+				if ev.Kind == execenv.OutputExit {
+					readDone <- io.EOF
+					return
+				}
 			}
-			readDone <- err
 		}()
 		select {
 		case err := <-readDone:
 			if !errors.Is(err, execenv.ErrLost) {
-				t.Fatalf("terminal Read error = %v, want ErrLost", err)
+				t.Fatalf("attachment Next error = %v, want ErrLost", err)
 			}
 		case <-time.After(lossNotice):
-			t.Fatal("terminal Read did not end after the loss")
+			t.Fatal("attachment did not end after the loss")
 		}
-		if _, err := term.Write([]byte("echo late\n")); !errors.Is(err, execenv.ErrLost) {
-			t.Fatalf("terminal Write error = %v, want ErrLost", err)
+		if err := sh.Type("echo late"); !errors.Is(err, execenv.ErrLost) {
+			t.Fatalf("WriteInput() error = %v, want ErrLost", err)
 		}
-		if _, err := env.Attach(t.Context(), execenv.AttachRequest{}); !errors.Is(err, execenv.ErrLost) {
-			t.Fatalf("Attach() error = %v, want ErrLost", err)
+		if _, err := env.AttachProcess(t.Context(), "sh", nil); !errors.Is(err, execenv.ErrLost) {
+			t.Fatalf("AttachProcess() error = %v, want ErrLost", err)
 		}
 		next := fence
 		next.FenceRevision++

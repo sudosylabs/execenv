@@ -63,7 +63,7 @@ func (e *environment) UploadProjectionContent(ctx context.Context, fence execenv
 func (e *environment) InitializeProjection(ctx context.Context, request execenv.ProjectionInitialization) (execenv.ProjectionReceipt, error) {
 	var receipt execenv.ProjectionReceipt
 	err := e.journaled(ctx, request.Fence, func() error {
-		if e.terminal.Live() && !e.journal.Initialized() {
+		if e.procs.Live() && !e.journal.Initialized() {
 			return execenv.ErrConflict
 		}
 		var err error

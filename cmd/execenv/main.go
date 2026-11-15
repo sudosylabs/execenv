@@ -31,9 +31,10 @@ func main() {
 		}
 		return
 	}
-	if len(os.Args) == 2 && os.Args[1] == "workload-shell" {
-		if err := workload.ExecShell(); err != nil {
-			os.Exit(1)
+	if len(os.Args) > 2 && os.Args[1] == "workload-exec" {
+		if err := workload.Exec(os.Args[2:]); err != nil {
+			// The exec failed: report it as a shell does a missing command.
+			os.Exit(127)
 		}
 		return
 	}

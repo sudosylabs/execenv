@@ -36,7 +36,6 @@ type Client struct {
 	processes *processes.Log
 
 	mu     sync.Mutex
-	term   *PTY
 	frozen bool
 	// hung is why the link was hung up by this side; it is every later
 	// call's error.
@@ -98,7 +97,7 @@ func (c *Client) receiveProcesses() {
 
 // Done is closed once the guest link is gone, whether the guest end failed
 // or Close hung it up. The link is never re-established: a new link would
-// be a new helper session without this one's terminal or process log.
+// be a new helper session without this one's processes or process log.
 func (c *Client) Done() <-chan struct{} { return c.link.done }
 
 // Close hangs up the guest link. The machine is not torn down.
@@ -109,7 +108,7 @@ func (c *Client) Close() error {
 	return err
 }
 
-// Hangup fails the live PTY and every call with err without closing the
+// Hangup fails every process and call with err without closing the
 // connection. Revoke uses it so a killed grant surfaces ErrRevoked rather
 // than a generic close.
 func (c *Client) Hangup(err error) {
@@ -126,13 +125,8 @@ func (c *Client) fail(err error) {
 	if c.hung == nil {
 		c.hung = execenv.ErrUnavailable
 	}
-	term := c.term
-	c.term = nil
 	c.mu.Unlock()
 	c.cancel()
-	if term != nil {
-		term.hangup(err)
-	}
 }
 
 func (c *Client) call(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -173,68 +167,6 @@ func (c *Client) ioGuard() error {
 	return nil
 }
 
-// Attach starts a login shell with cwd at Home. The guest ends that shell
-// when the PTY is closed; the host keeps terminal sessions above this.
-func (c *Client) Attach(ctx context.Context, win execenv.Window) (*PTY, error) {
-	if err := c.ioGuard(); err != nil {
-		return nil, execenv.Error("attach", err)
-	}
-	c.mu.Lock()
-	if c.term != nil {
-		c.mu.Unlock()
-		return nil, execenv.Error("attach", execenv.ErrBusy)
-	}
-	t := &PTY{client: c}
-	c.term = t
-	c.mu.Unlock()
-	release := func() {
-		c.mu.Lock()
-		if c.term == t {
-			c.term = nil
-		}
-		c.mu.Unlock()
-	}
-	sctx, cancel := context.WithCancel(c.ctx)
-	stream, err := c.agent.Attach(sctx, connect.NewRequest(&guestv1.AttachRequest{Window: wire.WindowTo(win)}))
-	if err != nil {
-		cancel()
-		release()
-		return nil, c.failure("attach", err)
-	}
-	started := make(chan error, 1)
-	go func() {
-		if !stream.Receive() {
-			err := stream.Err()
-			if err == nil {
-				err = execenv.ErrUnavailable
-			}
-			started <- c.failure("attach", err)
-			return
-		}
-		first := stream.Msg().GetStarted()
-		if first == nil || first.GetShellId() == 0 {
-			started <- execenv.Error("attach", execenv.ErrUnavailable)
-			return
-		}
-		t.id = first.GetShellId()
-		started <- nil
-	}()
-	select {
-	case err = <-started:
-	case <-ctx.Done():
-		cancel()
-		<-started
-		err = execenv.Error("attach", ctx.Err())
-	}
-	if err != nil {
-		cancel()
-		release()
-		return nil, err
-	}
-	t.stream, t.ctx, t.cancel = stream, sctx, cancel
-	return t, nil
-}
-
 // Quiesce stops agent I/O. Home and the connection stay. The host calls it
 // from fenced control before it pauses the machine.
 func (c *Client) Quiesce(ctx context.Context) error {
@@ -247,8 +179,7 @@ func (c *Client) Quiesce(ctx context.Context) error {
 	return c.failure("freeze", err)
 }
 
-// Reopen reopens I/O only after the guest acknowledges recovery. A PTY
-// closed while frozen is detached now, before I/O reopens.
+// Reopen reopens I/O only after the guest acknowledges recovery.
 func (c *Client) Reopen(ctx context.Context) error {
 	ctx, cancel := c.call(ctx)
 	defer cancel()
@@ -256,188 +187,9 @@ func (c *Client) Reopen(ctx context.Context) error {
 		return c.failure("thaw", err)
 	}
 	c.mu.Lock()
-	term := c.term
-	c.mu.Unlock()
-	if term != nil && term.isClosed() {
-		if _, err := c.agent.Detach(ctx, connect.NewRequest(&guestv1.DetachRequest{ShellId: term.id})); err != nil {
-			return c.failure("detach", err)
-		}
-		term.cancel()
-		c.mu.Lock()
-		if c.term == term {
-			c.term = nil
-		}
-		c.mu.Unlock()
-	}
-	c.mu.Lock()
 	c.frozen = false
 	c.mu.Unlock()
 	return nil
-}
-
-// PTY is the host end of the guest's one login shell. Read returns io.EOF
-// once the shell exits and its output is drained, or after Close.
-type PTY struct {
-	client *Client
-	id     uint64
-	stream *connect.ServerStreamForClient[guestv1.AttachResponse]
-	ctx    context.Context
-	cancel context.CancelFunc
-
-	readMu  sync.Mutex
-	writeMu sync.Mutex
-	input   *connect.ClientStreamForClient[guestv1.InputRequest, guestv1.InputResponse]
-
-	mu      sync.Mutex
-	pending []byte
-	closed  bool
-	ended   bool
-	dead    error
-}
-
-func (t *PTY) isClosed() bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.closed
-}
-
-func (t *PTY) hangup(err error) {
-	t.mu.Lock()
-	if t.dead == nil {
-		if err == nil {
-			err = execenv.ErrClosed
-		}
-		t.dead = err
-	}
-	t.mu.Unlock()
-	if t.cancel != nil {
-		t.cancel()
-	}
-}
-
-func (t *PTY) Read(p []byte) (int, error) {
-	t.readMu.Lock()
-	defer t.readMu.Unlock()
-	for {
-		t.mu.Lock()
-		if len(t.pending) > 0 {
-			n := copy(p, t.pending)
-			t.pending = t.pending[n:]
-			t.mu.Unlock()
-			return n, nil
-		}
-		if t.dead != nil {
-			err := t.dead
-			t.mu.Unlock()
-			return 0, execenv.Error("read", err)
-		}
-		if t.closed || t.ended {
-			t.mu.Unlock()
-			return 0, io.EOF
-		}
-		t.mu.Unlock()
-		if !t.stream.Receive() {
-			err := t.stream.Err()
-			t.mu.Lock()
-			switch {
-			case t.dead != nil:
-			case err == nil:
-				t.ended = true
-			case t.closed:
-			default:
-				t.dead = t.client.failure("read", err)
-			}
-			t.mu.Unlock()
-			if err == nil {
-				t.client.mu.Lock()
-				if t.client.term == t {
-					t.client.term = nil
-				}
-				t.client.mu.Unlock()
-			}
-			continue
-		}
-		out := t.stream.Msg().GetOutput()
-		t.mu.Lock()
-		t.pending = out
-		t.mu.Unlock()
-	}
-}
-
-func (t *PTY) Write(p []byte) (int, error) {
-	if err := t.client.ioGuard(); err != nil {
-		return 0, err
-	}
-	t.mu.Lock()
-	if t.closed || t.ended || t.dead != nil {
-		err := t.dead
-		if err == nil {
-			err = execenv.ErrClosed
-		}
-		t.mu.Unlock()
-		return 0, execenv.Error("write", err)
-	}
-	t.mu.Unlock()
-	t.writeMu.Lock()
-	defer t.writeMu.Unlock()
-	if t.input == nil {
-		input := t.client.agent.Input(t.ctx)
-		if err := input.Send(&guestv1.InputRequest{Part: &guestv1.InputRequest_ShellId{ShellId: t.id}}); err != nil {
-			_, _ = input.CloseAndReceive()
-			return 0, execenv.Error("write", execenv.ErrClosed)
-		}
-		t.input = input
-	}
-	for rest := p; len(rest) > 0; {
-		n := min(len(rest), wire.ChunkSize)
-		if err := t.input.Send(&guestv1.InputRequest{Part: &guestv1.InputRequest_Data{Data: rest[:n]}}); err != nil {
-			_, _ = t.input.CloseAndReceive()
-			t.input = nil
-			return len(p) - len(rest), execenv.Error("write", execenv.ErrClosed)
-		}
-		rest = rest[n:]
-	}
-	return len(p), nil
-}
-
-func (t *PTY) Resize(ctx context.Context, win execenv.Window) error {
-	if err := t.client.ioGuard(); err != nil {
-		return err
-	}
-	ctx, cancel := t.client.call(ctx)
-	defer cancel()
-	_, err := t.client.agent.Resize(ctx, connect.NewRequest(&guestv1.ResizeRequest{ShellId: t.id, Window: wire.WindowTo(win)}))
-	return t.client.failure("resize", err)
-}
-
-// Close hangs the guest shell up. A paused guest cannot answer, so while
-// frozen the shell stays attached internally and Reopen detaches it.
-func (t *PTY) Close() error {
-	t.mu.Lock()
-	t.closed = true
-	t.mu.Unlock()
-	t.writeMu.Lock()
-	if t.input != nil {
-		_, _ = t.input.CloseAndReceive()
-		t.input = nil
-	}
-	t.writeMu.Unlock()
-	t.client.mu.Lock()
-	frozen := t.client.frozen
-	t.client.mu.Unlock()
-	if frozen {
-		return nil
-	}
-	ctx, cancel := t.client.call(context.Background())
-	defer cancel()
-	_, err := t.client.agent.Detach(ctx, connect.NewRequest(&guestv1.DetachRequest{ShellId: t.id}))
-	t.cancel()
-	t.client.mu.Lock()
-	if t.client.term == t {
-		t.client.term = nil
-	}
-	t.client.mu.Unlock()
-	return t.client.failure("detach", err)
 }
 
 // UploadProjectionContent streams one body to the guest's journal.

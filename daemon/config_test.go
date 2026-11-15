@@ -53,8 +53,7 @@ func TestLoadAcceptsLocalMemory(t *testing.T) {
 		"adapter": "memory",
 		"images": [{"id": "default"}],
 		"capacity": {"cpu_millis": 2000, "memory_bytes": 1073741824, "disk_bytes": 4294967296},
-		"network": "none",
-		"grace": "30s"
+		"network": "none"
 	}`))
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)

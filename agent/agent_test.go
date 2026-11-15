@@ -14,55 +14,171 @@ import (
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/agent"
+	"github.com/sudosylabs/execenv/internal/procs"
 )
 
-func TestClosePtyIsHangup(t *testing.T) {
-	t.Parallel()
-	cli, _ := startAgent(t)
-	term, err := cli.Attach(t.Context(), execenv.Window{})
+// testShell is a login shell in the guest, driven through the host's
+// process manager as a grant drives it.
+type testShell struct {
+	t     *testing.T
+	m     *procs.Manager
+	tag   string
+	input uint64
+	a     execenv.Attachment
+	seen  strings.Builder
+}
+
+func startShell(t *testing.T, cli *agent.Client) *testShell {
+	t.Helper()
+	m := procs.New(cli.Start)
+	t.Cleanup(func() { m.End(execenv.ErrClosed) })
+	return shellOn(t, m, "sh")
+}
+
+func shellOn(t *testing.T, m *procs.Manager, tag string) *testShell {
+	t.Helper()
+	if _, err := m.Start(t.Context(), execenv.ProcessSpec{Tag: tag, PTY: &execenv.Window{Cols: 80, Rows: 24}}); err != nil {
+		t.Fatalf("Start(shell) = %v", err)
+	}
+	a, err := m.Attach(tag, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := term.Close(); err != nil {
+	t.Cleanup(func() { _ = a.Close() })
+	return &testShell{t: t, m: m, tag: tag, a: a}
+}
+
+func (s *testShell) typeLine(line string) error {
+	next, err := s.m.WriteInput(s.tag, s.input, []byte(line+"\n"))
+	if err == nil {
+		s.input = next
+	}
+	return err
+}
+
+func (s *testShell) expect(marker string) {
+	s.t.Helper()
+	ctx, cancel := context.WithTimeout(s.t.Context(), 5*time.Second)
+	defer cancel()
+	for !strings.Contains(s.seen.String(), marker) {
+		out, err := s.a.Next(ctx)
+		if err != nil {
+			s.t.Fatalf("waiting for %q: %v (saw %q)", marker, err, s.seen.String())
+		}
+		s.seen.Write(out.Data)
+	}
+}
+
+func waitExit(t *testing.T, m *procs.Manager, tag string) execenv.ExitStatus {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if info, err := m.Process(tag); err == nil && !info.Running {
+			return info.Exit
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("%s did not exit", tag)
+	return execenv.ExitStatus{}
+}
+
+func TestShellEndsOnHangupAndItsTagRunsAgain(t *testing.T) {
+	t.Parallel()
+	cli, _ := startAgent(t)
+	sh := startShell(t, cli)
+	if err := sh.typeLine("echo hello"); err != nil {
 		t.Fatal(err)
+	}
+	sh.expect("hello")
+	if err := sh.m.Signal("sh", execenv.SignalHangup); err != nil {
+		t.Fatal(err)
+	}
+	if exit := waitExit(t, sh.m, "sh"); exit.Signal != 1 {
+		t.Fatalf("hung-up shell exit = %+v, want signal 1", exit)
 	}
 	if err := cli.Verify(t.Context()); err != nil {
 		t.Fatalf("link lost on hangup: %v", err)
 	}
-	again, err := cli.Attach(t.Context(), execenv.Window{})
-	if err != nil {
-		t.Fatalf("Attach after hangup: %v", err)
+	again := shellOn(t, sh.m, "sh")
+	if err := again.typeLine("echo again"); err != nil {
+		t.Fatal(err)
 	}
-	_ = again.Close()
+	again.expect("again")
+}
+
+// A command without a terminal has separate outputs, optional input and
+// its own exit code.
+func TestCommandsRunOnPipes(t *testing.T) {
+	t.Parallel()
+	cli, _ := startAgent(t)
+	m := procs.New(cli.Start)
+	t.Cleanup(func() { m.End(execenv.ErrClosed) })
+	if _, err := m.Start(t.Context(), execenv.ProcessSpec{Tag: "c", Argv: []string{"/bin/sh", "-c", "echo out; echo err >&2; exit 3"}}); err != nil {
+		t.Fatal(err)
+	}
+	if exit := waitExit(t, m, "c"); exit.Code != 3 {
+		t.Fatalf("exit = %+v, want code 3", exit)
+	}
+	got := drain(t, m, "c")
+	if got[execenv.StreamStdout] != "out\n" || got[execenv.StreamStderr] != "err\n" {
+		t.Fatalf("outputs = %q", got)
+	}
+	if _, err := m.Start(t.Context(), execenv.ProcessSpec{Tag: "cat", Argv: []string{"cat"}, Stdin: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.WriteInput("cat", 0, []byte("piped")); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.CloseInput("cat"); err != nil {
+		t.Fatal(err)
+	}
+	if exit := waitExit(t, m, "cat"); exit != (execenv.ExitStatus{}) {
+		t.Fatalf("cat exit = %+v", exit)
+	}
+	if got := drain(t, m, "cat"); got[execenv.StreamStdout] != "piped" {
+		t.Fatalf("cat output = %q", got)
+	}
+}
+
+func drain(t *testing.T, m *procs.Manager, tag string) map[execenv.Stream]string {
+	t.Helper()
+	a, err := m.Attach(tag, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	out := map[execenv.Stream]string{}
+	for {
+		ev, err := a.Next(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ev.Kind == execenv.OutputExit {
+			return out
+		}
+		out[ev.Stream] += string(ev.Data)
+	}
 }
 
 func TestQuiesceStopsIO(t *testing.T) {
 	t.Parallel()
 	cli, _ := startAgent(t)
-	term, err := cli.Attach(t.Context(), execenv.Window{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = term.Close() })
+	sh := startShell(t, cli)
 	if err := cli.Quiesce(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := term.Write([]byte("x")); !errors.Is(err, execenv.ErrFrozen) {
-		t.Fatalf("Write after quiesce = %v, want ErrFrozen", err)
-	}
-	if _, err := cli.Attach(t.Context(), execenv.Window{}); !errors.Is(err, execenv.ErrFrozen) {
-		t.Fatalf("Attach after quiesce = %v, want ErrFrozen", err)
+	if _, err := cli.Start(t.Context(), execenv.ProcessSpec{Tag: "more", Argv: []string{"true"}}); !errors.Is(err, execenv.ErrFrozen) {
+		t.Fatalf("Start after quiesce = %v, want ErrFrozen", err)
 	}
 	if err := cli.Reopen(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := term.Write([]byte("echo retained\n")); err != nil {
+	if err := sh.typeLine("echo retained"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cli.Attach(t.Context(), execenv.Window{}); !errors.Is(err, execenv.ErrBusy) {
-		t.Fatalf("second attach: %v", err)
-	}
-	_ = term.Close()
+	sh.expect("retained")
 }
 
 func TestListenGuestIsGuestOnly(t *testing.T) {
@@ -147,12 +263,8 @@ func TestTouchInPtyBecomesObservation(t *testing.T) {
 	t.Parallel()
 	cli, _ := startAgent(t)
 	fence := initialize(t, cli)
-	term, err := cli.Attach(t.Context(), execenv.Window{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = term.Close() })
-	if _, err := term.Write([]byte("touch seen.txt\n")); err != nil {
+	sh := startShell(t, cli)
+	if err := sh.typeLine("touch seen.txt"); err != nil {
 		t.Fatal(err)
 	}
 	waitObservation(t, cli, fence, execenv.ObservationCreateFile, "seen.txt")
@@ -163,14 +275,10 @@ func TestQuiesceReopenPreservesShellProcessAndState(t *testing.T) {
 	if err := cli.Verify(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	term, err := cli.Attach(t.Context(), execenv.Window{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = term.Close() })
+	sh := startShell(t, cli)
 	// Have the shell record its actual PID and an unexported variable. A newly
-	// attached shell cannot reconstruct this state from the projection.
-	if _, err := term.Write([]byte("retained=proof; printf '%s' \"$$\" > before-pid\n")); err != nil {
+	// started shell cannot reconstruct this state from the projection.
+	if err := sh.typeLine("retained=proof; printf '%s' \"$$\" > before-pid"); err != nil {
 		t.Fatal(err)
 	}
 	before := waitFile(t, filepath.Join(home, "before-pid"))
@@ -180,7 +288,7 @@ func TestQuiesceReopenPreservesShellProcessAndState(t *testing.T) {
 	if err := cli.Reopen(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := term.Write([]byte("printf '%s:%s' \"$$\" \"$retained\" > after-state\n")); err != nil {
+	if err := sh.typeLine("printf '%s:%s' \"$$\" \"$retained\" > after-state"); err != nil {
 		t.Fatal(err)
 	}
 	after := waitFile(t, filepath.Join(home, "after-state"))
@@ -208,38 +316,6 @@ func waitFile(t *testing.T, path string) []byte {
 	}
 }
 
-func TestCloseWhileQuiescedIsDeferredUntilReopen(t *testing.T) {
-	cli, _ := startAgent(t)
-	term, err := cli.Attach(t.Context(), execenv.Window{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := cli.Quiesce(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	started := time.Now()
-	if err := term.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if time.Since(started) > time.Second {
-		t.Fatal("closing paused terminal waited for guest RPC")
-	}
-	if err := cli.Reopen(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	replacement, err := cli.Attach(t.Context(), execenv.Window{})
-	if err != nil {
-		t.Fatalf("closed stream still occupied terminal: %v", err)
-	}
-	defer replacement.Close()
-	if err := term.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := replacement.Write([]byte("echo successor\n")); err != nil {
-		t.Fatalf("old close affected replacement: %v", err)
-	}
-}
-
 func TestShellHomeIsScratchOutsideProjectedTree(t *testing.T) {
 	home, scratch := t.TempDir(), t.TempDir()
 	host, guest := net.Pipe()
@@ -251,12 +327,8 @@ func TestShellHomeIsScratchOutsideProjectedTree(t *testing.T) {
 	t.Cleanup(func() { _ = host.Close() })
 	cli := agent.NewClient(host)
 	fence := initialize(t, cli)
-	term, err := cli.Attach(t.Context(), execenv.Window{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = term.Close() })
-	if _, err := term.Write([]byte("mkdir -p \"$HOME/.cache\" && echo cached > \"$HOME/.cache/x\" && printf '%s\\n%s\\n' \"$HOME\" \"$(pwd -P)\" > where.txt\n")); err != nil {
+	sh := startShell(t, cli)
+	if err := sh.typeLine("mkdir -p \"$HOME/.cache\" && echo cached > \"$HOME/.cache/x\" && printf '%s\\n%s\\n' \"$HOME\" \"$(pwd -P)\" > where.txt"); err != nil {
 		t.Fatal(err)
 	}
 	waitObservation(t, cli, fence, execenv.ObservationCreateFile, "where.txt")

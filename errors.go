@@ -7,7 +7,6 @@ import (
 
 var (
 	// ErrInvalid indicates a grant id, image, or network value cannot be used.
-	// A remote Terminal whose peer broke flow control also fails with it.
 	ErrInvalid = errors.New("execenv: invalid")
 	// ErrUnknownImage indicates the host does not have the requested image.
 	ErrUnknownImage = errors.New("execenv: unknown image")
@@ -36,12 +35,9 @@ var (
 	// the id afresh under a new Epoch. The caller rebuilds from its own
 	// journal, as after any new occupancy.
 	ErrLost = errors.New("execenv: grant lost")
-	// ErrBusy indicates a terminal is already attached.
-	ErrBusy = errors.New("execenv: terminal busy")
-	// ErrSuperseded indicates another client took over the terminal
-	// session this Terminal was attached to.
-	ErrSuperseded = errors.New("execenv: terminal superseded")
-	// ErrClosed indicates the terminal or content reader has been closed.
+	// ErrBusy indicates a grant already runs MaxProcesses processes.
+	ErrBusy = errors.New("execenv: too many processes")
+	// ErrClosed indicates the process, attachment or reader has ended.
 	ErrClosed = errors.New("execenv: closed")
 	// ErrNotFound indicates a path does not exist in the projection, or a
 	// terminal session to resume is gone.

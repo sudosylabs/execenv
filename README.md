@@ -10,7 +10,7 @@
 
 <p align="center">
   Check readiness, ensure a grant, project a workspace journal, observe
-  guest changes, attach a terminal, control execution under a fence, and
+  guest changes, run processes, control execution under a fence, and
   revoke. Isolation stays behind that contract.
 </p>
 
@@ -28,7 +28,7 @@
 
 This repository is two things that share one interface:
 
-1. A Go module your application imports (`Host`, `Env`, `Terminal`).
+1. A Go module your application imports (`Host`, `Env`).
 2. An installable Linux host process that serves that same interface.
 
 Your application is the authority for files. The grant is a projection: if
@@ -39,7 +39,7 @@ it disappears, you still have whatever you already stored.
 ## Build a client
 
 Install the module into the project that will start grants, push files,
-and attach a shell.
+and run shells and commands.
 
 ```sh
 go get github.com/sudosylabs/execenv@v1.2.3
@@ -147,7 +147,7 @@ func Dial() (execenv.Host, error) {
 the host offers the features this client needs. A verified client
 certificate may replace the token when the host enables mutual TLS. Keep one
 client per host for the life of the process: it holds two HTTP/2
-connections, one for control, terminals and logs, one for file content, so
+connections, one for control, processes and logs, one for file content, so
 a large upload never delays a keystroke. `Timeout` bounds dialing and the
 first exchange; `OperationTimeout` caps every call and defaults to 30
 seconds.
@@ -257,7 +257,7 @@ The guest sees enough virtual CPUs to use its `CPUMillis` and is throttled
 to exactly that; `MemoryBytes` is its memory; `DiskBytes` is its workspace
 disk, shared by the projected tree and the shell's scratch home.
 
-A grant is busy while a terminal is attached to it and after any call on
+A grant is busy while anything is attached to one of its processes and after any call on
 it. Once idle for `IdleTimeout` the host applies `IdleAction`: `IdleRevoke`
 revokes it; `IdleFreeze` freezes it as a fenced freeze would, keeping the
 caller's fence revision, so `ControlStatus` shows `frozen` and the caller
@@ -277,7 +277,7 @@ err := env.UpdateLimits(ctx, fence, execenv.Limits{
 ```
 
 Every `Env` has the whole contract below: fenced control, journal projection,
-semantic observations, one terminal and revoke. There is nothing to discover
+semantic observations, processes and revoke. There is nothing to discover
 and no type assertion to make.
 
 ### Control
@@ -312,8 +312,8 @@ Before the first fenced command its revision is zero, so enter the protocol with
 a `running` request before the first projection call.
 
 Control accepts `running`, `frozen`, and `revoked`. `frozen` blocks new I/O and
-preserves the existing PTY, processes and tree; a later `running` continues the
-same terminal. The isolated host acknowledges `frozen` only after every monitor
+preserves the existing processes, their output and the tree; a later `running`
+continues the same processes. The isolated host acknowledges `frozen` only after every monitor
 thread is confirmed stopped; a sent signal alone is insufficient. Agent I/O
 gating is separate from host execution suspension. A failed thaw keeps the local
 gate closed and pauses the instance again. Any error requires reconciliation; it
@@ -322,9 +322,8 @@ is never evidence that the requested state was reached.
 Revocation is terminal even if destruction initially fails. Failed destruction
 keeps the grant's resources reserved until a successful retry. Administrative
 `Host.Revoke(id)` destroys the current grant; `Env.Revoke` targets only the
-captured epoch and cannot destroy a replacement. Remote attach requests bind
-their captured epoch; input, resize and hangup name the attachment by an
-unguessable id the host hands only to the client that attached.
+captured epoch and cannot destroy a replacement. Process reads bind the
+captured epoch; starts, input, resize and signals carry the fence.
 
 ### Seeds
 
@@ -439,7 +438,7 @@ receipt, err := env.ApplyProjection(ctx, execenv.ProjectionApply{
 })
 ```
 
-Initialize once, before opening the first terminal, into an empty workspace.
+Initialize once, before starting the first process, into an empty workspace.
 Every Apply binds an exact grant/epoch/revision fence, mutation ID, from/through
 journal cursors, expected host cursor, stable entry IDs, kinds, and opaque
 content versions. The host compares versions for equality and never parses
@@ -530,7 +529,7 @@ Overflow reports `ErrLagged` without discarding the retained prefix. A cursor
 before the acknowledged prefix also returns `ErrLagged`.
 
 Tool caches, virtual environments and dotfiles written through `$HOME` are not
-in `/workspace` (see Attach) and never appear here. A project-local `venv` or
+in `/workspace` (see Run processes) and never appear here. A project-local `venv` or
 `node_modules` inside `/workspace` is observed and counts toward the retention
 bounds unless your `IgnoreRules` leave it out.
 
@@ -580,7 +579,7 @@ helper that cannot serve the journal is refused at Ensure. Run `make certify`
 with the intended kernel/rootfs on real isolation hardware before production
 use; it covers TLS remote journal projection, immutable guest events,
 accepted-outcome echoes, semantic directory moves and preservation of the same
-shell/PTY through save and containment. Portable unit tests and Linux build
+shell process through save and containment. Portable unit tests and Linux build
 containers are not that certification.
 
 ### Process log
@@ -639,70 +638,91 @@ requires both). A guest helper without it says so in its handshake and is
 refused at Ensure, like one that cannot serve the journal. The in-memory
 adapter's shell records itself and every command line it runs.
 
-### Attach a terminal
+### Run processes
 
-Each grant has at most one terminal session: one shell plus its most recent
-1 MiB of output. Clients attach to it; the shell outlives them. Bytes are not
-workspace mutations.
-
-```go
-term, err := env.Attach(ctx, execenv.AttachRequest{Window: execenv.Window{Cols: 120, Rows: 40}})
-if err != nil {
-	return err
-}
-defer term.Close() // detach; the shell keeps running
-
-go copyTo(term, userInput)  // io.Reader from your UI
-go copyTo(userOutput, term) // io.Writer to your UI
-
-_ = term.Resize(ctx, execenv.Window{Cols: 80, Rows: 24})
-```
-
-Output positions are absolute byte offsets from the shell's first byte.
-`Start()` is where this attachment begins and `Offset()` is the next byte
-`Read` returns. Remember `term.ID()` and `term.Offset()` to come back later,
-for example after a lost connection:
+A grant runs processes by tag: up to 32 at once. A shell is a process with
+a terminal; a command is one without. Each tag is the caller's and unique
+among the grant's running processes; every other call names the process
+by it. A process lives in the grant, not on the connection that started
+it, and its output is kept on the host for any number of readers.
 
 ```go
-term, err := env.Attach(ctx, execenv.AttachRequest{
-	Window: win,
-	Resume: &execenv.TerminalPosition{Terminal: id, Offset: offset},
+// A shell: an empty Argv with a terminal is the image's login shell.
+_, err := env.Start(ctx, fence, execenv.ProcessSpec{
+	Tag:         "sh",
+	PTY:         &execenv.Window{Cols: 120, Rows: 40},
+	DetachGrace: time.Minute, // end it once nothing has been attached for a minute
 })
-switch {
-case errors.Is(err, execenv.ErrNotFound):
-	// The shell is gone. Attach again without Resume for a new one.
-case err == nil && term.Start() > offset:
-	// Output between offset and Start was overwritten and is lost.
+
+// A command: separate stdout and stderr, its own exit code.
+_, err = env.Start(ctx, fence, execenv.ProcessSpec{
+	Tag:     "test",
+	Argv:    []string{"go", "test", "./..."},
+	Dir:     "src",
+	Env:     map[string]string{"CGO_ENABLED": "0"},
+	Timeout: 10 * time.Minute, // TERM, then KILL five seconds later
+})
+```
+
+Read output by attaching. Each event carries its stream and absolute byte
+offset; remember the offsets you have read and attach from them after a
+lost connection to get exactly what followed:
+
+```go
+a, err := env.AttachProcess(ctx, "sh", map[execenv.Stream]uint64{execenv.StreamPTY: offset})
+defer a.Close() // detach; the process keeps running
+for {
+	out, err := a.Next(ctx)
+	if errors.Is(err, io.EOF) {
+		break // after OutputExit
+	}
+	switch out.Kind {
+	case execenv.OutputData:
+		offset = out.Offset + uint64(len(out.Data))
+	case execenv.OutputTruncated:
+		// Bytes from out.Offset to out.To fell out of the history.
+	case execenv.OutputExit:
+		// out.Exit.Code, or out.Exit.Signal
+	}
 }
 ```
 
-- No live session: Attach starts a shell; `Start()` is 0.
-- Resume: output from `Offset` (or from the oldest retained byte) then live
-  output. An offset beyond what the shell produced is `ErrInvalid`.
-- No Resume while a shell is live: the last 16 KiB of output, then a
-  redraw of full-screen programs.
-- Another client attached: `ErrBusy`, unless `Takeover: true`, which
-  supersedes it; its `Read` and `Write` return `ErrSuperseded`.
-- `Close` detaches. With no client attached the shell keeps running for the
-  host's `grace` (default 60s), then is hung up. A lost remote connection is
-  a detach.
-- `Hangup` ends the shell now. When the shell exits, `Read` returns `io.EOF`
-  after the remaining output, and the next Attach starts a new shell.
-- A reader that falls behind the retained history skips ahead; `Offset()`
-  jumps. Over a remote connection each terminal has its own 256 KiB flow
-  control window per direction: the client buffers at most that much unread
-  output, and the host stops reading a terminal whose reader is stalled
-  until it reads again, so one stalled terminal never delays calls or other
-  terminals. `Write` blocks while the host has not taken earlier input.
-- Freeze and thaw keep the session. Revoke ends it (`ErrRevoked`).
+Input is by offset too. `WriteInput` appends at the offset you give and
+returns the new one; bytes the process already took are dropped, so a
+resend after a lost response types nothing twice, and an offset past what
+it took is `ErrConflict`. `ProcessInfo.Input` says where input stands.
 
-Zero Cols or Rows means 80×24. The window applies on every attach.
+```go
+next, err := env.WriteInput(ctx, fence, "sh", input, []byte("make\n"))
+err = env.Resize(ctx, fence, "sh", execenv.Window{Cols: 80, Rows: 24})
+err = env.SignalProcess(ctx, fence, "sh", execenv.SignalInterrupt)
+err = env.CloseInput(ctx, fence, "test") // a command started with Stdin
+```
 
-The shell starts in `/workspace` (`execenv.GuestWorkspace`), the projected
-tree. Its `$HOME` is `/run/execenv/home` (`execenv.GuestHome`), guest-local
-scratch outside the tree: it is not projected, observed, or harvested, and
-it is discarded with the grant. Both live on the grant's writable disk,
-not in guest memory.
+- Streams are `pty` for a terminal, else `stdout` and `stderr`. Each keeps
+  `HistoryBytes` (1 MiB by default, at most 4 MiB). Attaching without an
+  offset for a stream starts at its oldest byte still held; an offset past
+  its end is `ErrInvalid`.
+- A command's input is closed at once unless `Stdin` is set.
+- `Process` and `ListProcesses` describe processes, running or exited.
+  An exited process's output stays readable until its tag is started
+  again. Starting a tag that is still running is `ErrConflict`; a 33rd
+  running process is `ErrBusy`.
+- Signals are `INT`, `TERM`, `KILL`, `HUP` and `QUIT`, sent to the
+  process's whole session.
+- Freeze refuses input and starts (`ErrFrozen`) and keeps every process.
+  Revoke ends them (`ErrRevoked`); a lost grant ends them with `ErrLost`.
+- Over a remote connection each attachment has its own 256 KiB flow
+  control window: a stalled reader holds back only its own output, never
+  calls or other attachments.
+
+Zero Cols or Rows means 80×24.
+
+A process starts in `/workspace` (`execenv.GuestWorkspace`), the projected
+tree, or `Dir` within it. Its `$HOME` is `/run/execenv/home`
+(`execenv.GuestHome`), guest-local scratch outside the tree: it is not
+projected, observed, or harvested, and it is discarded with the grant. Both
+live on the grant's writable disk, not in guest memory.
 
 ### Revoke
 
@@ -718,9 +738,9 @@ before this call.
 A grant's environment can end without a revoke: its machine exits, its
 guest kernel panics, or the host loses the guest link for good. The host
 notices on its own. It frees the grant's resources and cleans up as a revoke would, and
-every call on that occupancy fails with `ErrLost`: Attach, Control,
-ControlStatus, projection, Observe, the process log, and an attached
-terminal's Read and Write. Over the wire the same sentinel reaches the
+every call on that occupancy fails with `ErrLost`: processes and their
+attachments, Control, ControlStatus, projection, Observe and the process
+log. Over the wire the same sentinel reaches the
 client.
 
 `Ensure` of the lost id also returns `ErrLost`, so a reconnecting caller
@@ -761,16 +781,16 @@ Match with `errors.Is`. Wrappers preserve the sentinel.
 | `ErrFrozen` | I/O while frozen |
 | `ErrRevoked` | grant is gone |
 | `ErrLost` | grant's environment ended without a revoke; Revoke, then Ensure again |
-| `ErrBusy` | a terminal is already attached |
-| `ErrClosed` | terminal or content reader closed (not revoke) |
-| `ErrNotFound` | path missing from the projection |
+| `ErrBusy` | the grant already runs 32 processes |
+| `ErrClosed` | attachment or content reader closed, or input to a process that exited (not revoke) |
+| `ErrNotFound` | path missing from the projection, or no process has that tag |
 | `ErrLagged` | observations no longer retained, or a process log position already acknowledged |
 | `ErrTooLarge` | metadata over its bound, or too many content handles |
 | `ErrQuota` | the grant's workspace disk is full; the call changed nothing |
 | `ErrConnection` | remote session lost |
 | `ErrNetwork` | allowlist requested, host offers none |
 
-Do not log tokens, tree bodies, or PTY octets.
+Do not log tokens, tree bodies, or process input and output.
 
 ### Limits
 
@@ -788,13 +808,15 @@ Do not log tokens, tree bodies, or PTY octets.
 | Reported working directory | 4096 bytes |
 | Ignore file read | 64 KiB (larger uses the fallback) |
 | Ignore fallback | 256 patterns, 16 KiB |
-| Content and terminal output per message | 64 KiB |
+| Content and process output per message | 64 KiB |
 | HTTP/2 stream window, client receiving | 256 KiB interactive, 4 MiB content |
 | HTTP/2 stream window, host receiving | 4 MiB |
 | Path length | 4096 bytes UTF-8 |
 | Path segments | 64 |
 | One segment | 255 bytes |
-| Terminals per environment | 1 |
+| Running processes per grant | 32 |
+| Output history per stream | 1 MiB by default, 4 MiB at most |
+| Process tag | 1–64 characters `[A-Za-z0-9._-:]` |
 
 The workspace inside the guest is `/workspace`; `$HOME` is
 `/run/execenv/home`. Both share the grant's workspace disk, its

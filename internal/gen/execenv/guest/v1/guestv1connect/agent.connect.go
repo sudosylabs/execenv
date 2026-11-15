@@ -36,14 +36,20 @@ const (
 const (
 	// AgentServiceHelloProcedure is the fully-qualified name of the AgentService's Hello RPC.
 	AgentServiceHelloProcedure = "/execenv.guest.v1.AgentService/Hello"
-	// AgentServiceAttachProcedure is the fully-qualified name of the AgentService's Attach RPC.
-	AgentServiceAttachProcedure = "/execenv.guest.v1.AgentService/Attach"
-	// AgentServiceInputProcedure is the fully-qualified name of the AgentService's Input RPC.
-	AgentServiceInputProcedure = "/execenv.guest.v1.AgentService/Input"
-	// AgentServiceResizeProcedure is the fully-qualified name of the AgentService's Resize RPC.
-	AgentServiceResizeProcedure = "/execenv.guest.v1.AgentService/Resize"
-	// AgentServiceDetachProcedure is the fully-qualified name of the AgentService's Detach RPC.
-	AgentServiceDetachProcedure = "/execenv.guest.v1.AgentService/Detach"
+	// AgentServiceSpawnProcedure is the fully-qualified name of the AgentService's Spawn RPC.
+	AgentServiceSpawnProcedure = "/execenv.guest.v1.AgentService/Spawn"
+	// AgentServiceOutputProcedure is the fully-qualified name of the AgentService's Output RPC.
+	AgentServiceOutputProcedure = "/execenv.guest.v1.AgentService/Output"
+	// AgentServiceFeedProcedure is the fully-qualified name of the AgentService's Feed RPC.
+	AgentServiceFeedProcedure = "/execenv.guest.v1.AgentService/Feed"
+	// AgentServiceCloseFeedProcedure is the fully-qualified name of the AgentService's CloseFeed RPC.
+	AgentServiceCloseFeedProcedure = "/execenv.guest.v1.AgentService/CloseFeed"
+	// AgentServiceResizeProcessProcedure is the fully-qualified name of the AgentService's
+	// ResizeProcess RPC.
+	AgentServiceResizeProcessProcedure = "/execenv.guest.v1.AgentService/ResizeProcess"
+	// AgentServiceSignalProcessProcedure is the fully-qualified name of the AgentService's
+	// SignalProcess RPC.
+	AgentServiceSignalProcessProcedure = "/execenv.guest.v1.AgentService/SignalProcess"
 	// AgentServiceFreezeProcedure is the fully-qualified name of the AgentService's Freeze RPC.
 	AgentServiceFreezeProcedure = "/execenv.guest.v1.AgentService/Freeze"
 	// AgentServiceThawProcedure is the fully-qualified name of the AgentService's Thaw RPC.
@@ -97,14 +103,18 @@ type AgentServiceClient interface {
 	// Hello says what this helper serves. The host refuses a helper on
 	// another protocol, or without the journal or the process log.
 	Hello(context.Context, *connect.Request[v1.HelloRequest]) (*connect.Response[v1.HelloResponse], error)
-	// Attach starts the login shell. The first message is Started; the rest
-	// are output. A clean end is the shell's exit.
-	Attach(context.Context, *connect.Request[v1.AttachRequest]) (*connect.ServerStreamForClient[v1.AttachResponse], error)
-	// Input carries keystrokes for one shell. The first message names it.
-	Input(context.Context) *connect.ClientStreamForClient[v1.InputRequest, v1.InputResponse]
-	Resize(context.Context, *connect.Request[v1.ResizeRequest]) (*connect.Response[v1.ResizeResponse], error)
-	// Detach ends the shell.
-	Detach(context.Context, *connect.Request[v1.DetachRequest]) (*connect.Response[v1.DetachResponse], error)
+	// Processes, by tag. The host keeps their history, grace and timeout;
+	// the guest runs them inside the contained workload.
+	Spawn(context.Context, *connect.Request[v1.SpawnRequest]) (*connect.Response[v1.SpawnResponse], error)
+	// Output streams every byte the process writes, each with its stream,
+	// then its exit. It opens with an empty event as soon as the guest has
+	// the process. The host opens it right after Spawn.
+	Output(context.Context, *connect.Request[v1.OutputRequest]) (*connect.ServerStreamForClient[v1.OutputResponse], error)
+	// Feed carries input for one process. The first message names it.
+	Feed(context.Context) *connect.ClientStreamForClient[v1.FeedRequest, v1.FeedResponse]
+	CloseFeed(context.Context, *connect.Request[v1.ProcessRef]) (*connect.Response[v1.Empty], error)
+	ResizeProcess(context.Context, *connect.Request[v1.ResizeRequest]) (*connect.Response[v1.Empty], error)
+	SignalProcess(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.Empty], error)
 	// Freeze closes I/O before the host pauses the machine; Thaw reopens it.
 	Freeze(context.Context, *connect.Request[v1.FreezeRequest]) (*connect.Response[v1.FreezeResponse], error)
 	Thaw(context.Context, *connect.Request[v1.ThawRequest]) (*connect.Response[v1.ThawResponse], error)
@@ -148,28 +158,40 @@ func NewAgentServiceClient(httpClient connect.HTTPClient, baseURL string, opts .
 			connect.WithSchema(agentServiceMethods.ByName("Hello")),
 			connect.WithClientOptions(opts...),
 		),
-		attach: connect.NewClient[v1.AttachRequest, v1.AttachResponse](
+		spawn: connect.NewClient[v1.SpawnRequest, v1.SpawnResponse](
 			httpClient,
-			baseURL+AgentServiceAttachProcedure,
-			connect.WithSchema(agentServiceMethods.ByName("Attach")),
+			baseURL+AgentServiceSpawnProcedure,
+			connect.WithSchema(agentServiceMethods.ByName("Spawn")),
 			connect.WithClientOptions(opts...),
 		),
-		input: connect.NewClient[v1.InputRequest, v1.InputResponse](
+		output: connect.NewClient[v1.OutputRequest, v1.OutputResponse](
 			httpClient,
-			baseURL+AgentServiceInputProcedure,
-			connect.WithSchema(agentServiceMethods.ByName("Input")),
+			baseURL+AgentServiceOutputProcedure,
+			connect.WithSchema(agentServiceMethods.ByName("Output")),
 			connect.WithClientOptions(opts...),
 		),
-		resize: connect.NewClient[v1.ResizeRequest, v1.ResizeResponse](
+		feed: connect.NewClient[v1.FeedRequest, v1.FeedResponse](
 			httpClient,
-			baseURL+AgentServiceResizeProcedure,
-			connect.WithSchema(agentServiceMethods.ByName("Resize")),
+			baseURL+AgentServiceFeedProcedure,
+			connect.WithSchema(agentServiceMethods.ByName("Feed")),
 			connect.WithClientOptions(opts...),
 		),
-		detach: connect.NewClient[v1.DetachRequest, v1.DetachResponse](
+		closeFeed: connect.NewClient[v1.ProcessRef, v1.Empty](
 			httpClient,
-			baseURL+AgentServiceDetachProcedure,
-			connect.WithSchema(agentServiceMethods.ByName("Detach")),
+			baseURL+AgentServiceCloseFeedProcedure,
+			connect.WithSchema(agentServiceMethods.ByName("CloseFeed")),
+			connect.WithClientOptions(opts...),
+		),
+		resizeProcess: connect.NewClient[v1.ResizeRequest, v1.Empty](
+			httpClient,
+			baseURL+AgentServiceResizeProcessProcedure,
+			connect.WithSchema(agentServiceMethods.ByName("ResizeProcess")),
+			connect.WithClientOptions(opts...),
+		),
+		signalProcess: connect.NewClient[v1.SignalRequest, v1.Empty](
+			httpClient,
+			baseURL+AgentServiceSignalProcessProcedure,
+			connect.WithSchema(agentServiceMethods.ByName("SignalProcess")),
 			connect.WithClientOptions(opts...),
 		),
 		freeze: connect.NewClient[v1.FreezeRequest, v1.FreezeResponse](
@@ -292,10 +314,12 @@ func NewAgentServiceClient(httpClient connect.HTTPClient, baseURL string, opts .
 // agentServiceClient implements AgentServiceClient.
 type agentServiceClient struct {
 	hello                        *connect.Client[v1.HelloRequest, v1.HelloResponse]
-	attach                       *connect.Client[v1.AttachRequest, v1.AttachResponse]
-	input                        *connect.Client[v1.InputRequest, v1.InputResponse]
-	resize                       *connect.Client[v1.ResizeRequest, v1.ResizeResponse]
-	detach                       *connect.Client[v1.DetachRequest, v1.DetachResponse]
+	spawn                        *connect.Client[v1.SpawnRequest, v1.SpawnResponse]
+	output                       *connect.Client[v1.OutputRequest, v1.OutputResponse]
+	feed                         *connect.Client[v1.FeedRequest, v1.FeedResponse]
+	closeFeed                    *connect.Client[v1.ProcessRef, v1.Empty]
+	resizeProcess                *connect.Client[v1.ResizeRequest, v1.Empty]
+	signalProcess                *connect.Client[v1.SignalRequest, v1.Empty]
 	freeze                       *connect.Client[v1.FreezeRequest, v1.FreezeResponse]
 	thaw                         *connect.Client[v1.ThawRequest, v1.ThawResponse]
 	processEvents                *connect.Client[v1.ProcessEventsRequest, v1.ProcessEventsResponse]
@@ -322,24 +346,34 @@ func (c *agentServiceClient) Hello(ctx context.Context, req *connect.Request[v1.
 	return c.hello.CallUnary(ctx, req)
 }
 
-// Attach calls execenv.guest.v1.AgentService.Attach.
-func (c *agentServiceClient) Attach(ctx context.Context, req *connect.Request[v1.AttachRequest]) (*connect.ServerStreamForClient[v1.AttachResponse], error) {
-	return c.attach.CallServerStream(ctx, req)
+// Spawn calls execenv.guest.v1.AgentService.Spawn.
+func (c *agentServiceClient) Spawn(ctx context.Context, req *connect.Request[v1.SpawnRequest]) (*connect.Response[v1.SpawnResponse], error) {
+	return c.spawn.CallUnary(ctx, req)
 }
 
-// Input calls execenv.guest.v1.AgentService.Input.
-func (c *agentServiceClient) Input(ctx context.Context) *connect.ClientStreamForClient[v1.InputRequest, v1.InputResponse] {
-	return c.input.CallClientStream(ctx)
+// Output calls execenv.guest.v1.AgentService.Output.
+func (c *agentServiceClient) Output(ctx context.Context, req *connect.Request[v1.OutputRequest]) (*connect.ServerStreamForClient[v1.OutputResponse], error) {
+	return c.output.CallServerStream(ctx, req)
 }
 
-// Resize calls execenv.guest.v1.AgentService.Resize.
-func (c *agentServiceClient) Resize(ctx context.Context, req *connect.Request[v1.ResizeRequest]) (*connect.Response[v1.ResizeResponse], error) {
-	return c.resize.CallUnary(ctx, req)
+// Feed calls execenv.guest.v1.AgentService.Feed.
+func (c *agentServiceClient) Feed(ctx context.Context) *connect.ClientStreamForClient[v1.FeedRequest, v1.FeedResponse] {
+	return c.feed.CallClientStream(ctx)
 }
 
-// Detach calls execenv.guest.v1.AgentService.Detach.
-func (c *agentServiceClient) Detach(ctx context.Context, req *connect.Request[v1.DetachRequest]) (*connect.Response[v1.DetachResponse], error) {
-	return c.detach.CallUnary(ctx, req)
+// CloseFeed calls execenv.guest.v1.AgentService.CloseFeed.
+func (c *agentServiceClient) CloseFeed(ctx context.Context, req *connect.Request[v1.ProcessRef]) (*connect.Response[v1.Empty], error) {
+	return c.closeFeed.CallUnary(ctx, req)
+}
+
+// ResizeProcess calls execenv.guest.v1.AgentService.ResizeProcess.
+func (c *agentServiceClient) ResizeProcess(ctx context.Context, req *connect.Request[v1.ResizeRequest]) (*connect.Response[v1.Empty], error) {
+	return c.resizeProcess.CallUnary(ctx, req)
+}
+
+// SignalProcess calls execenv.guest.v1.AgentService.SignalProcess.
+func (c *agentServiceClient) SignalProcess(ctx context.Context, req *connect.Request[v1.SignalRequest]) (*connect.Response[v1.Empty], error) {
+	return c.signalProcess.CallUnary(ctx, req)
 }
 
 // Freeze calls execenv.guest.v1.AgentService.Freeze.
@@ -442,14 +476,18 @@ type AgentServiceHandler interface {
 	// Hello says what this helper serves. The host refuses a helper on
 	// another protocol, or without the journal or the process log.
 	Hello(context.Context, *connect.Request[v1.HelloRequest]) (*connect.Response[v1.HelloResponse], error)
-	// Attach starts the login shell. The first message is Started; the rest
-	// are output. A clean end is the shell's exit.
-	Attach(context.Context, *connect.Request[v1.AttachRequest], *connect.ServerStream[v1.AttachResponse]) error
-	// Input carries keystrokes for one shell. The first message names it.
-	Input(context.Context, *connect.ClientStream[v1.InputRequest]) (*connect.Response[v1.InputResponse], error)
-	Resize(context.Context, *connect.Request[v1.ResizeRequest]) (*connect.Response[v1.ResizeResponse], error)
-	// Detach ends the shell.
-	Detach(context.Context, *connect.Request[v1.DetachRequest]) (*connect.Response[v1.DetachResponse], error)
+	// Processes, by tag. The host keeps their history, grace and timeout;
+	// the guest runs them inside the contained workload.
+	Spawn(context.Context, *connect.Request[v1.SpawnRequest]) (*connect.Response[v1.SpawnResponse], error)
+	// Output streams every byte the process writes, each with its stream,
+	// then its exit. It opens with an empty event as soon as the guest has
+	// the process. The host opens it right after Spawn.
+	Output(context.Context, *connect.Request[v1.OutputRequest], *connect.ServerStream[v1.OutputResponse]) error
+	// Feed carries input for one process. The first message names it.
+	Feed(context.Context, *connect.ClientStream[v1.FeedRequest]) (*connect.Response[v1.FeedResponse], error)
+	CloseFeed(context.Context, *connect.Request[v1.ProcessRef]) (*connect.Response[v1.Empty], error)
+	ResizeProcess(context.Context, *connect.Request[v1.ResizeRequest]) (*connect.Response[v1.Empty], error)
+	SignalProcess(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.Empty], error)
 	// Freeze closes I/O before the host pauses the machine; Thaw reopens it.
 	Freeze(context.Context, *connect.Request[v1.FreezeRequest]) (*connect.Response[v1.FreezeResponse], error)
 	Thaw(context.Context, *connect.Request[v1.ThawRequest]) (*connect.Response[v1.ThawResponse], error)
@@ -489,28 +527,40 @@ func NewAgentServiceHandler(svc AgentServiceHandler, opts ...connect.HandlerOpti
 		connect.WithSchema(agentServiceMethods.ByName("Hello")),
 		connect.WithHandlerOptions(opts...),
 	)
-	agentServiceAttachHandler := connect.NewServerStreamHandler(
-		AgentServiceAttachProcedure,
-		svc.Attach,
-		connect.WithSchema(agentServiceMethods.ByName("Attach")),
+	agentServiceSpawnHandler := connect.NewUnaryHandler(
+		AgentServiceSpawnProcedure,
+		svc.Spawn,
+		connect.WithSchema(agentServiceMethods.ByName("Spawn")),
 		connect.WithHandlerOptions(opts...),
 	)
-	agentServiceInputHandler := connect.NewClientStreamHandler(
-		AgentServiceInputProcedure,
-		svc.Input,
-		connect.WithSchema(agentServiceMethods.ByName("Input")),
+	agentServiceOutputHandler := connect.NewServerStreamHandler(
+		AgentServiceOutputProcedure,
+		svc.Output,
+		connect.WithSchema(agentServiceMethods.ByName("Output")),
 		connect.WithHandlerOptions(opts...),
 	)
-	agentServiceResizeHandler := connect.NewUnaryHandler(
-		AgentServiceResizeProcedure,
-		svc.Resize,
-		connect.WithSchema(agentServiceMethods.ByName("Resize")),
+	agentServiceFeedHandler := connect.NewClientStreamHandler(
+		AgentServiceFeedProcedure,
+		svc.Feed,
+		connect.WithSchema(agentServiceMethods.ByName("Feed")),
 		connect.WithHandlerOptions(opts...),
 	)
-	agentServiceDetachHandler := connect.NewUnaryHandler(
-		AgentServiceDetachProcedure,
-		svc.Detach,
-		connect.WithSchema(agentServiceMethods.ByName("Detach")),
+	agentServiceCloseFeedHandler := connect.NewUnaryHandler(
+		AgentServiceCloseFeedProcedure,
+		svc.CloseFeed,
+		connect.WithSchema(agentServiceMethods.ByName("CloseFeed")),
+		connect.WithHandlerOptions(opts...),
+	)
+	agentServiceResizeProcessHandler := connect.NewUnaryHandler(
+		AgentServiceResizeProcessProcedure,
+		svc.ResizeProcess,
+		connect.WithSchema(agentServiceMethods.ByName("ResizeProcess")),
+		connect.WithHandlerOptions(opts...),
+	)
+	agentServiceSignalProcessHandler := connect.NewUnaryHandler(
+		AgentServiceSignalProcessProcedure,
+		svc.SignalProcess,
+		connect.WithSchema(agentServiceMethods.ByName("SignalProcess")),
 		connect.WithHandlerOptions(opts...),
 	)
 	agentServiceFreezeHandler := connect.NewUnaryHandler(
@@ -631,14 +681,18 @@ func NewAgentServiceHandler(svc AgentServiceHandler, opts ...connect.HandlerOpti
 		switch r.URL.Path {
 		case AgentServiceHelloProcedure:
 			agentServiceHelloHandler.ServeHTTP(w, r)
-		case AgentServiceAttachProcedure:
-			agentServiceAttachHandler.ServeHTTP(w, r)
-		case AgentServiceInputProcedure:
-			agentServiceInputHandler.ServeHTTP(w, r)
-		case AgentServiceResizeProcedure:
-			agentServiceResizeHandler.ServeHTTP(w, r)
-		case AgentServiceDetachProcedure:
-			agentServiceDetachHandler.ServeHTTP(w, r)
+		case AgentServiceSpawnProcedure:
+			agentServiceSpawnHandler.ServeHTTP(w, r)
+		case AgentServiceOutputProcedure:
+			agentServiceOutputHandler.ServeHTTP(w, r)
+		case AgentServiceFeedProcedure:
+			agentServiceFeedHandler.ServeHTTP(w, r)
+		case AgentServiceCloseFeedProcedure:
+			agentServiceCloseFeedHandler.ServeHTTP(w, r)
+		case AgentServiceResizeProcessProcedure:
+			agentServiceResizeProcessHandler.ServeHTTP(w, r)
+		case AgentServiceSignalProcessProcedure:
+			agentServiceSignalProcessHandler.ServeHTTP(w, r)
 		case AgentServiceFreezeProcedure:
 			agentServiceFreezeHandler.ServeHTTP(w, r)
 		case AgentServiceThawProcedure:
@@ -690,20 +744,28 @@ func (UnimplementedAgentServiceHandler) Hello(context.Context, *connect.Request[
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.Hello is not implemented"))
 }
 
-func (UnimplementedAgentServiceHandler) Attach(context.Context, *connect.Request[v1.AttachRequest], *connect.ServerStream[v1.AttachResponse]) error {
-	return connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.Attach is not implemented"))
+func (UnimplementedAgentServiceHandler) Spawn(context.Context, *connect.Request[v1.SpawnRequest]) (*connect.Response[v1.SpawnResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.Spawn is not implemented"))
 }
 
-func (UnimplementedAgentServiceHandler) Input(context.Context, *connect.ClientStream[v1.InputRequest]) (*connect.Response[v1.InputResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.Input is not implemented"))
+func (UnimplementedAgentServiceHandler) Output(context.Context, *connect.Request[v1.OutputRequest], *connect.ServerStream[v1.OutputResponse]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.Output is not implemented"))
 }
 
-func (UnimplementedAgentServiceHandler) Resize(context.Context, *connect.Request[v1.ResizeRequest]) (*connect.Response[v1.ResizeResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.Resize is not implemented"))
+func (UnimplementedAgentServiceHandler) Feed(context.Context, *connect.ClientStream[v1.FeedRequest]) (*connect.Response[v1.FeedResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.Feed is not implemented"))
 }
 
-func (UnimplementedAgentServiceHandler) Detach(context.Context, *connect.Request[v1.DetachRequest]) (*connect.Response[v1.DetachResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.Detach is not implemented"))
+func (UnimplementedAgentServiceHandler) CloseFeed(context.Context, *connect.Request[v1.ProcessRef]) (*connect.Response[v1.Empty], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.CloseFeed is not implemented"))
+}
+
+func (UnimplementedAgentServiceHandler) ResizeProcess(context.Context, *connect.Request[v1.ResizeRequest]) (*connect.Response[v1.Empty], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.ResizeProcess is not implemented"))
+}
+
+func (UnimplementedAgentServiceHandler) SignalProcess(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.Empty], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.SignalProcess is not implemented"))
 }
 
 func (UnimplementedAgentServiceHandler) Freeze(context.Context, *connect.Request[v1.FreezeRequest]) (*connect.Response[v1.FreezeResponse], error) {

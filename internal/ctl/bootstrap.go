@@ -33,7 +33,6 @@ const (
 	securityTLS     = "tls"
 	securityLocal   = "insecure_local"
 	adapterIsolated = "isolated"
-	defaultGrace    = "30s"
 	mkfsName        = "mkfs.ext4"
 )
 
@@ -355,7 +354,6 @@ func writeHostConfig(opts Options, mkfs string) error {
 	if first {
 		doc.Network = networkNone
 		doc.Allow = nil
-		doc.GraceText = defaultGrace
 	}
 	return daemon.Save(opts.configPath(), doc)
 }

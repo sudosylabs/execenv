@@ -90,7 +90,6 @@ func TestLiveConformance(t *testing.T) {
 	execenvtest.Run(t, func(t *testing.T, cfg execenvtest.Config) execenv.Host {
 		t.Helper()
 		host := liveHost(t, 2, "")
-		host.cfg.TerminalGrace = cfg.TerminalGrace
 		t.Cleanup(func() { revokeAll(host) })
 		return host
 	})
@@ -104,7 +103,7 @@ func TestLiveTouchIsObserved(t *testing.T) {
 		t.Fatal(err)
 	}
 	fence := liveJournal(t, env)
-	term := liveShell(t, env)
+	term := liveShell(t, env, fence)
 	if _, err := term.Write([]byte("touch seen.txt\n")); err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +121,7 @@ func TestLiveScratchHomeAndDiskWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	fence := liveJournal(t, env)
-	term := liveShell(t, env)
+	term := liveShell(t, env, fence)
 	script := "mkdir -p \"$HOME/.cache/pip\" && echo x > \"$HOME/.cache/pip/y\" && " +
 		"dd if=/dev/zero of=/workspace/big bs=1M count=256 2>/dev/null && rm /workspace/big && " +
 		"printf '%s\\n%s\\n' \"$HOME\" \"$(pwd)\" > where.txt\n"
@@ -212,13 +211,9 @@ func liveJournal(t *testing.T, env execenv.Env) execenv.ProjectionFence {
 	return fence
 }
 
-func liveShell(t *testing.T, env execenv.Env) execenv.Terminal {
+func liveShell(t *testing.T, env execenv.Env, fence execenv.ProjectionFence) *execenvtest.ShellConn {
 	t.Helper()
-	term, err := env.Attach(t.Context(), execenv.AttachRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = term.Close() })
+	term := execenvtest.OpenShell(t, env, fence, "sh")
 	go func() { _, _ = io.Copy(io.Discard, term) }()
 	return term
 }
@@ -284,6 +279,6 @@ func TestLiveProcessConformance(t *testing.T) {
 			t.Fatal(err)
 		}
 		fence := runningFence(t, env)
-		return execenvtest.Traced{Env: env, Fence: fence, Workload: execenvtest.TerminalWorkload(t, env)}
+		return execenvtest.Traced{Env: env, Fence: fence, Workload: execenvtest.ShellWorkload(t, env, fence)}
 	})
 }

@@ -9,40 +9,8 @@ import (
 	"syscall"
 
 	"github.com/sudosylabs/execenv"
-	"github.com/sudosylabs/execenv/internal/workload"
 	"golang.org/x/sys/unix"
 )
-
-// startShell is a login-style interactive shell whose cwd is the projected
-// tree and whose HOME is guest-local scratch outside it, so caches and
-// dotfiles written through HOME are not observed or harvested.
-func startShell(home, scratch string, win execenv.Window, group *workload.Group) (*shell, error) {
-	cmd := exec.Command("/bin/sh", "-l")
-	if group != nil {
-		executable, err := os.Executable()
-		if err != nil {
-			return nil, err
-		}
-		cmd = exec.Command(executable, "workload-shell")
-		if err := group.Configure(cmd); err != nil {
-			return nil, err
-		}
-	}
-	cmd.Dir = home
-	cmd.Env = []string{
-		"HOME=" + scratch,
-		"PWD=" + home,
-		"TERM=xterm-256color",
-		"PATH=" + os.Getenv("PATH"),
-	}
-	master, err := startPTY(cmd, win)
-	if err != nil {
-		return nil, err
-	}
-	sh := &shell{master: master, cmd: cmd, exited: make(chan struct{})}
-	go func() { _ = cmd.Wait(); close(sh.exited) }()
-	return sh, nil
-}
 
 func startPTY(cmd *exec.Cmd, win execenv.Window) (*os.File, error) {
 	master, pts, err := openPTY()

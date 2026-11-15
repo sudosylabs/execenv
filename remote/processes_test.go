@@ -24,6 +24,6 @@ func TestProcessConformance(t *testing.T) {
 		if _, err := env.Control(t.Context(), execenv.ControlRequest{Fence: fence, State: execenv.ControlRunning}); err != nil {
 			t.Fatal(err)
 		}
-		return execenvtest.Traced{Env: env, Fence: fence, Workload: execenvtest.TerminalWorkload(t, env)}
+		return execenvtest.Traced{Env: env, Fence: fence, Workload: execenvtest.ShellWorkload(t, env, fence)}
 	})
 }

@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
-	"time"
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/internal/capacity"
@@ -18,7 +17,7 @@ import (
 	"github.com/sudosylabs/execenv/internal/journal"
 	"github.com/sudosylabs/execenv/internal/lifetime"
 	"github.com/sudosylabs/execenv/internal/seed"
-	"github.com/sudosylabs/execenv/internal/terminal"
+	"github.com/sudosylabs/execenv/internal/procs"
 )
 
 var (
@@ -43,9 +42,6 @@ type Config struct {
 	// WorkDir holds each grant's workspace directory. Empty uses the
 	// system's temporary directory.
 	WorkDir string
-	// TerminalGrace is how long a detached shell keeps running. Zero uses
-	// execenv.DefaultTerminalGrace.
-	TerminalGrace time.Duration
 }
 
 // Host is an in-process execenv.Host. It is not isolated.
@@ -54,7 +50,6 @@ type Host struct {
 	images   []execenv.Image
 	pool     *capacity.Pool
 	unusable bool
-	grace    time.Duration
 	workDir  string
 	seeds    *seed.Store
 	grants   map[execenv.ID]*environment
@@ -74,7 +69,7 @@ type environment struct {
 	frozen    bool
 	revoked   bool
 	lost      bool
-	terminal  *terminal.Manager
+	procs     *procs.Manager
 	processes *processLog
 	limits    execenv.Limits
 	timer     *lifetime.Timer
@@ -116,7 +111,6 @@ func New(cfg Config) (*Host, error) {
 		images:   append([]execenv.Image(nil), cfg.Images...),
 		pool:     pool,
 		unusable: cfg.Unusable,
-		grace:    cfg.TerminalGrace,
 		workDir:  cfg.WorkDir,
 		seeds:    seeds,
 		grants:   make(map[execenv.ID]*environment),
@@ -263,14 +257,9 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		h.pool.Release(spec.ID)
 		return nil, execenv.Error("ensure", execenv.ErrUnavailable)
 	}
-	// The in-memory shell is a stand-in, not a process; it starts with no
-	// window or isolation beyond the session machinery every adapter shares.
-	env.terminal = terminal.New(terminal.Config{
-		Grace: h.grace,
-		Start: func(_ context.Context, win execenv.Window) (terminal.Shell, error) {
-			return newShell(win, env.processes), nil
-		},
-	})
+	// The in-memory processes are a stand-in shell, not processes; they run
+	// above the same process manager every adapter shares.
+	env.procs = procs.New(env.startProcess)
 	env.public = env
 	if spec.WallTimeout > 0 || spec.IdleTimeout > 0 {
 		env.timer = lifetime.Start(spec.WallTimeout, spec.IdleTimeout, func(r lifetime.Reason) { h.expire(env, r) })
@@ -335,18 +324,6 @@ func (h *Host) hasImage(want execenv.Image) bool {
 
 func (e *environment) ID() execenv.ID { return e.id }
 
-func (e *environment) Attach(ctx context.Context, request execenv.AttachRequest) (execenv.Terminal, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, execenv.Error("attach", err)
-	}
-	e.mu.Lock()
-	err := e.guard("attach")
-	e.mu.Unlock()
-	if err != nil {
-		return nil, err
-	}
-	return e.terminal.Attach(ctx, request)
-}
 
 // UpdateLimits records the limits. The in-memory host has no devices to
 // throttle.
@@ -372,7 +349,7 @@ func (e *environment) freeze(ctx context.Context) error {
 		return e.guard("freeze")
 	}
 	e.frozen = true
-	e.terminal.Freeze()
+	e.procs.Freeze()
 	return nil
 }
 
@@ -386,7 +363,7 @@ func (e *environment) thaw(ctx context.Context) error {
 		return e.guard("thaw")
 	}
 	e.frozen = false
-	e.terminal.Thaw()
+	e.procs.Thaw()
 	return nil
 }
 
@@ -409,7 +386,7 @@ func (e *environment) stop(cause error) error {
 	e.revoked = true
 	e.lost = errors.Is(cause, execenv.ErrLost) || e.lost
 	e.frozen = false
-	e.terminal.End(cause)
+	e.procs.End(cause)
 	e.journalMu.Lock()
 	e.journal.Close()
 	e.journalMu.Unlock()

@@ -60,7 +60,7 @@ func runControl(t *testing.T, factory Factory) {
 		if err := env.Revoke(t.Context()); err != nil && !errors.Is(err, execenv.ErrConflict) {
 			t.Fatal(err)
 		}
-		if _, err := successor.Attach(t.Context(), execenv.AttachRequest{}); err != nil {
+		if _, err := successor.ListProcesses(t.Context()); err != nil {
 			t.Fatalf("stale revoke affected successor: %v", err)
 		}
 		req.State = execenv.ControlRunning

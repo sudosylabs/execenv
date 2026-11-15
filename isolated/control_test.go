@@ -23,7 +23,7 @@ func TestContainmentRequiresPauseAndRecoveryAcknowledgements(t *testing.T) {
 	if !errors.Is(err, execenv.ErrUnavailable) || receipt.Confirmed {
 		t.Fatalf("failed pause acknowledged: %+v %v", receipt, err)
 	}
-	if _, err := e.Attach(t.Context(), execenv.AttachRequest{}); !errors.Is(err, execenv.ErrFrozen) {
+	if _, err := e.live("start"); !errors.Is(err, execenv.ErrFrozen) {
 		t.Fatalf("failed containment opened gate: %v", err)
 	}
 	inst.mu.Lock()

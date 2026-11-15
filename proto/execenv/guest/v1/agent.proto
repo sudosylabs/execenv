@@ -5,8 +5,8 @@ package execenv.guest.v1;
 import "execenv/v1/common.proto";
 import "execenv/v1/file.proto";
 import "execenv/v1/journal.proto";
+import "execenv/v1/process.proto";
 import "execenv/v1/process_log.proto";
-import "execenv/v1/terminal.proto";
 
 option go_package = "github.com/sudosylabs/execenv/internal/gen/execenv/guest/v1;guestv1";
 
@@ -18,14 +18,18 @@ service AgentService {
   // another protocol, or without the journal or the process log.
   rpc Hello(HelloRequest) returns (HelloResponse);
 
-  // Attach starts the login shell. The first message is Started; the rest
-  // are output. A clean end is the shell's exit.
-  rpc Attach(AttachRequest) returns (stream AttachResponse);
-  // Input carries keystrokes for one shell. The first message names it.
-  rpc Input(stream InputRequest) returns (InputResponse);
-  rpc Resize(ResizeRequest) returns (ResizeResponse);
-  // Detach ends the shell.
-  rpc Detach(DetachRequest) returns (DetachResponse);
+  // Processes, by tag. The host keeps their history, grace and timeout;
+  // the guest runs them inside the contained workload.
+  rpc Spawn(SpawnRequest) returns (SpawnResponse);
+  // Output streams every byte the process writes, each with its stream,
+  // then its exit. It opens with an empty event as soon as the guest has
+  // the process. The host opens it right after Spawn.
+  rpc Output(OutputRequest) returns (stream OutputResponse);
+  // Feed carries input for one process. The first message names it.
+  rpc Feed(stream FeedRequest) returns (FeedResponse);
+  rpc CloseFeed(ProcessRef) returns (Empty);
+  rpc ResizeProcess(ResizeRequest) returns (Empty);
+  rpc SignalProcess(SignalRequest) returns (Empty);
 
   // Freeze closes I/O before the host pauses the machine; Thaw reopens it.
   rpc Freeze(FreezeRequest) returns (FreezeResponse);
@@ -56,6 +60,8 @@ service AgentService {
   rpc Export(execenv.v1.ExportRequest) returns (stream execenv.v1.ContentChunk);
 }
 
+message Empty {}
+
 message HelloRequest {}
 
 message HelloResponse {
@@ -64,43 +70,53 @@ message HelloResponse {
   bool processes = 3;
 }
 
-message AttachRequest {
-  execenv.v1.Window window = 1;
+message SpawnRequest {
+  execenv.v1.ProcessSpec spec = 1;
 }
 
-message AttachResponse {
+message SpawnResponse {
+  int32 pid = 1;
+}
+
+message ProcessRef {
+  string tag = 1;
+}
+
+message OutputRequest {
+  string tag = 1;
+}
+
+message OutputResponse {
   oneof event {
-    Started started = 1;
-    bytes output = 2;
+    Chunk data = 1;
+    execenv.v1.ExitStatus exit = 2;
+    Empty opened = 3;
   }
 }
 
-message Started {
-  // shell_id names this shell for Input, Resize and Detach.
-  uint64 shell_id = 1;
+message Chunk {
+  string stream = 1;
+  bytes data = 2;
 }
 
-message InputRequest {
+message FeedRequest {
   oneof part {
-    uint64 shell_id = 1;
+    string tag = 1;
     bytes data = 2;
   }
 }
 
-message InputResponse {}
+message FeedResponse {}
 
 message ResizeRequest {
-  uint64 shell_id = 1;
+  string tag = 1;
   execenv.v1.Window window = 2;
 }
 
-message ResizeResponse {}
-
-message DetachRequest {
-  uint64 shell_id = 1;
+message SignalRequest {
+  string tag = 1;
+  string signal = 2;
 }
-
-message DetachResponse {}
 
 message FreezeRequest {}
 

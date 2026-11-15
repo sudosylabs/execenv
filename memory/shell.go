@@ -33,13 +33,27 @@ type shell struct {
 	closed bool
 	log    *processLog
 	pid    int
+	// terminal echoes input and ends lines with CRLF, as a PTY does; a
+	// command does neither.
+	terminal bool
+	// code is the last command's exit code, and the shell's on exit.
+	code int
+	// signal is what ended the shell when Close did, if anything.
+	signal int
 }
 
-func newShell(win execenv.Window, log *processLog) *shell {
-	s := &shell{vars: make(map[string]string), win: win, log: log}
+func newShell(win execenv.Window, log *processLog, terminal bool) *shell {
+	s := &shell{vars: make(map[string]string), win: win, log: log, terminal: terminal}
 	s.cond = sync.NewCond(&s.mu)
 	s.pid = log.start(1, []string{"/bin/sh", "-l"})
 	return s
+}
+
+func (s *shell) newline() string {
+	if s.terminal {
+		return "\r\n"
+	}
+	return "\n"
 }
 
 func (s *shell) Read(p []byte) (int, error) {
@@ -67,11 +81,15 @@ func (s *shell) Write(p []byte) (int, error) {
 			break
 		}
 		if c != '\r' && c != '\n' {
-			s.out = append(s.out, c)
+			if s.terminal {
+				s.out = append(s.out, c)
+			}
 			s.line = append(s.line, c)
 			continue
 		}
-		s.out = append(s.out, '\r', '\n')
+		if s.terminal {
+			s.out = append(s.out, '\r', '\n')
+		}
 		line := string(s.line)
 		s.line = s.line[:0]
 		s.run(line)
@@ -114,8 +132,13 @@ func (s *shell) run(line string) {
 		return
 	}
 	if words[0] == "exit" {
+		if len(words) > 1 {
+			if code, err := strconv.Atoi(words[1]); err == nil {
+				s.code = code
+			}
+		}
 		s.exited = true
-		s.log.exit(s.pid, 0)
+		s.log.exit(s.pid, s.code)
 		return
 	}
 	argv := make([]string, 0, len(words))
@@ -126,6 +149,8 @@ func (s *shell) run(line string) {
 	code := 0
 	switch path.Base(words[0]) {
 	case "true":
+	case "false":
+		code = 1
 	case "echo":
 		expanded := make([]string, 0, len(words)-1)
 		for _, word := range words[1:] {
@@ -139,6 +164,7 @@ func (s *shell) run(line string) {
 		code = 127
 	}
 	s.log.exit(pid, code)
+	s.code = code
 }
 
 func (s *shell) seq(args []string) {
@@ -161,13 +187,13 @@ func (s *shell) seq(args []string) {
 	}
 	for i := first; i <= last; i++ {
 		s.out = strconv.AppendInt(s.out, int64(i), 10)
-		s.out = append(s.out, '\r', '\n')
+		s.out = append(s.out, s.newline()...)
 	}
 }
 
 func (s *shell) print(text string) {
 	s.out = append(s.out, text...)
-	s.out = append(s.out, '\r', '\n')
+	s.out = append(s.out, s.newline()...)
 }
 
 // expand removes quotes and substitutes $NAME.

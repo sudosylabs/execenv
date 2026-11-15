@@ -123,24 +123,31 @@ func runResources(t *testing.T, factory Factory) {
 			report, _ := host.Ready(t.Context())
 			return report.Grants == 0 && (err == nil || errors.Is(err, execenv.ErrRevoked))
 		})
-		if _, err := env.Attach(t.Context(), execenv.AttachRequest{}); !errors.Is(err, execenv.ErrRevoked) {
-			t.Fatalf("Attach() after the wall timeout = %v, want ErrRevoked", err)
+		if _, err := env.ListProcesses(t.Context()); !errors.Is(err, execenv.ErrRevoked) {
+			t.Fatalf("ListProcesses() after the wall timeout = %v, want ErrRevoked", err)
 		}
 	})
 
-	t.Run("an idle grant is revoked, but not while a terminal is attached", func(t *testing.T) {
+	t.Run("an idle grant is revoked, but not while a process is attached", func(t *testing.T) {
 		host := factory(t, Config{})
 		env, err := host.Ensure(t.Context(), execenv.Spec{ID: "idle", Image: "default", IdleTimeout: tick, IdleAction: execenv.IdleRevoke})
 		if err != nil {
 			t.Fatal(err)
 		}
-		term, err := env.Attach(t.Context(), execenv.AttachRequest{})
+		fence := execenv.ProjectionFence{ExecutionGrantID: env.ID(), EnvironmentEpoch: env.Epoch(), FenceRevision: 1}
+		if _, err := env.Control(t.Context(), execenv.ControlRequest{Fence: fence, State: execenv.ControlRunning}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.Start(t.Context(), fence, execenv.ProcessSpec{Tag: "sh", PTY: &execenv.Window{}}); err != nil {
+			t.Fatal(err)
+		}
+		term, err := env.AttachProcess(t.Context(), "sh", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		time.Sleep(4 * tick)
 		if report, _ := host.Ready(t.Context()); report.Grants != 1 {
-			t.Fatal("a grant with an attached terminal was revoked as idle")
+			t.Fatal("a grant with an attached process was revoked as idle")
 		}
 		_ = term.Close()
 		waitFor(t, "revoke after the idle timeout", func() bool {

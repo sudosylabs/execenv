@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/execenvtest"
 )
 
 // TestDeniedDestinationUnreachableFromGuestSide applies the same host
@@ -168,11 +169,7 @@ func TestLiveAllowlistDeniesFromGuest(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = env.Revoke(t.Context()) })
-	term, err := env.Attach(t.Context(), execenv.AttachRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = term.Close() })
+	term := execenvtest.OpenShell(t, env, runningFence(t, env), "sh")
 	// 1.1.1.1 is not on the host allowlist. Success from this shell
 	// would mean the guest has a general NIC.
 	// A missing wget or no default route is not proof. Require wget,

@@ -122,6 +122,58 @@ func (Resource) EnumDescriptor() ([]byte, []int) {
 	return file_execenv_v1_common_proto_rawDescGZIP(), []int{1}
 }
 
+type Window struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Cols          uint32                 `protobuf:"varint,1,opt,name=cols,proto3" json:"cols,omitempty"`
+	Rows          uint32                 `protobuf:"varint,2,opt,name=rows,proto3" json:"rows,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Window) Reset() {
+	*x = Window{}
+	mi := &file_execenv_v1_common_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Window) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Window) ProtoMessage() {}
+
+func (x *Window) ProtoReflect() protoreflect.Message {
+	mi := &file_execenv_v1_common_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Window.ProtoReflect.Descriptor instead.
+func (*Window) Descriptor() ([]byte, []int) {
+	return file_execenv_v1_common_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *Window) GetCols() uint32 {
+	if x != nil {
+		return x.Cols
+	}
+	return 0
+}
+
+func (x *Window) GetRows() uint32 {
+	if x != nil {
+		return x.Rows
+	}
+	return 0
+}
+
 // Fence names one incarnation of a grant and the newest control revision
 // its caller has issued.
 type Fence struct {
@@ -135,7 +187,7 @@ type Fence struct {
 
 func (x *Fence) Reset() {
 	*x = Fence{}
-	mi := &file_execenv_v1_common_proto_msgTypes[0]
+	mi := &file_execenv_v1_common_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -147,7 +199,7 @@ func (x *Fence) String() string {
 func (*Fence) ProtoMessage() {}
 
 func (x *Fence) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_v1_common_proto_msgTypes[0]
+	mi := &file_execenv_v1_common_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -160,7 +212,7 @@ func (x *Fence) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Fence.ProtoReflect.Descriptor instead.
 func (*Fence) Descriptor() ([]byte, []int) {
-	return file_execenv_v1_common_proto_rawDescGZIP(), []int{0}
+	return file_execenv_v1_common_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *Fence) GetGrantId() string {
@@ -195,7 +247,7 @@ type ContentReference struct {
 
 func (x *ContentReference) Reset() {
 	*x = ContentReference{}
-	mi := &file_execenv_v1_common_proto_msgTypes[1]
+	mi := &file_execenv_v1_common_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -207,7 +259,7 @@ func (x *ContentReference) String() string {
 func (*ContentReference) ProtoMessage() {}
 
 func (x *ContentReference) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_v1_common_proto_msgTypes[1]
+	mi := &file_execenv_v1_common_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -220,7 +272,7 @@ func (x *ContentReference) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ContentReference.ProtoReflect.Descriptor instead.
 func (*ContentReference) Descriptor() ([]byte, []int) {
-	return file_execenv_v1_common_proto_rawDescGZIP(), []int{1}
+	return file_execenv_v1_common_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *ContentReference) GetSize() int64 {
@@ -255,7 +307,7 @@ type Resources struct {
 
 func (x *Resources) Reset() {
 	*x = Resources{}
-	mi := &file_execenv_v1_common_proto_msgTypes[2]
+	mi := &file_execenv_v1_common_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -267,7 +319,7 @@ func (x *Resources) String() string {
 func (*Resources) ProtoMessage() {}
 
 func (x *Resources) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_v1_common_proto_msgTypes[2]
+	mi := &file_execenv_v1_common_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -280,7 +332,7 @@ func (x *Resources) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Resources.ProtoReflect.Descriptor instead.
 func (*Resources) Descriptor() ([]byte, []int) {
-	return file_execenv_v1_common_proto_rawDescGZIP(), []int{2}
+	return file_execenv_v1_common_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *Resources) GetCpuMillis() int64 {
@@ -316,7 +368,7 @@ type TokenBucket struct {
 
 func (x *TokenBucket) Reset() {
 	*x = TokenBucket{}
-	mi := &file_execenv_v1_common_proto_msgTypes[3]
+	mi := &file_execenv_v1_common_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -328,7 +380,7 @@ func (x *TokenBucket) String() string {
 func (*TokenBucket) ProtoMessage() {}
 
 func (x *TokenBucket) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_v1_common_proto_msgTypes[3]
+	mi := &file_execenv_v1_common_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -341,7 +393,7 @@ func (x *TokenBucket) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TokenBucket.ProtoReflect.Descriptor instead.
 func (*TokenBucket) Descriptor() ([]byte, []int) {
-	return file_execenv_v1_common_proto_rawDescGZIP(), []int{3}
+	return file_execenv_v1_common_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *TokenBucket) GetRate() int64 {
@@ -369,7 +421,7 @@ type Limits struct {
 
 func (x *Limits) Reset() {
 	*x = Limits{}
-	mi := &file_execenv_v1_common_proto_msgTypes[4]
+	mi := &file_execenv_v1_common_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -381,7 +433,7 @@ func (x *Limits) String() string {
 func (*Limits) ProtoMessage() {}
 
 func (x *Limits) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_v1_common_proto_msgTypes[4]
+	mi := &file_execenv_v1_common_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -394,7 +446,7 @@ func (x *Limits) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Limits.ProtoReflect.Descriptor instead.
 func (*Limits) Descriptor() ([]byte, []int) {
-	return file_execenv_v1_common_proto_rawDescGZIP(), []int{4}
+	return file_execenv_v1_common_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *Limits) GetDiskOps() *TokenBucket {
@@ -430,7 +482,7 @@ type Shortfall struct {
 
 func (x *Shortfall) Reset() {
 	*x = Shortfall{}
-	mi := &file_execenv_v1_common_proto_msgTypes[5]
+	mi := &file_execenv_v1_common_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -442,7 +494,7 @@ func (x *Shortfall) String() string {
 func (*Shortfall) ProtoMessage() {}
 
 func (x *Shortfall) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_v1_common_proto_msgTypes[5]
+	mi := &file_execenv_v1_common_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -455,7 +507,7 @@ func (x *Shortfall) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Shortfall.ProtoReflect.Descriptor instead.
 func (*Shortfall) Descriptor() ([]byte, []int) {
-	return file_execenv_v1_common_proto_rawDescGZIP(), []int{5}
+	return file_execenv_v1_common_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *Shortfall) GetResource() Resource {
@@ -496,7 +548,7 @@ type ErrorDetail struct {
 
 func (x *ErrorDetail) Reset() {
 	*x = ErrorDetail{}
-	mi := &file_execenv_v1_common_proto_msgTypes[6]
+	mi := &file_execenv_v1_common_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -508,7 +560,7 @@ func (x *ErrorDetail) String() string {
 func (*ErrorDetail) ProtoMessage() {}
 
 func (x *ErrorDetail) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_v1_common_proto_msgTypes[6]
+	mi := &file_execenv_v1_common_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -521,7 +573,7 @@ func (x *ErrorDetail) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ErrorDetail.ProtoReflect.Descriptor instead.
 func (*ErrorDetail) Descriptor() ([]byte, []int) {
-	return file_execenv_v1_common_proto_rawDescGZIP(), []int{6}
+	return file_execenv_v1_common_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ErrorDetail) GetSentinel() string {
@@ -557,7 +609,10 @@ var File_execenv_v1_common_proto protoreflect.FileDescriptor
 const file_execenv_v1_common_proto_rawDesc = "" +
 	"\n" +
 	"\x17execenv/v1/common.proto\x12\n" +
-	"execenv.v1\"T\n" +
+	"execenv.v1\"0\n" +
+	"\x06Window\x12\x12\n" +
+	"\x04cols\x18\x01 \x01(\rR\x04cols\x12\x12\n" +
+	"\x04rows\x18\x02 \x01(\rR\x04rows\"T\n" +
 	"\x05Fence\x12\x19\n" +
 	"\bgrant_id\x18\x01 \x01(\tR\agrantId\x12\x14\n" +
 	"\x05epoch\x18\x02 \x01(\tR\x05epoch\x12\x1a\n" +
@@ -613,24 +668,25 @@ func file_execenv_v1_common_proto_rawDescGZIP() []byte {
 }
 
 var file_execenv_v1_common_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_execenv_v1_common_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_execenv_v1_common_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_execenv_v1_common_proto_goTypes = []any{
 	(Network)(0),             // 0: execenv.v1.Network
 	(Resource)(0),            // 1: execenv.v1.Resource
-	(*Fence)(nil),            // 2: execenv.v1.Fence
-	(*ContentReference)(nil), // 3: execenv.v1.ContentReference
-	(*Resources)(nil),        // 4: execenv.v1.Resources
-	(*TokenBucket)(nil),      // 5: execenv.v1.TokenBucket
-	(*Limits)(nil),           // 6: execenv.v1.Limits
-	(*Shortfall)(nil),        // 7: execenv.v1.Shortfall
-	(*ErrorDetail)(nil),      // 8: execenv.v1.ErrorDetail
+	(*Window)(nil),           // 2: execenv.v1.Window
+	(*Fence)(nil),            // 3: execenv.v1.Fence
+	(*ContentReference)(nil), // 4: execenv.v1.ContentReference
+	(*Resources)(nil),        // 5: execenv.v1.Resources
+	(*TokenBucket)(nil),      // 6: execenv.v1.TokenBucket
+	(*Limits)(nil),           // 7: execenv.v1.Limits
+	(*Shortfall)(nil),        // 8: execenv.v1.Shortfall
+	(*ErrorDetail)(nil),      // 9: execenv.v1.ErrorDetail
 }
 var file_execenv_v1_common_proto_depIdxs = []int32{
-	5, // 0: execenv.v1.Limits.disk_ops:type_name -> execenv.v1.TokenBucket
-	5, // 1: execenv.v1.Limits.disk_bytes:type_name -> execenv.v1.TokenBucket
-	5, // 2: execenv.v1.Limits.network_bytes:type_name -> execenv.v1.TokenBucket
+	6, // 0: execenv.v1.Limits.disk_ops:type_name -> execenv.v1.TokenBucket
+	6, // 1: execenv.v1.Limits.disk_bytes:type_name -> execenv.v1.TokenBucket
+	6, // 2: execenv.v1.Limits.network_bytes:type_name -> execenv.v1.TokenBucket
 	1, // 3: execenv.v1.Shortfall.resource:type_name -> execenv.v1.Resource
-	7, // 4: execenv.v1.ErrorDetail.shortfall:type_name -> execenv.v1.Shortfall
+	8, // 4: execenv.v1.ErrorDetail.shortfall:type_name -> execenv.v1.Shortfall
 	5, // [5:5] is the sub-list for method output_type
 	5, // [5:5] is the sub-list for method input_type
 	5, // [5:5] is the sub-list for extension type_name
@@ -649,7 +705,7 @@ func file_execenv_v1_common_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_execenv_v1_common_proto_rawDesc), len(file_execenv_v1_common_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   7,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

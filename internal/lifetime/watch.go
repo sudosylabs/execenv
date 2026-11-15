@@ -8,8 +8,8 @@ import (
 	"github.com/sudosylabs/execenv"
 )
 
-// Watch wraps env so every call on it is activity, and every attached
-// terminal keeps it busy until it is closed, hung up or ends.
+// Watch wraps env so every call on it is activity, and every attachment to
+// a process keeps it busy until it is closed or ends.
 func Watch(env execenv.Env, t *Timer) execenv.Env {
 	if t == nil {
 		return env
@@ -22,13 +22,23 @@ type watched struct {
 	t *Timer
 }
 
-func (w *watched) Attach(ctx context.Context, request execenv.AttachRequest) (execenv.Terminal, error) {
+func (w *watched) AttachProcess(ctx context.Context, tag string, from map[execenv.Stream]uint64) (execenv.Attachment, error) {
 	w.t.Touch()
-	term, err := w.Env.Attach(ctx, request)
+	a, err := w.Env.AttachProcess(ctx, tag, from)
 	if err != nil {
 		return nil, err
 	}
-	return &heldTerminal{Terminal: term, t: w.t, release: w.t.Hold()}, nil
+	return &heldAttachment{Attachment: a, release: w.t.Hold()}, nil
+}
+
+func (w *watched) Start(ctx context.Context, f execenv.ProjectionFence, spec execenv.ProcessSpec) (execenv.ProcessInfo, error) {
+	w.t.Touch()
+	return w.Env.Start(ctx, f, spec)
+}
+
+func (w *watched) WriteInput(ctx context.Context, f execenv.ProjectionFence, tag string, offset uint64, data []byte) (uint64, error) {
+	w.t.Touch()
+	return w.Env.WriteInput(ctx, f, tag, offset, data)
 }
 
 func (w *watched) Control(ctx context.Context, r execenv.ControlRequest) (execenv.ControlReceipt, error) {
@@ -86,34 +96,21 @@ func (w *watched) UpdateLimits(ctx context.Context, f execenv.ProjectionFence, l
 	return w.Env.UpdateLimits(ctx, f, l)
 }
 
-type heldTerminal struct {
-	execenv.Terminal
-	t       *Timer
+type heldAttachment struct {
+	execenv.Attachment
 	release func()
 	once    sync.Once
 }
 
-func (h *heldTerminal) end() { h.once.Do(h.release) }
-
-func (h *heldTerminal) Read(p []byte) (int, error) {
-	n, err := h.Terminal.Read(p)
+func (h *heldAttachment) Next(ctx context.Context) (execenv.Output, error) {
+	out, err := h.Attachment.Next(ctx)
 	if err != nil {
-		h.end()
+		h.once.Do(h.release)
 	}
-	return n, err
+	return out, err
 }
 
-func (h *heldTerminal) Write(p []byte) (int, error) {
-	h.t.Touch()
-	return h.Terminal.Write(p)
-}
-
-func (h *heldTerminal) Close() error {
-	h.end()
-	return h.Terminal.Close()
-}
-
-func (h *heldTerminal) Hangup(ctx context.Context) error {
-	h.end()
-	return h.Terminal.Hangup(ctx)
+func (h *heldAttachment) Close() error {
+	h.once.Do(h.release)
+	return h.Attachment.Close()
 }

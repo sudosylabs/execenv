@@ -2,15 +2,15 @@ package remote_test
 
 import (
 	"context"
-	"io"
 	"testing"
 	"time"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/execenvtest"
 	"github.com/sudosylabs/execenv/memory"
 )
 
-// floodHost serves grants whose terminal never stops producing output.
+// floodHost serves grants whose processes never stop producing output.
 type floodHost struct{ execenv.Host }
 
 func (h floodHost) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, error) {
@@ -26,47 +26,42 @@ func (h floodHost) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, 
 
 type floodEnv struct{ execenv.Env }
 
-func (floodEnv) Attach(context.Context, execenv.AttachRequest) (execenv.Terminal, error) {
-	return &floodTerminal{done: make(chan struct{})}, nil
+func (floodEnv) AttachProcess(context.Context, string, map[execenv.Stream]uint64) (execenv.Attachment, error) {
+	return &floodAttachment{done: make(chan struct{})}, nil
 }
 
-type floodTerminal struct {
+type floodAttachment struct {
 	offset uint64
 	done   chan struct{}
 }
 
-func (t *floodTerminal) ID() execenv.TerminalID { return "flood" }
-func (t *floodTerminal) Start() uint64          { return 0 }
-func (t *floodTerminal) Offset() uint64         { return t.offset }
-
-func (t *floodTerminal) Read(p []byte) (int, error) {
+func (a *floodAttachment) Next(context.Context) (execenv.Output, error) {
 	select {
-	case <-t.done:
-		return 0, execenv.ErrClosed
+	case <-a.done:
+		return execenv.Output{}, execenv.ErrClosed
 	default:
 	}
-	for i := range p {
-		p[i] = 'x'
+	data := make([]byte, 32<<10)
+	for i := range data {
+		data[i] = 'x'
 	}
-	t.offset += uint64(len(p))
-	return len(p), nil
+	out := execenv.Output{Kind: execenv.OutputData, Stream: execenv.StreamPTY, Offset: a.offset, Data: data}
+	a.offset += uint64(len(data))
+	return out, nil
 }
 
-func (t *floodTerminal) Write(p []byte) (int, error)                  { return len(p), nil }
-func (t *floodTerminal) Resize(context.Context, execenv.Window) error { return nil }
-func (t *floodTerminal) Hangup(context.Context) error                 { return nil }
-func (t *floodTerminal) Close() error {
+func (a *floodAttachment) Close() error {
 	select {
-	case <-t.done:
+	case <-a.done:
 	default:
-		close(t.done)
+		close(a.done)
 	}
 	return nil
 }
 
-// A terminal whose output nobody reads fills only its own stream window:
-// calls and other terminals on the same connection keep moving.
-func TestUnreadTerminalDelaysNoOtherStreamOrCall(t *testing.T) {
+// An attachment nobody reads fills only its own stream window: calls and
+// other attachments on the same connection keep moving.
+func TestUnreadAttachmentDelaysNoOtherStreamOrCall(t *testing.T) {
 	inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Capacity: execenv.DefaultGrant.Times(2)})
 	if err != nil {
 		t.Fatal(err)
@@ -76,7 +71,7 @@ func TestUnreadTerminalDelaysNoOtherStreamOrCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stalled, err := flood.Attach(t.Context(), execenv.AttachRequest{Window: execenv.Window{Cols: 80, Rows: 24}})
+	stalled, err := flood.AttachProcess(t.Context(), "flood", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,62 +82,19 @@ func TestUnreadTerminalDelaysNoOtherStreamOrCall(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 	if _, err := host.Ready(ctx); err != nil {
-		t.Fatalf("Ready behind a stalled terminal: %v", err)
+		t.Fatalf("Ready behind a stalled attachment: %v", err)
 	}
 	other, err := host.Ensure(ctx, execenv.Spec{ID: "other", Image: "default"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	term, err := other.Attach(ctx, execenv.AttachRequest{Window: execenv.Window{Cols: 80, Rows: 24}})
-	if err != nil {
-		t.Fatalf("Attach behind a stalled terminal: %v", err)
-	}
-	defer term.Close()
-	if _, err := term.Write([]byte("echo moving\n")); err != nil {
+	sh := execenvtest.StartShell(t, other, running(t, other), "sh")
+	if err := sh.Type("echo moving"); err != nil {
 		t.Fatal(err)
 	}
-	if !readUntil(t, term, "moving") {
-		t.Fatal("second terminal made no progress")
-	}
+	sh.Expect("moving")
 	// The stalled reader still gets its output once it reads.
-	buf := make([]byte, 1024)
-	if n, err := io.ReadAtLeast(stalled, buf, 1); err != nil || n == 0 {
-		t.Fatalf("stalled terminal Read = %d, %v", n, err)
+	if out, err := stalled.Next(ctx); err != nil || len(out.Data) == 0 {
+		t.Fatalf("stalled Next() = %+v, %v", out.Kind, err)
 	}
-}
-
-func readUntil(t *testing.T, term execenv.Terminal, marker string) bool {
-	t.Helper()
-	done := make(chan bool, 1)
-	go func() {
-		var seen []byte
-		buf := make([]byte, 4096)
-		for {
-			n, err := term.Read(buf)
-			seen = append(seen, buf[:n]...)
-			if containsString(seen, marker) {
-				done <- true
-				return
-			}
-			if err != nil {
-				done <- false
-				return
-			}
-		}
-	}()
-	select {
-	case ok := <-done:
-		return ok
-	case <-time.After(2 * time.Second):
-		return false
-	}
-}
-
-func containsString(haystack []byte, needle string) bool {
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if string(haystack[i:i+len(needle)]) == needle {
-			return true
-		}
-	}
-	return false
 }
