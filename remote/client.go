@@ -158,7 +158,12 @@ func (c *Client) Close() error {
 // call bounds one unary call by the client's operation timeout and by
 // Close.
 func (c *Client) call(ctx context.Context) (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithTimeout(ctx, operationTimeoutOrDefault(c.cfg.OperationTimeout))
+	return c.callFor(ctx, 0)
+}
+
+// callFor is call for an operation that may first wait up to wait.
+func (c *Client) callFor(ctx context.Context, wait time.Duration) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(ctx, operationTimeoutOrDefault(c.cfg.OperationTimeout)+wait)
 	stop := context.AfterFunc(c.ctx, cancel)
 	return ctx, func() { stop(); cancel() }
 }
@@ -386,13 +391,17 @@ func (e *remoteEnv) receipt(r execenv.ProjectionReceipt, fence execenv.Projectio
 	return r, nil
 }
 
-func (e *remoteEnv) Observe(ctx context.Context, fence execenv.ProjectionFence, after uint64, limit int) (execenv.ObservationPage, error) {
-	if err := e.guard(fence); err != nil {
+func (e *remoteEnv) Observe(ctx context.Context, request execenv.ObserveRequest) (execenv.ObservationPage, error) {
+	if err := e.guard(request.Fence); err != nil {
 		return execenv.ObservationPage{}, err
 	}
-	ctx, cancel := e.client.call(ctx)
+	if err := execenv.ValidateObserveRequest(request); err != nil {
+		return execenv.ObservationPage{}, err
+	}
+	// The call may take its wait on top of the operation timeout.
+	ctx, cancel := e.client.callFor(ctx, request.Wait)
 	defer cancel()
-	resp, err := e.client.journal.Observe(ctx, connect.NewRequest(&execenvv1.ObserveRequest{Fence: wire.FenceTo(fence), After: after, Limit: int32(limit)}))
+	resp, err := e.client.journal.Observe(ctx, connect.NewRequest(wire.ObserveRequestTo(request)))
 	if err != nil {
 		return execenv.ObservationPage{}, wire.HostError("observe", err)
 	}

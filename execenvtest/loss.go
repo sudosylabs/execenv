@@ -77,7 +77,7 @@ func RunLoss(t *testing.T, factory LossFactory) {
 		if _, err := env.ControlStatus(t.Context()); !errors.Is(err, execenv.ErrLost) {
 			t.Fatalf("ControlStatus() error = %v, want ErrLost", err)
 		}
-		if _, err := env.Observe(t.Context(), fence, 0, 1); !errors.Is(err, execenv.ErrLost) {
+		if _, err := env.Observe(t.Context(), execenv.ObserveRequest{Fence: fence, After: 0, Limit: 1}); !errors.Is(err, execenv.ErrLost) {
 			t.Fatalf("Observe() error = %v, want ErrLost", err)
 		}
 		if _, err := env.ObserveProcesses(t.Context(), fence, 0, 1); !errors.Is(err, execenv.ErrLost) {

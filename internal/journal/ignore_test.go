@@ -12,6 +12,7 @@ import (
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/execenvtest"
+	"github.com/sudosylabs/execenv/internal/observations"
 )
 
 // journalWorkspace drives a disk journal through the conformance surface.
@@ -30,8 +31,16 @@ func (w journalWorkspace) InitializeProjection(ctx context.Context, request exec
 func (w journalWorkspace) ApplyProjection(ctx context.Context, request execenv.ProjectionApply) (execenv.ProjectionReceipt, error) {
 	return w.j.Apply(ctx, request)
 }
-func (w journalWorkspace) Observe(ctx context.Context, fence execenv.ProjectionFence, after uint64, limit int) (execenv.ObservationPage, error) {
-	return w.j.Observe(ctx, fence, after, limit)
+func (w journalWorkspace) Observe(ctx context.Context, request execenv.ObserveRequest) (execenv.ObservationPage, error) {
+	if err := execenv.ValidateObserveRequest(request); err != nil {
+		return execenv.ObservationPage{}, err
+	}
+	return observations.Wait(ctx, request.Wait, nil, func() (execenv.ObservationPage, error) {
+		return w.j.Observe(ctx, request.Fence, request.After, request.Limit)
+	})
+}
+func (w journalWorkspace) AcknowledgeObservations(_ context.Context, fence execenv.ProjectionFence, through uint64) error {
+	return w.j.Acknowledge(fence, through)
 }
 
 // diskGuest writes Home directly, as guest processes do.
@@ -52,6 +61,13 @@ func ignoreJournal(t *testing.T, own func(string) error) (*Journal, execenv.Proj
 	j := New(t.TempDir(), testStore(t), &testWriteBarrier{}, own)
 	t.Cleanup(j.Close)
 	return j, execenv.ProjectionFence{ExecutionGrantID: "grant", EnvironmentEpoch: "epoch", FenceRevision: 1}
+}
+
+func TestDiskJournalObservationConformance(t *testing.T) {
+	execenvtest.RunObservations(t, func(t *testing.T) execenvtest.Observed {
+		j, fence := ignoreJournal(t, nil)
+		return execenvtest.Observed{Workspace: journalWorkspace{j}, Fence: fence, Guest: diskGuest{j.home}}
+	})
 }
 
 func TestDiskJournalIgnoreConformance(t *testing.T) {

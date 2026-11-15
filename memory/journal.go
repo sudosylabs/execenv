@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/observations"
 )
 
 // The in-memory host projects into a real temporary directory with the same
@@ -22,13 +23,25 @@ import (
 type lockBarrier struct{ mu *sync.Mutex }
 
 // dirty is the in-memory host's watcher: every guest write and file API
-// change sets it, so an Observe with nothing new does not walk.
-type dirty struct{ changed atomic.Bool }
+// change sets it, so an Observe with nothing new does not walk, and wakes
+// an Observe waiting for a change.
+type dirty struct {
+	changed atomic.Bool
+	wake    chan struct{}
+}
+
+func newDirty() *dirty { return &dirty{wake: make(chan struct{}, 1)} }
 
 // Take reports a touched workspace as changed everywhere: the in-memory
 // host walks it whole.
 func (d *dirty) Take() ([]string, bool) { return nil, d.changed.Swap(false) }
-func (d *dirty) touch()                 { d.changed.Store(true) }
+func (d *dirty) touch() {
+	d.changed.Store(true)
+	select {
+	case d.wake <- struct{}{}:
+	default:
+	}
+}
 
 func (b lockBarrier) Stopped(ctx context.Context, fn func() error) error {
 	if err := ctx.Err(); err != nil {
@@ -85,17 +98,19 @@ func (e *environment) ApplyProjection(ctx context.Context, request execenv.Proje
 	return receipt, err
 }
 
-func (e *environment) Observe(ctx context.Context, fence execenv.ProjectionFence, after uint64, limit int) (execenv.ObservationPage, error) {
-	var page execenv.ObservationPage
-	err := e.journaled(ctx, fence, func() error {
-		if err := e.journal.Bind(fence); err != nil {
+func (e *environment) Observe(ctx context.Context, request execenv.ObserveRequest) (execenv.ObservationPage, error) {
+	if err := execenv.ValidateObserveRequest(request); err != nil {
+		return execenv.ObservationPage{}, err
+	}
+	return observations.Wait(ctx, request.Wait, e.dirty.wake, func() (execenv.ObservationPage, error) {
+		var page execenv.ObservationPage
+		err := e.journaled(ctx, request.Fence, func() error {
+			var err error
+			page, err = e.journal.Observe(ctx, request.Fence, request.After, request.Limit)
 			return err
-		}
-		var err error
-		page, err = e.journal.Observe(ctx, fence, after, limit)
-		return err
+		})
+		return page, err
 	})
-	return page, err
 }
 
 func (e *environment) OpenObservationContent(ctx context.Context, fence execenv.ProjectionFence, ref execenv.ContentReference) (io.ReadCloser, error) {

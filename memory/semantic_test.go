@@ -40,7 +40,7 @@ func TestObservationsPreserveOriginalContentAndSubtreeIdentity(t *testing.T) {
 	// real guest, so observe after each one to see each one.
 	captured := func() {
 		t.Helper()
-		if _, err := semantic.Observe(t.Context(), fence, 0, 128); err != nil {
+		if _, err := semantic.Observe(t.Context(), execenv.ObserveRequest{Fence: fence, After: 0, Limit: 128}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -57,7 +57,7 @@ func TestObservationsPreserveOriginalContentAndSubtreeIdentity(t *testing.T) {
 	if err := host.WriteGuest(t.Context(), env.ID(), "moved/file", []byte("third")); err != nil {
 		t.Fatal(err)
 	}
-	page, err := semantic.Observe(t.Context(), fence, 0, 128)
+	page, err := semantic.Observe(t.Context(), execenv.ObserveRequest{Fence: fence, After: 0, Limit: 128})
 	if err != nil || len(page.Observations) != 4 {
 		t.Fatalf("observations: %+v %v", page, err)
 	}
@@ -102,7 +102,7 @@ func TestObservationsPreserveOriginalContentAndSubtreeIdentity(t *testing.T) {
 	if err := host.RemoveGuest(t.Context(), env.ID(), "moved/file"); err != nil {
 		t.Fatal(err)
 	}
-	page, err = semantic.Observe(t.Context(), fence, 4, 128)
+	page, err = semantic.Observe(t.Context(), execenv.ObserveRequest{Fence: fence, After: 4, Limit: 128})
 	if err != nil || len(page.Observations) != 1 || page.Observations[0].NodeIdentity != identity || page.Observations[0].Operation != execenv.ObservationDelete {
 		t.Fatalf("descendant deletion identity: %+v %v", page, err)
 	}

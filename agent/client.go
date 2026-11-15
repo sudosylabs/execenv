@@ -252,6 +252,8 @@ func checkReceipt(r execenv.ProjectionReceipt, fence execenv.ProjectionFence, id
 	return r, nil
 }
 
+// Observe looks once: the guest never waits on the link, and a host that
+// waits looks again itself.
 func (c *Client) Observe(ctx context.Context, fence execenv.ProjectionFence, after uint64, limit int) (execenv.ObservationPage, error) {
 	if err := c.ioGuard(); err != nil {
 		return execenv.ObservationPage{}, err

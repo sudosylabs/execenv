@@ -129,7 +129,7 @@ func TestLiveScratchHomeAndDiskWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitLiveContent(t, env, fence, "where.txt", execenv.GuestHome+"\n"+execenv.GuestWorkspace+"\n")
-	page, err := env.Observe(t.Context(), fence, 0, 128)
+	page, err := env.Observe(t.Context(), execenv.ObserveRequest{Fence: fence, After: 0, Limit: 128})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +228,7 @@ func waitLiveObservation(t *testing.T, env execenv.Env, fence execenv.Projection
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		page, err := env.Observe(t.Context(), fence, 0, 128)
+		page, err := env.Observe(t.Context(), execenv.ObserveRequest{Fence: fence, After: 0, Limit: 128})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -308,7 +308,7 @@ func TestLiveObserveCostsTheChangeNotTheTree(t *testing.T) {
 		sh.Expect("half-made")
 		sh = execenvtest.StartShell(t, env, fence, "sh-"+strings.ReplaceAll(half, " ", "-"))
 		for {
-			page, err := env.Observe(t.Context(), fence, cursor, 128)
+			page, err := env.Observe(t.Context(), execenv.ObserveRequest{Fence: fence, After: cursor, Limit: 128})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -326,7 +326,7 @@ func TestLiveObserveCostsTheChangeNotTheTree(t *testing.T) {
 	}
 	sh.Expect("one-change")
 	started := time.Now()
-	page, err := env.Observe(t.Context(), fence, cursor, 128)
+	page, err := env.Observe(t.Context(), execenv.ObserveRequest{Fence: fence, After: cursor, Limit: 128})
 	took := time.Since(started)
 	if err != nil || len(page.Observations) != 1 || page.Observations[0].Path != "t/25/50" {
 		t.Fatalf("Observe() after one change = %+v, %v", page.Observations, err)

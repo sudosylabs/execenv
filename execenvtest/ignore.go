@@ -18,7 +18,8 @@ type Workspace interface {
 	UploadProjectionContent(ctx context.Context, fence execenv.ProjectionFence, body io.Reader) (execenv.ContentReference, error)
 	InitializeProjection(ctx context.Context, request execenv.ProjectionInitialization) (execenv.ProjectionReceipt, error)
 	ApplyProjection(ctx context.Context, request execenv.ProjectionApply) (execenv.ProjectionReceipt, error)
-	Observe(ctx context.Context, fence execenv.ProjectionFence, after uint64, limit int) (execenv.ObservationPage, error)
+	Observe(ctx context.Context, request execenv.ObserveRequest) (execenv.ObservationPage, error)
+	AcknowledgeObservations(ctx context.Context, fence execenv.ProjectionFence, through uint64) error
 }
 
 // Guest acts inside one environment's workspace as its own processes would.
@@ -246,7 +247,7 @@ func (w *watcher) expect(want ...string) {
 	w.t.Helper()
 	var got []string
 	for {
-		page, err := w.o.Workspace.Observe(w.t.Context(), w.o.Fence, w.host, execenv.MaxProjectionMutations)
+		page, err := w.o.Workspace.Observe(w.t.Context(), execenv.ObserveRequest{Fence: w.o.Fence, After: w.host, Limit: execenv.MaxProjectionMutations})
 		if err != nil {
 			if errors.Is(err, execenv.ErrLagged) {
 				w.t.Fatalf("observation lagged: %v", err)

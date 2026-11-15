@@ -258,7 +258,8 @@ to exactly that; `MemoryBytes` is its memory; `DiskBytes` is its workspace
 disk, shared by the projected tree and the shell's scratch home.
 
 A grant is busy while anything is attached to one of its processes and
-after any call on it. Once idle for `IdleTimeout` the host applies
+after any call on it other than `Observe` and `ObserveProcesses`: reading
+what the grant did does not keep it awake. Once idle for `IdleTimeout` the host applies
 `IdleAction`: `IdleRevoke` revokes it; `IdleFreeze` freezes it as a fenced
 freeze would, keeping the caller's fence revision, so `ControlStatus` shows
 `frozen` and the caller thaws it with its next revision. `IdleSuspend`
@@ -508,8 +509,22 @@ Paths are POSIX-relative: no leading `/`, no `..`, no NUL, UTF-8.
 `Observe` is how the guest reports files **it** created, wrote, moved, or
 deleted. Your own projection calls do not appear here.
 
+With a `Wait`, `Observe` holds the call until the guest has produced an
+observation after `After`, or the wait has passed, whichever comes first;
+an empty page after the wait is not an error, so a caller keeps one call
+open and never polls. Zero returns at once, and the wait is at most
+`MaxObserveWait` (one minute). The host looks again in short passes, each
+under the grant's control serializer, so a freeze, projection or revoke
+never queues behind a wait; a freeze, revoke or loss during it ends it with
+that error. Over the wire the wait is added to both sides' operation
+timeout. Reading observations or the process log is not activity: a wait
+kept open does not keep an idle grant awake.
+
 ```go
-page, err := env.Observe(ctx, fence, acknowledged, 128)
+page, err := env.Observe(ctx, execenv.ObserveRequest{
+	Fence: fence, After: acknowledged, Limit: 128, Wait: 30 * time.Second,
+})
+
 if err != nil {
 	return err // ErrLagged: resynchronize from your journal
 }

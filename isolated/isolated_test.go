@@ -239,7 +239,37 @@ func TestConformance(t *testing.T) {
 	})
 }
 
-func TestTouchInPtyBecomesObservation(t *testing.T) {
+// treeGuest writes a stub grant's tree directly, as its processes would.
+type treeGuest struct{ home string }
+
+func (g treeGuest) full(name string) string { return filepath.Join(g.home, filepath.FromSlash(name)) }
+func (g treeGuest) Write(_ context.Context, name string, data []byte) error {
+	return os.WriteFile(g.full(name), data, 0o644)
+}
+func (g treeGuest) Mkdir(_ context.Context, name string) error { return os.Mkdir(g.full(name), 0o755) }
+func (g treeGuest) Move(_ context.Context, from, to string) error {
+	return os.Rename(g.full(from), g.full(to))
+}
+func (g treeGuest) Remove(_ context.Context, name string) error { return os.RemoveAll(g.full(name)) }
+
+// observedStub occupies one running stub grant and a guest writing its tree.
+func observedStub(t *testing.T) execenvtest.Observed {
+	t.Helper()
+	host := testHost(t, func() error { return nil }, &recordingLauncher{})
+	env, err := host.Ensure(t.Context(), execenv.Spec{ID: "observed", Image: "default"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(host.cfg.WorkDir, "grants", "observed", workspaceName)
+	return execenvtest.Observed{Workspace: env, Fence: runningFence(t, env), Guest: treeGuest{home}}
+}
+
+func TestObservationConformance(t *testing.T) {
+	execenvtest.RunObservations(t, observedStub)
+}
+
+func TestTouchInPtyBecomesObservation(
+	t *testing.T) {
 	t.Parallel()
 	host := testHost(t, func() error { return nil }, &recordingLauncher{})
 	env, err := host.Ensure(t.Context(), execenv.Spec{ID: "grant-1", Image: "default"})
@@ -255,7 +285,7 @@ func TestTouchInPtyBecomesObservation(t *testing.T) {
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		page, err := env.Observe(t.Context(), fence, 0, 128)
+		page, err := env.Observe(t.Context(), execenv.ObserveRequest{Fence: fence, After: 0, Limit: 128})
 		if err != nil {
 			t.Fatal(err)
 		}

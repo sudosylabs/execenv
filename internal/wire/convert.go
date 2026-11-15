@@ -637,3 +637,19 @@ func WindowFrom(w *execenvv1.Window) (execenv.Window, bool) {
 	}
 	return execenv.Window{Cols: uint16(w.GetCols()), Rows: uint16(w.GetRows())}, true
 }
+
+func ObserveRequestTo(r execenv.ObserveRequest) *execenvv1.ObserveRequest {
+	out := &execenvv1.ObserveRequest{Fence: FenceTo(r.Fence), After: r.After, Limit: int32(r.Limit)}
+	if r.Wait > 0 {
+		out.Wait = durationpb.New(r.Wait)
+	}
+	return out
+}
+
+func ObserveRequestFrom(r *execenvv1.ObserveRequest) execenv.ObserveRequest {
+	out := execenv.ObserveRequest{Fence: FenceFrom(r.GetFence()), After: r.GetAfter(), Limit: int(r.GetLimit())}
+	if r.GetWait() != nil {
+		out.Wait = r.GetWait().AsDuration()
+	}
+	return out
+}

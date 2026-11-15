@@ -6,6 +6,7 @@ import (
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/agent"
+	"github.com/sudosylabs/execenv/internal/observations"
 )
 
 func (e *environment) projectionClient() (*agent.Client, error) {
@@ -59,17 +60,25 @@ func (e *environment) ApplyProjection(ctx context.Context, request execenv.Proje
 	})
 	return receipt, err
 }
-func (e *environment) Observe(ctx context.Context, fence execenv.ProjectionFence, after uint64, limit int) (execenv.ObservationPage, error) {
-	var page execenv.ObservationPage
-	err := e.control.Run(ctx, fence, func() error {
-		client, err := e.projectionClient()
-		if err != nil {
+
+// Observe looks at the guest once per pass of a wait, each under the
+// control serializer, so a freeze or revoke never waits for the wait.
+func (e *environment) Observe(ctx context.Context, request execenv.ObserveRequest) (execenv.ObservationPage, error) {
+	if err := execenv.ValidateObserveRequest(request); err != nil {
+		return execenv.ObservationPage{}, err
+	}
+	return observations.Wait(ctx, request.Wait, nil, func() (execenv.ObservationPage, error) {
+		var page execenv.ObservationPage
+		err := e.control.Run(ctx, request.Fence, func() error {
+			client, err := e.projectionClient()
+			if err != nil {
+				return err
+			}
+			page, err = client.Observe(ctx, request.Fence, request.After, request.Limit)
 			return err
-		}
-		page, err = client.Observe(ctx, fence, after, limit)
-		return err
+		})
+		return page, err
 	})
-	return page, err
 }
 func (e *environment) AcknowledgeObservations(ctx context.Context, fence execenv.ProjectionFence, through uint64) error {
 	return e.control.Run(ctx, fence, func() error {

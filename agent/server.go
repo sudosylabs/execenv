@@ -423,6 +423,11 @@ func (s *server) Observe(ctx context.Context, req *connect.Request[execenvv1.Obs
 	if err != nil {
 		return nil, wire.Error(err)
 	}
+	// The host looks again itself, so a freeze never queues behind a call
+	// waiting on the guest link.
+	if req.Msg.GetWait() != nil {
+		return nil, wire.Error(execenv.ErrInvalid)
+	}
 	page, err := s.journal.Observe(ctx, fence, req.Msg.GetAfter(), int(req.Msg.GetLimit()))
 	if err != nil {
 		return nil, wire.Error(err)

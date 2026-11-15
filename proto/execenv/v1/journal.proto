@@ -3,6 +3,7 @@ syntax = "proto3";
 package execenv.v1;
 
 import "execenv/v1/common.proto";
+import "google/protobuf/duration.proto";
 
 option go_package = "github.com/sudosylabs/execenv/internal/gen/execenv/v1;execenvv1";
 
@@ -124,6 +125,10 @@ message ObserveRequest {
   Fence fence = 1;
   uint64 after = 2;
   int32 limit = 3;
+  // wait holds the call until there is an observation after after, or the
+  // wait has passed. The guest link never waits: its host looks again
+  // itself, so a freeze never queues behind a waiting call.
+  google.protobuf.Duration wait = 4;
 }
 
 message ObservationPage {

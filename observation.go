@@ -1,6 +1,38 @@
 package execenv
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
+
+// MaxObserveWait bounds ObserveRequest.Wait.
+const MaxObserveWait = time.Minute
+
+// ObserveRequest asks for the observations after a host sequence.
+type ObserveRequest struct {
+	Fence ProjectionFence
+	// After is the host sequence the page starts after. A position before
+	// the acknowledged prefix is ErrLagged; one beyond the observations
+	// produced so far is ErrInvalid.
+	After uint64
+	// Limit is the most observations returned, 1 to MaxProjectionMutations.
+	Limit int
+	// Wait, when set, holds the call until the guest has produced an
+	// observation after After or Wait has passed, whichever comes first,
+	// and then returns what there is: an empty page once the wait passes
+	// is not an error. Zero returns at once. A freeze, revoke or loss
+	// during the wait ends it with that error, and so does the caller's
+	// context. At most MaxObserveWait.
+	Wait time.Duration
+}
+
+// ValidateObserveRequest refuses a request no host can serve.
+func ValidateObserveRequest(request ObserveRequest) error {
+	if ValidateProjectionFence(request.Fence) != nil || request.After > MaxProjectionCursor || request.Limit < 1 || request.Limit > MaxProjectionMutations || request.Wait < 0 || request.Wait > MaxObserveWait {
+		return ErrInvalid
+	}
+	return nil
+}
 
 type ObservationOperation string
 

@@ -156,7 +156,29 @@ func runResources(t *testing.T, factory Factory) {
 		})
 	})
 
+	t.Run("reading observations does not keep a grant awake", func(t *testing.T) {
+		host := factory(t, Config{})
+		env, err := host.Ensure(t.Context(), execenv.Spec{ID: "watched", Image: "default", IdleTimeout: tick, IdleAction: execenv.IdleRevoke})
+		if err != nil {
+			t.Fatal(err)
+		}
+		fence := execenv.ProjectionFence{ExecutionGrantID: env.ID(), EnvironmentEpoch: env.Epoch(), FenceRevision: 1}
+		if _, err := env.Control(t.Context(), execenv.ControlRequest{Fence: fence, State: execenv.ControlRunning}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.InitializeProjection(t.Context(), execenv.ProjectionInitialization{Fence: fence, MutationID: "init"}); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "revoke while observations are read", func() bool {
+			_, _ = env.Observe(t.Context(), execenv.ObserveRequest{Fence: fence, Limit: 16, Wait: tick / 5})
+			_, _ = env.ObserveProcesses(t.Context(), fence, 0, 1)
+			report, _ := host.Ready(t.Context())
+			return report.Grants == 0
+		})
+	})
+
 	t.Run("an idle grant freezes and its caller thaws it with the next revision", func(t *testing.T) {
+
 		host := factory(t, Config{})
 		env, err := host.Ensure(t.Context(), execenv.Spec{ID: "dozing", Image: "default", IdleTimeout: tick, IdleAction: execenv.IdleFreeze})
 		if err != nil {

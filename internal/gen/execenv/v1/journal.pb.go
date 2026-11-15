@@ -9,6 +9,7 @@ package execenvv1
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	durationpb "google.golang.org/protobuf/types/known/durationpb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -917,10 +918,14 @@ func (x *Observation) GetOriginProjectionMutationId() string {
 }
 
 type ObserveRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Fence         *Fence                 `protobuf:"bytes,1,opt,name=fence,proto3" json:"fence,omitempty"`
-	After         uint64                 `protobuf:"varint,2,opt,name=after,proto3" json:"after,omitempty"`
-	Limit         int32                  `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Fence *Fence                 `protobuf:"bytes,1,opt,name=fence,proto3" json:"fence,omitempty"`
+	After uint64                 `protobuf:"varint,2,opt,name=after,proto3" json:"after,omitempty"`
+	Limit int32                  `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
+	// wait holds the call until there is an observation after after, or the
+	// wait has passed. The guest link never waits: its host looks again
+	// itself, so a freeze never queues behind a waiting call.
+	Wait          *durationpb.Duration `protobuf:"bytes,4,opt,name=wait,proto3" json:"wait,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -974,6 +979,13 @@ func (x *ObserveRequest) GetLimit() int32 {
 		return x.Limit
 	}
 	return 0
+}
+
+func (x *ObserveRequest) GetWait() *durationpb.Duration {
+	if x != nil {
+		return x.Wait
+	}
+	return nil
 }
 
 type ObservationPage struct {
@@ -1277,7 +1289,7 @@ var File_execenv_v1_journal_proto protoreflect.FileDescriptor
 const file_execenv_v1_journal_proto_rawDesc = "" +
 	"\n" +
 	"\x18execenv/v1/journal.proto\x12\n" +
-	"execenv.v1\x1a\x17execenv/v1/common.proto\"a\n" +
+	"execenv.v1\x1a\x17execenv/v1/common.proto\x1a\x1egoogle/protobuf/duration.proto\"a\n" +
 	"\x14UploadContentRequest\x12)\n" +
 	"\x05fence\x18\x01 \x01(\v2\x11.execenv.v1.FenceH\x00R\x05fence\x12\x16\n" +
 	"\x05chunk\x18\x02 \x01(\fH\x00R\x05chunkB\x06\n" +
@@ -1344,11 +1356,12 @@ const file_execenv_v1_journal_proto_rawDesc = "" +
 	"\acontent\x18\v \x01(\v2\x1c.execenv.v1.ContentReferenceR\acontent\x12A\n" +
 	"\x1dorigin_projection_mutation_id\x18\f \x01(\tR\x1aoriginProjectionMutationIdB\f\n" +
 	"\n" +
-	"_recursive\"e\n" +
+	"_recursive\"\x94\x01\n" +
 	"\x0eObserveRequest\x12'\n" +
 	"\x05fence\x18\x01 \x01(\v2\x11.execenv.v1.FenceR\x05fence\x12\x14\n" +
 	"\x05after\x18\x02 \x01(\x04R\x05after\x12\x14\n" +
-	"\x05limit\x18\x03 \x01(\x05R\x05limit\"\xa9\x01\n" +
+	"\x05limit\x18\x03 \x01(\x05R\x05limit\x12-\n" +
+	"\x04wait\x18\x04 \x01(\v2\x19.google.protobuf.DurationR\x04wait\"\xa9\x01\n" +
 	"\x0fObservationPage\x12\x1f\n" +
 	"\vhost_cursor\x18\x01 \x01(\x04R\n" +
 	"hostCursor\x128\n" +
@@ -1429,6 +1442,7 @@ var file_execenv_v1_journal_proto_goTypes = []any{
 	(*AcknowledgeObservationsResponse)(nil),      // 18: execenv.v1.AcknowledgeObservationsResponse
 	(*Fence)(nil),                                // 19: execenv.v1.Fence
 	(*ContentReference)(nil),                     // 20: execenv.v1.ContentReference
+	(*durationpb.Duration)(nil),                  // 21: google.protobuf.Duration
 }
 var file_execenv_v1_journal_proto_depIdxs = []int32{
 	19, // 0: execenv.v1.UploadContentRequest.fence:type_name -> execenv.v1.Fence
@@ -1448,31 +1462,32 @@ var file_execenv_v1_journal_proto_depIdxs = []int32{
 	0,  // 14: execenv.v1.Observation.kind:type_name -> execenv.v1.ProjectionKind
 	20, // 15: execenv.v1.Observation.content:type_name -> execenv.v1.ContentReference
 	19, // 16: execenv.v1.ObserveRequest.fence:type_name -> execenv.v1.Fence
-	11, // 17: execenv.v1.ObservationPage.observations:type_name -> execenv.v1.Observation
-	19, // 18: execenv.v1.ReadObservationContentRequest.fence:type_name -> execenv.v1.Fence
-	20, // 19: execenv.v1.ReadObservationContentRequest.content:type_name -> execenv.v1.ContentReference
-	19, // 20: execenv.v1.ConfirmObservationProjectionRequest.fence:type_name -> execenv.v1.Fence
-	5,  // 21: execenv.v1.ConfirmObservationProjectionRequest.mutation:type_name -> execenv.v1.ProjectionMutation
-	19, // 22: execenv.v1.AcknowledgeObservationsRequest.fence:type_name -> execenv.v1.Fence
-	3,  // 23: execenv.v1.JournalService.UploadContent:input_type -> execenv.v1.UploadContentRequest
-	8,  // 24: execenv.v1.JournalService.InitializeProjection:input_type -> execenv.v1.InitializeProjectionRequest
-	9,  // 25: execenv.v1.JournalService.ApplyProjection:input_type -> execenv.v1.ApplyProjectionRequest
-	12, // 26: execenv.v1.JournalService.Observe:input_type -> execenv.v1.ObserveRequest
-	14, // 27: execenv.v1.JournalService.ReadObservationContent:input_type -> execenv.v1.ReadObservationContentRequest
-	15, // 28: execenv.v1.JournalService.ConfirmObservationProjection:input_type -> execenv.v1.ConfirmObservationProjectionRequest
-	17, // 29: execenv.v1.JournalService.AcknowledgeObservations:input_type -> execenv.v1.AcknowledgeObservationsRequest
-	20, // 30: execenv.v1.JournalService.UploadContent:output_type -> execenv.v1.ContentReference
-	10, // 31: execenv.v1.JournalService.InitializeProjection:output_type -> execenv.v1.ProjectionReceipt
-	10, // 32: execenv.v1.JournalService.ApplyProjection:output_type -> execenv.v1.ProjectionReceipt
-	13, // 33: execenv.v1.JournalService.Observe:output_type -> execenv.v1.ObservationPage
-	4,  // 34: execenv.v1.JournalService.ReadObservationContent:output_type -> execenv.v1.ContentChunk
-	16, // 35: execenv.v1.JournalService.ConfirmObservationProjection:output_type -> execenv.v1.ConfirmObservationProjectionResponse
-	18, // 36: execenv.v1.JournalService.AcknowledgeObservations:output_type -> execenv.v1.AcknowledgeObservationsResponse
-	30, // [30:37] is the sub-list for method output_type
-	23, // [23:30] is the sub-list for method input_type
-	23, // [23:23] is the sub-list for extension type_name
-	23, // [23:23] is the sub-list for extension extendee
-	0,  // [0:23] is the sub-list for field type_name
+	21, // 17: execenv.v1.ObserveRequest.wait:type_name -> google.protobuf.Duration
+	11, // 18: execenv.v1.ObservationPage.observations:type_name -> execenv.v1.Observation
+	19, // 19: execenv.v1.ReadObservationContentRequest.fence:type_name -> execenv.v1.Fence
+	20, // 20: execenv.v1.ReadObservationContentRequest.content:type_name -> execenv.v1.ContentReference
+	19, // 21: execenv.v1.ConfirmObservationProjectionRequest.fence:type_name -> execenv.v1.Fence
+	5,  // 22: execenv.v1.ConfirmObservationProjectionRequest.mutation:type_name -> execenv.v1.ProjectionMutation
+	19, // 23: execenv.v1.AcknowledgeObservationsRequest.fence:type_name -> execenv.v1.Fence
+	3,  // 24: execenv.v1.JournalService.UploadContent:input_type -> execenv.v1.UploadContentRequest
+	8,  // 25: execenv.v1.JournalService.InitializeProjection:input_type -> execenv.v1.InitializeProjectionRequest
+	9,  // 26: execenv.v1.JournalService.ApplyProjection:input_type -> execenv.v1.ApplyProjectionRequest
+	12, // 27: execenv.v1.JournalService.Observe:input_type -> execenv.v1.ObserveRequest
+	14, // 28: execenv.v1.JournalService.ReadObservationContent:input_type -> execenv.v1.ReadObservationContentRequest
+	15, // 29: execenv.v1.JournalService.ConfirmObservationProjection:input_type -> execenv.v1.ConfirmObservationProjectionRequest
+	17, // 30: execenv.v1.JournalService.AcknowledgeObservations:input_type -> execenv.v1.AcknowledgeObservationsRequest
+	20, // 31: execenv.v1.JournalService.UploadContent:output_type -> execenv.v1.ContentReference
+	10, // 32: execenv.v1.JournalService.InitializeProjection:output_type -> execenv.v1.ProjectionReceipt
+	10, // 33: execenv.v1.JournalService.ApplyProjection:output_type -> execenv.v1.ProjectionReceipt
+	13, // 34: execenv.v1.JournalService.Observe:output_type -> execenv.v1.ObservationPage
+	4,  // 35: execenv.v1.JournalService.ReadObservationContent:output_type -> execenv.v1.ContentChunk
+	16, // 36: execenv.v1.JournalService.ConfirmObservationProjection:output_type -> execenv.v1.ConfirmObservationProjectionResponse
+	18, // 37: execenv.v1.JournalService.AcknowledgeObservations:output_type -> execenv.v1.AcknowledgeObservationsResponse
+	31, // [31:38] is the sub-list for method output_type
+	24, // [24:31] is the sub-list for method input_type
+	24, // [24:24] is the sub-list for extension type_name
+	24, // [24:24] is the sub-list for extension extendee
+	0,  // [0:24] is the sub-list for field type_name
 }
 
 func init() { file_execenv_v1_journal_proto_init() }
