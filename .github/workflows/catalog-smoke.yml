@@ -7,6 +7,10 @@ on:
       - "catalog/**"
       - "scripts/bake"
       - "scripts/guest.sh"
+      - "cmd/execenv/**"
+      - "internal/workload/**"
+      - "internal/start/**"
+      - "internal/guestlink/**"
       - ".github/workflows/bake.yml"
       - ".github/workflows/catalog-smoke.yml"
   push:
@@ -16,6 +20,10 @@ on:
       - "catalog/**"
       - "scripts/bake"
       - "scripts/guest.sh"
+      - "cmd/execenv/**"
+      - "internal/workload/**"
+      - "internal/start/**"
+      - "internal/guestlink/**"
       - ".github/workflows/bake.yml"
       - ".github/workflows/catalog-smoke.yml"
 
