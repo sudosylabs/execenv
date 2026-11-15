@@ -18,6 +18,32 @@ const ChunkSize = 64 << 10
 
 // ChunkReader turns a stream of chunks into an io.Reader. next returns the
 // next chunk, or false and why the stream ended (nil at its clean end).
+// ErrAborted is a body its sender gave up on: its source failed.
+var ErrAborted = errors.New("execenv: body aborted by its sender")
+
+// WriteChunks reads a WriteFile body from its stream; an abort message
+// ends it with ErrAborted.
+func WriteChunks(receive func() bool, msg func() *execenvv1.WriteFileRequest, failed func() error) *ChunkReader {
+	return &ChunkReader{Next: func() ([]byte, bool, error) {
+		if !receive() {
+			return nil, false, failed()
+		}
+		if msg().GetAbort() {
+			return nil, false, ErrAborted
+		}
+		return msg().GetChunk(), true, nil
+	}}
+}
+
+// AbortWrite ends a WriteFile whose body failed and waits for the far side
+// to have kept what it had; without an abort it cancels.
+func AbortWrite(send func(*execenvv1.WriteFileRequest) error, wait func() error, cancel func()) {
+	if send(&execenvv1.WriteFileRequest{Part: &execenvv1.WriteFileRequest_Abort{Abort: true}}) != nil {
+		cancel()
+	}
+	_ = wait()
+}
+
 type ChunkReader struct {
 	Next    func() ([]byte, bool, error)
 	pending []byte

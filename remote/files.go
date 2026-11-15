@@ -84,7 +84,7 @@ func (h *server) WriteFile(ctx context.Context, stream *connect.ClientStream[exe
 	if err != nil {
 		return nil, wire.Error(err)
 	}
-	body := chunks(stream.Receive, stream.Msg, stream.Err)
+	body := wire.WriteChunks(stream.Receive, stream.Msg, stream.Err)
 	info, err := env.WriteFile(ctx, fence, header.GetPath(), body, wire.WriteOptionsFrom(header))
 	if err != nil {
 		return nil, wire.Error(err)
@@ -225,8 +225,8 @@ func (e *remoteEnv) WriteFile(ctx context.Context, fence execenv.ProjectionFence
 	}
 	if err != nil && !sent {
 		// The body failed: it must not reach the host as a complete one.
-		cancel()
-		_, _ = stream.CloseAndReceive()
+		// The abort's reply comes once the host has kept what arrived.
+		wire.AbortWrite(stream.Send, func() error { _, err := stream.CloseAndReceive(); return err }, cancel)
 		return execenv.FileInfo{}, execenv.Error("write_file", err)
 	}
 	resp, cerr := stream.CloseAndReceive()

@@ -559,6 +559,7 @@ type WriteFileRequest struct {
 	//
 	//	*WriteFileRequest_Header
 	//	*WriteFileRequest_Chunk
+	//	*WriteFileRequest_Abort
 	Part          isWriteFileRequest_Part `protobuf_oneof:"part"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -619,6 +620,15 @@ func (x *WriteFileRequest) GetChunk() []byte {
 	return nil
 }
 
+func (x *WriteFileRequest) GetAbort() bool {
+	if x != nil {
+		if x, ok := x.Part.(*WriteFileRequest_Abort); ok {
+			return x.Abort
+		}
+	}
+	return false
+}
+
 type isWriteFileRequest_Part interface {
 	isWriteFileRequest_Part()
 }
@@ -631,9 +641,17 @@ type WriteFileRequest_Chunk struct {
 	Chunk []byte `protobuf:"bytes,2,opt,name=chunk,proto3,oneof"`
 }
 
+type WriteFileRequest_Abort struct {
+	// abort ends a body whose source failed: nothing lands, a resumable
+	// write keeps every chunk before it, and the reply comes once it has.
+	Abort bool `protobuf:"varint,3,opt,name=abort,proto3,oneof"`
+}
+
 func (*WriteFileRequest_Header) isWriteFileRequest_Part() {}
 
 func (*WriteFileRequest_Chunk) isWriteFileRequest_Part() {}
+
+func (*WriteFileRequest_Abort) isWriteFileRequest_Part() {}
 
 type MakeDirectoryRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1210,10 +1228,11 @@ const file_execenv_v1_file_proto_rawDesc = "" +
 	"\vtransfer_id\x18\x03 \x01(\tR\n" +
 	"transferId\"\"\n" +
 	"\bTransfer\x12\x16\n" +
-	"\x06offset\x18\x01 \x01(\x03R\x06offset\"i\n" +
+	"\x06offset\x18\x01 \x01(\x03R\x06offset\"\x81\x01\n" +
 	"\x10WriteFileRequest\x125\n" +
 	"\x06header\x18\x01 \x01(\v2\x1b.execenv.v1.WriteFileHeaderH\x00R\x06header\x12\x16\n" +
-	"\x05chunk\x18\x02 \x01(\fH\x00R\x05chunkB\x06\n" +
+	"\x05chunk\x18\x02 \x01(\fH\x00R\x05chunk\x12\x16\n" +
+	"\x05abort\x18\x03 \x01(\bH\x00R\x05abortB\x06\n" +
 	"\x04part\"m\n" +
 	"\x14MakeDirectoryRequest\x12'\n" +
 	"\x05fence\x18\x01 \x01(\v2\x11.execenv.v1.FenceR\x05fence\x12\x12\n" +
@@ -1339,6 +1358,7 @@ func file_execenv_v1_file_proto_init() {
 	file_execenv_v1_file_proto_msgTypes[8].OneofWrappers = []any{
 		(*WriteFileRequest_Header)(nil),
 		(*WriteFileRequest_Chunk)(nil),
+		(*WriteFileRequest_Abort)(nil),
 	}
 	file_execenv_v1_file_proto_msgTypes[16].OneofWrappers = []any{
 		(*ImportRequest_Header)(nil),

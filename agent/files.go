@@ -65,12 +65,7 @@ func (s *server) WriteFile(_ context.Context, stream *connect.ClientStream[exece
 		return nil, wire.Error(execenv.ErrInvalid)
 	}
 	h := stream.Msg().GetHeader()
-	body := &wire.ChunkReader{Next: func() ([]byte, bool, error) {
-		if !stream.Receive() {
-			return nil, false, stream.Err()
-		}
-		return stream.Msg().GetChunk(), true, nil
-	}}
+	body := wire.WriteChunks(stream.Receive, stream.Msg, stream.Err)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.fenced(h.GetFence()); err != nil {
@@ -266,8 +261,8 @@ func (c *Client) WriteFile(ctx context.Context, fence execenv.ProjectionFence, p
 	}
 	if err != nil && !sent {
 		// The body failed: it must not reach the guest as a complete one.
-		cancel()
-		_, _ = stream.CloseAndReceive()
+		// The abort's reply comes once the guest has kept what arrived.
+		wire.AbortWrite(stream.Send, func() error { _, err := stream.CloseAndReceive(); return err }, cancel)
 		return execenv.FileInfo{}, execenv.Error("write_file", err)
 	}
 	resp, cerr := stream.CloseAndReceive()

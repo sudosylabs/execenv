@@ -417,7 +417,10 @@ if err != nil {
 ```
 
 A resume whose `Offset` is not what `TransferOffset` reports is
-`ErrConflict`. The file still lands only once the whole body is there, and
+`ErrConflict`: after a broken connection, bytes still in flight may land
+after you asked, so ask again and resume from there. When your own
+source fails, `WriteFile` returns only once the host has kept everything
+sent before the failure. The file still lands only once the whole body is there, and
 then the transfer is used up. Kept bytes expire an hour after they last
 grew.
 

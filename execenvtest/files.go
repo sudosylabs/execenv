@@ -29,9 +29,10 @@ func runFiles(t *testing.T, factory Factory) {
 		if _, err := env.Stat(ctx, "big.bin", false); !errors.Is(err, execenv.ErrNotFound) {
 			t.Fatalf("a broken write left a file: %v", err)
 		}
+		// The write returns once the host has kept what arrived: all of it.
 		held, err := env.TransferOffset(ctx, "upload-1")
-		if err != nil || held <= 0 || held > cut {
-			t.Fatalf("TransferOffset() = %d, %v; want up to %d", held, err, cut)
+		if err != nil || held != cut {
+			t.Fatalf("TransferOffset() = %d, %v; want %d", held, err, cut)
 		}
 		wrong := opts
 		wrong.Offset = held + 1

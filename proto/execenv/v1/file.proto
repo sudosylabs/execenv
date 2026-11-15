@@ -87,6 +87,9 @@ message WriteFileRequest {
   oneof part {
     WriteFileHeader header = 1;
     bytes chunk = 2;
+    // abort ends a body whose source failed: nothing lands, a resumable
+    // write keeps every chunk before it, and the reply comes once it has.
+    bool abort = 3;
   }
 }
 
