@@ -265,10 +265,14 @@ freeze would, keeping the caller's fence revision, so `ControlStatus` shows
 `frozen` and the caller thaws it with its next revision. `IdleSuspend`
 freezes it the same way, then saves its running machine to the host's disk
 and stops it: only its disk stays reserved, so its CPU and memory go to
-other grants. The caller's thaw restores the machine where it stopped,
-processes running and output resuming at the same offsets; while the host
-has no room for it the thaw fails with `ErrCapacity` and the grant stays
-suspended. The in-memory host freezes instead. `WallTimeout` revokes the grant that long
+other grants. A grant you froze yourself is suspended the same way once it
+has been idle for `IdleTimeout` (your freeze counts as its last call), and
+`ControlStatus` still shows your own frozen receipt. The caller's thaw
+restores the machine where it stopped, processes running and output
+resuming at the same offsets; while the host has no room for it the thaw
+fails with `ErrCapacity` and the grant stays suspended. The in-memory host
+models a suspend: the grant stays frozen with its processes, reports
+`suspended`, and reserves only its disk until a thaw finds room again. `WallTimeout` revokes the grant that long
 after it started, busy or not. Labels are the caller's, up to 16 pairs and
 512 bytes; the host never reads them.
 

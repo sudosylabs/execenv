@@ -94,9 +94,12 @@ const (
 	IdleRevoke IdleAction = "revoke"
 	// IdleSuspend freezes the grant as IdleFreeze does, then saves its
 	// running machine to the host's disk and releases its CPU and memory;
-	// only its disk stays reserved. The caller's thaw restores it where it
-	// stopped, its processes still running. A host that cannot suspend
-	// freezes instead.
+	// only its disk stays reserved. A grant the caller froze is suspended
+	// the same way once it has been idle that long, and keeps the caller's
+	// frozen receipt. The caller's thaw restores it where it stopped, its
+	// processes still running; while the host has no room for its CPU and
+	// memory the thaw is ErrCapacity and it stays suspended. A host that
+	// cannot suspend freezes instead.
 	IdleSuspend IdleAction = "suspend"
 )
 

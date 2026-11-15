@@ -39,6 +39,12 @@
   host. `execenvtest.Workspace` now includes `ConfirmObservationProjection`
   and `AcknowledgeObservations`. `execenvtest.FilesGuest` is a `Guest` over
   the file API, for hosts whose workspace a test cannot reach.
+- `IdleSuspend` also suspends a grant its caller froze, once it has been
+  idle for `IdleTimeout`; the grant keeps the caller's frozen receipt and
+  thaws with its next revision. The isolated host saves the paused machine
+  and restores it on thaw. The in-memory host now models a suspend instead
+  of only freezing: the grant reports `GrantSuspended`, reserves only its
+  disk, and its thaw is `ErrCapacity` while its CPU and memory do not fit.
 - `Observe` and `ObserveProcesses` are no longer activity for the idle
   timeout, so a caller that keeps an observation wait open does not keep
   an idle grant awake.

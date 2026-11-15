@@ -177,6 +177,60 @@ func runResources(t *testing.T, factory Factory) {
 		})
 	})
 
+	t.Run("a grant its caller froze is suspended once idle, and thaws where it was", func(t *testing.T) {
+		host := factory(t, Config{})
+		env, err := host.Ensure(t.Context(), execenv.Spec{ID: "parked", Image: "default", IdleTimeout: tick, IdleAction: execenv.IdleSuspend})
+		if err != nil {
+			t.Fatal(err)
+		}
+		fence := execenv.ProjectionFence{ExecutionGrantID: env.ID(), EnvironmentEpoch: env.Epoch(), FenceRevision: 1}
+		if _, err := env.Control(t.Context(), execenv.ControlRequest{Fence: fence, State: execenv.ControlRunning}); err != nil {
+			t.Fatal(err)
+		}
+		sh := StartShell(t, env, fence, "sh")
+		if err := sh.Type("kept=parked\n" + `echo set""-done`); err != nil {
+			t.Fatal(err)
+		}
+		sh.Expect("set-done")
+		_ = sh.Attachment().Close()
+		fence.FenceRevision++
+		if _, err := env.Control(t.Context(), execenv.ControlRequest{Fence: fence, State: execenv.ControlFrozen}); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "suspend of the frozen grant after the idle timeout", func() bool {
+			grants, err := host.ListGrants(t.Context())
+			report, _ := host.Ready(t.Context())
+			return err == nil && len(grants) == 1 && grants[0].State == execenv.GrantSuspended && report.MemoryBytes.Reserved == 0
+		})
+		// The suspend keeps the caller's own freeze.
+		receipt, err := env.ControlStatus(t.Context())
+		if err != nil || receipt.Fence != fence || receipt.State != execenv.ControlFrozen || !receipt.Confirmed {
+			t.Fatalf("ControlStatus() of the suspended grant = %+v, %v", receipt, err)
+		}
+		fence.FenceRevision++
+		receipt, err = env.Control(t.Context(), execenv.ControlRequest{Fence: fence, State: execenv.ControlRunning})
+		if err != nil || receipt.State != execenv.ControlRunning || !receipt.Confirmed {
+			t.Fatalf("thaw of the suspended grant = %+v, %v", receipt, err)
+		}
+		grants, err := host.ListGrants(t.Context())
+		report, _ := host.Ready(t.Context())
+		if err != nil || len(grants) != 1 || grants[0].State != execenv.GrantRunning || report.MemoryBytes.Reserved == 0 {
+			t.Fatalf("after the thaw: %+v, %v, reserved %+v", grants, err, report.MemoryBytes)
+		}
+		// The shell is where it was: its variable, its input offset and
+		// its output.
+		resumed := &TestShell{t: t, env: env, fence: fence, tag: "sh", input: sh.input, offset: sh.offset}
+		resumed.a, err = env.AttachProcess(t.Context(), "sh", map[execenv.Stream]uint64{execenv.StreamPTY: sh.offset})
+		if err != nil {
+			t.Fatalf("AttachProcess() after the thaw: %v", err)
+		}
+		t.Cleanup(func() { _ = resumed.a.Close() })
+		if err := resumed.Type("echo $kept-y"); err != nil {
+			t.Fatal(err)
+		}
+		resumed.Expect("parked-y")
+	})
+
 	t.Run("an idle grant freezes and its caller thaws it with the next revision", func(t *testing.T) {
 
 		host := factory(t, Config{})

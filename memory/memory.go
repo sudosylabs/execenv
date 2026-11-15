@@ -65,12 +65,15 @@ type Host struct {
 }
 
 type environment struct {
-	control   *control.State
-	mu        sync.Mutex
-	id        execenv.ID
-	spec      execenv.Spec
-	host      *Host
-	frozen    bool
+	control *control.State
+	mu      sync.Mutex
+	id      execenv.ID
+	spec    execenv.Spec
+	host    *Host
+	frozen  bool
+	// suspended models a saved machine: the grant is frozen and only its
+	// disk is reserved until its caller thaws it.
+	suspended bool
 	revoked   bool
 	lost      bool
 	started   time.Time
@@ -301,8 +304,18 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 
 // expire applies a grant's wall or idle timeout.
 func (h *Host) expire(env *environment, r lifetime.Reason) {
-	if r == lifetime.Idle && (env.spec.IdleAction == execenv.IdleFreeze || env.spec.IdleAction == execenv.IdleSuspend) {
-		_, _ = env.control.Idle(context.Background(), func(execenv.ControlReceipt) error { return env.freeze(context.Background()) })
+	ctx := context.Background()
+	if r == lifetime.Idle && env.spec.IdleAction == execenv.IdleFreeze {
+		_, _ = env.control.Idle(ctx, func(execenv.ControlReceipt) error { return env.freeze(ctx) })
+		return
+	}
+	if r == lifetime.Idle && env.spec.IdleAction == execenv.IdleSuspend {
+		suspend := func(execenv.ControlReceipt) error { return env.suspend(ctx) }
+		// A running grant is frozen and suspended; one the caller froze is
+		// suspended as it is.
+		if ran, _ := env.control.Idle(ctx, suspend); !ran {
+			_, _ = env.control.Suspend(ctx, suspend)
+		}
 		return
 	}
 	_ = h.revokeExact(context.Background(), env)
@@ -386,6 +399,24 @@ func (e *environment) freeze(ctx context.Context) error {
 	return nil
 }
 
+// suspend freezes the grant, or keeps it frozen, and releases its CPU and
+// memory as a saved machine would; only its disk stays reserved. Its
+// processes keep their state, frozen.
+func (e *environment) suspend(ctx context.Context) error {
+	if err := e.freeze(ctx); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.suspended || e.revoked {
+		return nil
+	}
+	e.suspended = true
+	e.host.pool.Release(e.id)
+	_ = e.host.pool.Reserve(e.id, execenv.Resources{DiskBytes: e.spec.Resources.DiskBytes})
+	return nil
+}
+
 func (e *environment) thaw(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return execenv.Error("thaw", err)
@@ -394,6 +425,16 @@ func (e *environment) thaw(ctx context.Context) error {
 	defer e.mu.Unlock()
 	if e.revoked {
 		return e.guard("thaw")
+	}
+	if e.suspended {
+		// Resuming needs the grant's CPU and memory again: until they fit
+		// it stays suspended.
+		e.host.pool.Release(e.id)
+		if err := e.host.pool.Reserve(e.id, e.spec.Resources); err != nil {
+			_ = e.host.pool.Reserve(e.id, execenv.Resources{DiskBytes: e.spec.Resources.DiskBytes})
+			return execenv.Error("thaw", err)
+		}
+		e.suspended = false
 	}
 	e.frozen = false
 	e.procs.Thaw()
