@@ -20,8 +20,10 @@ func (e *environment) suspendDir() string {
 // suspend freezes the grant, saves its machine to disk and stops it,
 // releasing its CPU and memory; its disk stays reserved. Its processes
 // stay in the saved machine. A launcher that cannot save leaves the grant
-// frozen.
-func (e *environment) suspend(ctx context.Context) error {
+// frozen. done is the control receipt the suspend ends with: the grant's
+// state file records it, suspended, before the machine is stopped, so a
+// host that dies in between finds the saved machine to resume.
+func (e *environment) suspend(ctx context.Context, done execenv.ControlReceipt) error {
 	if err := e.freeze(ctx); err != nil {
 		return err
 	}
@@ -65,6 +67,7 @@ func (e *environment) suspend(ctx context.Context) error {
 		_ = client.Close()
 	}
 	old.End(execenv.ErrFrozen)
+	e.persistReceipt(done)
 	if err := inst.Stop(ctx); err != nil {
 		return err
 	}

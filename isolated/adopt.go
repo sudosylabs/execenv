@@ -220,6 +220,12 @@ func (e *environment) adoptProcesses(ctx context.Context, client *agent.Client) 
 // not the caller's: the grant runs on, and only a restart would lose it.
 func (e *environment) persist() {
 	receipt, _ := e.control.Status(context.Background())
+	e.persistReceipt(receipt)
+}
+
+// persistReceipt is persist with the control receipt given, for a caller
+// that holds the control lock.
+func (e *environment) persistReceipt(receipt execenv.ControlReceipt) {
 	e.mu.Lock()
 	if e.revoked || (e.inst == nil && !e.suspended) {
 		e.mu.Unlock()

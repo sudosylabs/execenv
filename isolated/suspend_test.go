@@ -74,14 +74,10 @@ func TestRestartKeepsASuspendedGrant(t *testing.T) {
 	fence := runningFence(t, env)
 	execenvtest.StartShell(t, env, fence, "sh").Attachment().Close()
 	deadline := time.Now().Add(5 * time.Second)
+	// A restart reads the state file, so wait for that to say suspended.
 	for {
-		h.mu.Lock()
-		e := h.grants["paused"]
-		h.mu.Unlock()
-		e.mu.Lock()
-		suspended := e.suspended
-		e.mu.Unlock()
-		if suspended {
+		states, _, _ := loadStates(h.cfg.WorkDir)
+		if states["paused"].Suspended {
 			break
 		}
 		if time.Now().After(deadline) {

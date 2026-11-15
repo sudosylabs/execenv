@@ -132,7 +132,7 @@ func (s *State) Lose(ctx context.Context, effect func() error) (bool, error) {
 // timeout. It keeps the caller's fence revision: the caller sees frozen in
 // ControlStatus and thaws with its next revision, as after its own freeze.
 // It reports false, and runs nothing, unless the epoch is confirmed running.
-func (s *State) Idle(ctx context.Context, effect func() error) (bool, error) {
+func (s *State) Idle(ctx context.Context, effect func(done execenv.ControlReceipt) error) (bool, error) {
 	if err := s.acquire(ctx); err != nil {
 		return false, err
 	}
@@ -141,7 +141,11 @@ func (s *State) Idle(ctx context.Context, effect func() error) (bool, error) {
 		return false, nil
 	}
 	s.receipt.State, s.receipt.Confirmed = execenv.ControlFrozen, false
-	err := effect()
+	// done is what the grant's control records once effect succeeds, for an
+	// effect that must make it durable before it finishes.
+	done := s.receipt
+	done.Confirmed = true
+	err := effect(done)
 	s.receipt.Confirmed = err == nil
 	return true, err
 }

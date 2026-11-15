@@ -391,12 +391,12 @@ func (h *Host) expire(env *environment, r lifetime.Reason) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if r == lifetime.Idle && env.spec.IdleAction == execenv.IdleFreeze {
-		_, _ = env.control.Idle(ctx, func() error { return env.freeze(ctx) })
+		_, _ = env.control.Idle(ctx, func(execenv.ControlReceipt) error { return env.freeze(ctx) })
 		env.persist()
 		return
 	}
 	if r == lifetime.Idle && env.spec.IdleAction == execenv.IdleSuspend {
-		_, _ = env.control.Idle(ctx, func() error { return env.suspend(ctx) })
+		_, _ = env.control.Idle(ctx, func(done execenv.ControlReceipt) error { return env.suspend(ctx, done) })
 		env.persist()
 		return
 	}
