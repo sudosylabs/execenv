@@ -400,7 +400,7 @@ func writeMachineConfig(req startRequest, jail jailLayout) (string, error) {
 	doc := map[string]any{
 		"boot-source": map[string]any{
 			"kernel_image_path": inside(jailKernel),
-			"boot_args":         bootArgs(req.Attach),
+			"boot_args":         bootArgs(),
 		},
 		"drives": []map[string]any{
 			{
@@ -456,10 +456,9 @@ func writeMachineConfig(req startRequest, jail jailLayout) (string, error) {
 	return inside(jailConfig), nil
 }
 
-func bootArgs(attach *netAttach) string {
-	args := "console=ttyS0 reboot=k panic=1 pci=off init=" + execenv.GuestInit
-	if attach == nil {
-		return args
-	}
-	return args + " ip=" + attach.GuestIP + "::" + attach.HostIP + ":255.255.255.252::eth0:off"
+// bootArgs is the guest kernel's command line. The network, when there is
+// one, is configured from the start message, not here, so a booted guest
+// and a restored one are set up the same way.
+func bootArgs() string {
+	return "console=ttyS0 reboot=k panic=1 pci=off init=" + execenv.GuestInit
 }

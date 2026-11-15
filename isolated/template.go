@@ -36,15 +36,21 @@ const templateBuildTimeout = 5 * time.Minute
 type templateKey struct {
 	image execenv.Image
 	shape string
+	// net is a template saved with a network device, for grants that
+	// have one.
+	net bool
 }
 
 type templateRecord struct {
 	image  execenv.Image
 	shape  Shape
+	net    bool
 	dir    string
 	ready  bool
 	reason string
 }
+
+func (r templateRecord) key() templateKey { return templateKey{r.image, r.shape.Name, r.net} }
 
 // templates builds and serves a host's templates: one per verified image
 // and shape, built one at a time in the background.
@@ -61,10 +67,22 @@ func (h *Host) startTemplates() {
 	if !ok || len(h.cfg.Shapes) == 0 {
 		return
 	}
+	// A host that offers network access saves each template a second
+	// time with a network device, for the grants that ask for it.
+	nets := []bool{false}
+	if len(h.cfg.Allow) > 0 {
+		nets = append(nets, true)
+	}
 	for id := range h.images {
 		for _, shape := range h.cfg.Shapes {
-			dir := filepath.Join(h.cfg.WorkDir, "templates", string(id)+"-"+shape.Name)
-			h.templates.records[templateKey{id, shape.Name}] = &templateRecord{image: id, shape: shape, dir: dir, reason: "building"}
+			for _, net := range nets {
+				name := string(id) + "-" + shape.Name
+				if net {
+					name += "-net"
+				}
+				rec := &templateRecord{image: id, shape: shape, net: net, dir: filepath.Join(h.cfg.WorkDir, "templates", name), reason: "building"}
+				h.templates.records[rec.key()] = rec
+			}
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -108,27 +126,42 @@ func (h *Host) buildOne(ctx context.Context, builder templateBuilder, rec templa
 	}
 	image, verified := record.verified()
 	if !verified {
-		h.templates.set(rec.image, rec.shape.Name, false, "image not verified")
+		h.templates.set(rec.key(), false, "image not verified")
 		return
 	}
-	if readTemplate(rec.dir, image, rec.shape) {
-		h.templates.set(rec.image, rec.shape.Name, true, "")
+	if readTemplate(rec.dir, image, rec.shape, rec.net) {
+		h.templates.set(rec.key(), true, "")
 		return
 	}
 	// A build runs a machine: it takes its size from the pool like a grant.
 	hold := execenv.ID("template:" + string(rec.image) + ":" + rec.shape.Name)
+	if rec.net {
+		hold += ":net"
+	}
 	if err := h.pool.Reserve(hold, execenv.Resources{CPUMillis: int64(rec.shape.VCPUs) * 1000, MemoryBytes: rec.shape.MemoryBytes, DiskBytes: templateDiskBytes}); err != nil {
-		h.templates.set(rec.image, rec.shape.Name, false, "waiting for room to build")
+		h.templates.set(rec.key(), false, "waiting for room to build")
 		return
 	}
 	defer h.pool.Release(hold)
+	var att *netAttach
+	if rec.net {
+		// A device for the build alone, filtered as a grant's is. The guest
+		// has no address on it, so it sends nothing through it.
+		var err error
+		att, err = h.attach.Setup(execenv.ID("tpl-"+string(rec.image)+"-"+rec.shape.Name), append([]string(nil), h.cfg.Allow...))
+		if err != nil {
+			h.templates.set(rec.key(), false, "build failed; retrying")
+			return
+		}
+		defer att.close()
+	}
 	bctx, cancel := context.WithTimeout(ctx, templateBuildTimeout)
 	defer cancel()
-	if err := builder.buildTemplate(bctx, image, rec.shape, rec.dir); err != nil {
-		h.templates.set(rec.image, rec.shape.Name, false, "build failed; retrying")
+	if err := builder.buildTemplate(bctx, image, rec.shape, att, rec.dir); err != nil {
+		h.templates.set(rec.key(), false, "build failed; retrying")
 		return
 	}
-	h.templates.set(rec.image, rec.shape.Name, true, "")
+	h.templates.set(rec.key(), true, "")
 }
 
 func (t *templates) list() []templateRecord {
@@ -142,15 +175,18 @@ func (t *templates) list() []templateRecord {
 		if out[i].image != out[j].image {
 			return out[i].image < out[j].image
 		}
-		return out[i].shape.Name < out[j].shape.Name
+		if out[i].shape.Name != out[j].shape.Name {
+			return out[i].shape.Name < out[j].shape.Name
+		}
+		return !out[i].net && out[j].net
 	})
 	return out
 }
 
-func (t *templates) set(image execenv.Image, shape string, ready bool, reason string) {
+func (t *templates) set(key templateKey, ready bool, reason string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if r, ok := t.records[templateKey{image, shape}]; ok {
+	if r, ok := t.records[key]; ok {
 		r.ready, r.reason = ready, reason
 	}
 }
@@ -161,19 +197,20 @@ func (t *templates) stop() {
 	}
 }
 
-// pick is the template spec starts from, if any: its image, exactly its
-// memory, and the fewest virtual CPUs that cover its CPU. A grant with a
-// network device always boots: templates are saved without one.
+// pick is the template spec starts from, if any: its image, a network
+// device when it has one, exactly its memory, and the fewest virtual CPUs
+// that cover its CPU.
 func (t *templates) pick(spec execenv.Spec) (templateRecord, bool) {
-	if t == nil || spec.Network != execenv.NetworkNone {
+	if t == nil {
 		return templateRecord{}, false
 	}
+	net := spec.Network == execenv.NetworkAllowlist
 	need := int(vcpuCount(spec.Resources.CPUMillis))
 	var best *templateRecord
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for _, r := range t.records {
-		if !r.ready || r.image != spec.Image || r.shape.MemoryBytes != spec.Resources.MemoryBytes || r.shape.VCPUs < need {
+		if !r.ready || r.image != spec.Image || r.net != net || r.shape.MemoryBytes != spec.Resources.MemoryBytes || r.shape.VCPUs < need {
 			continue
 		}
 		if best == nil || r.shape.VCPUs < best.shape.VCPUs {
@@ -193,7 +230,7 @@ func (t *templates) status() []execenv.TemplateStatus {
 	}
 	var out []execenv.TemplateStatus
 	for _, r := range t.list() {
-		out = append(out, execenv.TemplateStatus{Image: r.image, Shape: r.shape.Name, Ready: r.ready, Reason: r.reason})
+		out = append(out, execenv.TemplateStatus{Image: r.image, Shape: r.shape.Name, Network: r.net, Ready: r.ready, Reason: r.reason})
 	}
 	return out
 }

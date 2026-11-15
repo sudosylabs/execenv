@@ -207,9 +207,13 @@ func TestMachineConfigAddsNICWhenAllowlist(t *testing.T) {
 	if iface["host_dev_name"] != att.Dev || iface["guest_mac"] != att.MAC {
 		t.Fatalf("iface = %v", iface)
 	}
+	// The address is the start message's, as it is for a restored guest.
 	args, _ := doc["boot-source"].(map[string]any)["boot_args"].(string)
-	if !strings.Contains(args, att.GuestIP) || !strings.Contains(args, att.HostIP) {
+	if strings.Contains(args, "ip=") {
 		t.Fatalf("boot_args = %s", args)
+	}
+	if n := startNet(&att); n == nil || n.Address != att.GuestIP || n.Gateway != att.HostIP || n.Prefix != att.Prefix {
+		t.Fatalf("start network = %+v", n)
 	}
 }
 

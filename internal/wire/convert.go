@@ -79,7 +79,7 @@ func ReportTo(r execenv.Report) *execenvv1.Report {
 		out.Networks = append(out.Networks, NetworkTo(n))
 	}
 	for _, tpl := range r.Templates {
-		out.Templates = append(out.Templates, &execenvv1.TemplateStatus{Image: string(tpl.Image), Shape: tpl.Shape, Ready: tpl.Ready, Reason: tpl.Reason})
+		out.Templates = append(out.Templates, &execenvv1.TemplateStatus{Image: string(tpl.Image), Shape: tpl.Shape, Network: tpl.Network, Ready: tpl.Ready, Reason: tpl.Reason})
 	}
 	return out
 }
@@ -107,7 +107,7 @@ func ReportFrom(r *execenvv1.Report) execenv.Report {
 		}
 	}
 	for _, tpl := range r.GetTemplates() {
-		out.Templates = append(out.Templates, execenv.TemplateStatus{Image: execenv.Image(tpl.GetImage()), Shape: tpl.GetShape(), Ready: tpl.GetReady(), Reason: tpl.GetReason()})
+		out.Templates = append(out.Templates, execenv.TemplateStatus{Image: execenv.Image(tpl.GetImage()), Shape: tpl.GetShape(), Network: tpl.GetNetwork(), Ready: tpl.GetReady(), Reason: tpl.GetReason()})
 	}
 	return out
 }

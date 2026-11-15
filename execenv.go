@@ -98,6 +98,9 @@ type Report struct {
 type TemplateStatus struct {
 	Image Image
 	Shape string
+	// Network is a template saved with a network device: grants with
+	// network access start from it.
+	Network bool
 	// Ready is whether grants start from it; until then they boot.
 	Ready bool
 	// Reason says why a template is not ready: still building, or why it

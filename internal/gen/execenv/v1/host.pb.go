@@ -727,11 +727,13 @@ func (x *Report) GetTemplates() []*TemplateStatus {
 }
 
 type TemplateStatus struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Image         string                 `protobuf:"bytes,1,opt,name=image,proto3" json:"image,omitempty"`
-	Shape         string                 `protobuf:"bytes,2,opt,name=shape,proto3" json:"shape,omitempty"`
-	Ready         bool                   `protobuf:"varint,3,opt,name=ready,proto3" json:"ready,omitempty"`
-	Reason        string                 `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Image  string                 `protobuf:"bytes,1,opt,name=image,proto3" json:"image,omitempty"`
+	Shape  string                 `protobuf:"bytes,2,opt,name=shape,proto3" json:"shape,omitempty"`
+	Ready  bool                   `protobuf:"varint,3,opt,name=ready,proto3" json:"ready,omitempty"`
+	Reason string                 `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
+	// Saved with a network device, for grants with network access.
+	Network       bool `protobuf:"varint,5,opt,name=network,proto3" json:"network,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -792,6 +794,13 @@ func (x *TemplateStatus) GetReason() string {
 		return x.Reason
 	}
 	return ""
+}
+
+func (x *TemplateStatus) GetNetwork() bool {
+	if x != nil {
+		return x.Network
+	}
+	return false
 }
 
 type Capacity struct {
@@ -1194,12 +1203,13 @@ const file_execenv_v1_host_proto_rawDesc = "" +
 	"disk_bytes\x18\v \x01(\v2\x14.execenv.v1.CapacityR\tdiskBytes\x121\n" +
 	"\bdefaults\x18\f \x01(\v2\x15.execenv.v1.ResourcesR\bdefaults\x122\n" +
 	"\tgrant_max\x18\r \x01(\v2\x15.execenv.v1.ResourcesR\bgrantMax\x128\n" +
-	"\ttemplates\x18\x0e \x03(\v2\x1a.execenv.v1.TemplateStatusR\ttemplates\"j\n" +
+	"\ttemplates\x18\x0e \x03(\v2\x1a.execenv.v1.TemplateStatusR\ttemplates\"\x84\x01\n" +
 	"\x0eTemplateStatus\x12\x14\n" +
 	"\x05image\x18\x01 \x01(\tR\x05image\x12\x14\n" +
 	"\x05shape\x18\x02 \x01(\tR\x05shape\x12\x14\n" +
 	"\x05ready\x18\x03 \x01(\bR\x05ready\x12\x16\n" +
-	"\x06reason\x18\x04 \x01(\tR\x06reason\"P\n" +
+	"\x06reason\x18\x04 \x01(\tR\x06reason\x12\x18\n" +
+	"\anetwork\x18\x05 \x01(\bR\anetwork\"P\n" +
 	"\bCapacity\x12\x14\n" +
 	"\x05total\x18\x01 \x01(\x03R\x05total\x12\x1a\n" +
 	"\breserved\x18\x02 \x01(\x03R\breserved\x12\x12\n" +

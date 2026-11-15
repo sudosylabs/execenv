@@ -80,7 +80,7 @@ type saver interface {
 
 // templateBuilder is a launcher that can build templates.
 type templateBuilder interface {
-	buildTemplate(ctx context.Context, image Image, shape Shape, dir string) error
+	buildTemplate(ctx context.Context, image Image, shape Shape, att *netAttach, dir string) error
 }
 
 // staleCleaner releases host resources a crashed daemon left behind. It

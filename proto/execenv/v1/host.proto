@@ -96,6 +96,8 @@ message TemplateStatus {
   string shape = 2;
   bool ready = 3;
   string reason = 4;
+  // Saved with a network device, for grants with network access.
+  bool network = 5;
 }
 
 message Capacity {

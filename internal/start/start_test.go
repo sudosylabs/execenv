@@ -31,7 +31,7 @@ func TestProbeThenStart(t *testing.T) {
 		t.Fatalf("Probe() = %v", err)
 	}
 	_ = probe.Close()
-	m, err := New("epoch-1")
+	m, err := New("epoch-1", &Net{Address: "169.254.20.2", Prefix: 30, Gateway: "169.254.20.1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,15 +43,15 @@ func TestProbeThenStart(t *testing.T) {
 	if err := Send(conn, m); err != nil {
 		t.Fatalf("Send() = %v", err)
 	}
-	if r := <-got; r.Epoch != "epoch-1" || r.MachineID != m.MachineID || string(r.Entropy) != string(m.Entropy) {
+	if r := <-got; r.Epoch != "epoch-1" || r.MachineID != m.MachineID || string(r.Entropy) != string(m.Entropy) || r.Net == nil || *r.Net != *m.Net {
 		t.Fatalf("received %+v", r)
 	}
 }
 
 // Each start is fresh: no two share entropy or a machine id.
 func TestNewIsFresh(t *testing.T) {
-	a, _ := New("e")
-	b, _ := New("e")
+	a, _ := New("e", nil)
+	b, _ := New("e", nil)
 	if string(a.Entropy) == string(b.Entropy) || a.MachineID == b.MachineID || len(a.Entropy) != EntropyBytes {
 		t.Fatal("two starts share their randomness")
 	}

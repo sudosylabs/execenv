@@ -64,10 +64,19 @@ func (l *processLauncher) bring(ctx context.Context, req startRequest, p *proces
 		}
 		m := newMonitor(p.api)
 		defer m.close()
-		if err := m.load(ctx); err != nil {
+		dev := ""
+		if req.Attach != nil {
+			dev = req.Attach.Dev
+		}
+		if err := m.load(ctx, dev); err != nil {
 			return err
 		}
 		if err := m.rescanDisk(ctx); err != nil {
+			return err
+		}
+		// The saved machine had its own limits, or none: these are the
+		// grant's.
+		if err := p.UpdateLimits(ctx, req.Limits, req.Attach != nil); err != nil {
 			return err
 		}
 		if err := m.resumeMachine(ctx); err != nil {
@@ -77,7 +86,7 @@ func (l *processLauncher) bring(ctx context.Context, req startRequest, p *proces
 	if req.Epoch == "" || (req.Restore != nil && !req.Restore.Start) {
 		return nil
 	}
-	msg, err := start.New(req.Epoch)
+	msg, err := start.New(req.Epoch, startNet(req.Attach))
 	if err != nil {
 		return err
 	}
@@ -89,6 +98,14 @@ func (l *processLauncher) bring(ctx context.Context, req startRequest, p *proces
 		defer conn.Close()
 		return start.Send(conn, msg)
 	})
+}
+
+// startNet is the network a guest is started with: its link's addresses.
+func startNet(a *netAttach) *start.Net {
+	if a == nil {
+		return nil
+	}
+	return &start.Net{Address: a.GuestIP, Prefix: a.Prefix, Gateway: a.HostIP}
 }
 
 // untilDone retries fn until it succeeds or ctx ends: the guest is not
@@ -157,15 +174,19 @@ type templateMeta struct {
 	Image string `json:"image"`
 	Hash  string `json:"hash"`
 	Shape Shape  `json:"shape"`
+	// Net is set for a template saved with a network device.
+	Net bool `json:"net,omitempty"`
 }
 
 const templateMetaName = "template.json"
 
-// buildTemplate boots image as shape with a placeholder disk and no
-// network, waits until its guest is idle, waiting for a start, then saves
-// it into dir. Files are shared by every grant restored from it, so they
-// are root's and read only.
-func (l *processLauncher) buildTemplate(ctx context.Context, image Image, shape Shape, dir string) error {
+// buildTemplate boots image as shape with a placeholder disk, and with
+// network device att when it is set, waits until its guest is idle,
+// waiting for a start, then saves it into dir. The guest has no address
+// yet: each grant's start gives it its own, and its restore its own
+// device. Files are shared by every grant restored from it, so they are
+// root's and read only.
+func (l *processLauncher) buildTemplate(ctx context.Context, image Image, shape Shape, att *netAttach, dir string) error {
 	work := dir + ".build"
 	if err := os.RemoveAll(work); err != nil {
 		return err
@@ -181,6 +202,7 @@ func (l *processLauncher) buildTemplate(ctx context.Context, image Image, shape 
 		TreeDir:   filepath.Join(work, workspaceName),
 		Disk:      filepath.Join(work, diskName),
 		Resources: execenv.Resources{CPUMillis: int64(shape.VCPUs) * 1000, MemoryBytes: shape.MemoryBytes, DiskBytes: templateDiskBytes},
+		Attach:    att,
 	}
 	inst, err := l.Start(ctx, req)
 	if err != nil {
@@ -216,7 +238,7 @@ func (l *processLauncher) buildTemplate(ctx context.Context, image Image, shape 
 	if err := takeSaved(filepath.Join(p.rec.Jail, "root"), saved, 0o644); err != nil {
 		return err
 	}
-	meta, err := json.Marshal(templateMeta{Image: string(image.ID), Hash: image.Hash, Shape: shape})
+	meta, err := json.Marshal(templateMeta{Image: string(image.ID), Hash: image.Hash, Shape: shape, Net: att != nil})
 	if err != nil {
 		return err
 	}
@@ -229,8 +251,9 @@ func (l *processLauncher) buildTemplate(ctx context.Context, image Image, shape 
 	return os.Rename(saved, dir)
 }
 
-// readTemplate reports whether dir holds a template of image and shape.
-func readTemplate(dir string, image Image, shape Shape) bool {
+// readTemplate reports whether dir holds a template of image and shape,
+// saved with a network device when net is set.
+func readTemplate(dir string, image Image, shape Shape, net bool) bool {
 	raw, err := os.ReadFile(filepath.Join(dir, templateMetaName))
 	if err != nil {
 		return false
@@ -239,7 +262,7 @@ func readTemplate(dir string, image Image, shape Shape) bool {
 	if json.Unmarshal(raw, &meta) != nil {
 		return false
 	}
-	if meta.Image != string(image.ID) || meta.Hash != image.Hash || meta.Shape != shape {
+	if meta.Image != string(image.ID) || meta.Hash != image.Hash || meta.Shape != shape || meta.Net != net {
 		return false
 	}
 	for _, name := range []string{jailState, jailMemory} {

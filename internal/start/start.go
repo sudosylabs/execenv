@@ -42,10 +42,20 @@ type Message struct {
 	MachineID string `json:"machine_id"`
 	// Epoch is the grant occupancy the guest now serves.
 	Epoch string `json:"epoch"`
+	// Net configures the guest's network device, when it has one.
+	Net *Net `json:"net,omitempty"`
 }
 
-// New is a fresh start for epoch.
-func New(epoch string) (Message, error) {
+// Net is a guest's IPv4 address on its one network device, and the host
+// end it routes through.
+type Net struct {
+	Address string `json:"address"`
+	Prefix  int    `json:"prefix"`
+	Gateway string `json:"gateway"`
+}
+
+// New is a fresh start for epoch, with network n or none.
+func New(epoch string, n *Net) (Message, error) {
 	entropy := make([]byte, EntropyBytes)
 	if _, err := rand.Read(entropy); err != nil {
 		return Message{}, err
@@ -54,7 +64,7 @@ func New(epoch string) (Message, error) {
 	if _, err := rand.Read(id); err != nil {
 		return Message{}, err
 	}
-	return Message{Entropy: entropy, Time: time.Now().UTC(), MachineID: hex.EncodeToString(id), Epoch: epoch}, nil
+	return Message{Entropy: entropy, Time: time.Now().UTC(), MachineID: hex.EncodeToString(id), Epoch: epoch, Net: n}, nil
 }
 
 // ErrProtocol is an exchange that did not follow this package's lines.

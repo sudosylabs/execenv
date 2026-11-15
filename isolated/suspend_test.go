@@ -105,17 +105,20 @@ func TestRestartKeepsASuspendedGrant(t *testing.T) {
 	}
 }
 
-// A grant starts from the template of its image with exactly its memory
-// and the fewest virtual CPUs that cover it; a grant with a network, or
-// another memory size, boots.
+// A grant starts from the template of its image with exactly its memory,
+// a network device when it has one, and the fewest virtual CPUs that
+// cover it; another memory size, or a network template not yet ready,
+// boots.
 func TestTemplatePick(t *testing.T) {
 	small := Shape{Name: "small", VCPUs: 1, MemoryBytes: 512 << 20}
 	wide := Shape{Name: "wide", VCPUs: 4, MemoryBytes: 512 << 20}
 	big := Shape{Name: "big", VCPUs: 2, MemoryBytes: 1 << 30}
 	tpl := &templates{records: map[templateKey]*templateRecord{
-		{"default", "small"}: {image: "default", shape: small, ready: true},
-		{"default", "wide"}:  {image: "default", shape: wide, ready: true},
-		{"default", "big"}:   {image: "default", shape: big, ready: false},
+		{"default", "small", false}: {image: "default", shape: small, ready: true},
+		{"default", "small", true}:  {image: "default", shape: small, net: true, ready: true},
+		{"default", "wide", false}:  {image: "default", shape: wide, ready: true},
+		{"default", "wide", true}:   {image: "default", shape: wide, net: true, ready: false},
+		{"default", "big", false}:   {image: "default", shape: big, ready: false},
 	}}
 	spec := func(cpu, mem int64, network execenv.Network) execenv.Spec {
 		return execenv.Spec{ID: "g", Image: "default", Network: network, Resources: execenv.Resources{CPUMillis: cpu, MemoryBytes: mem}}
@@ -123,12 +126,15 @@ func TestTemplatePick(t *testing.T) {
 	if r, ok := tpl.pick(spec(500, 512<<20, execenv.NetworkNone)); !ok || r.shape.Name != "small" {
 		t.Fatalf("half a CPU picked %+v %v", r.shape, ok)
 	}
-	if r, ok := tpl.pick(spec(2500, 512<<20, execenv.NetworkNone)); !ok || r.shape.Name != "wide" {
+	if r, ok := tpl.pick(spec(2500, 512<<20, execenv.NetworkNone)); !ok || r.shape.Name != "wide" || r.net {
 		t.Fatalf("2.5 CPUs picked %+v %v", r.shape, ok)
+	}
+	if r, ok := tpl.pick(spec(500, 512<<20, execenv.NetworkAllowlist)); !ok || r.shape.Name != "small" || !r.net {
+		t.Fatalf("a network grant picked %+v net %v, %v", r.shape, r.net, ok)
 	}
 	for _, s := range []execenv.Spec{
 		spec(500, 768<<20, execenv.NetworkNone),
-		spec(500, 512<<20, execenv.NetworkAllowlist),
+		spec(2500, 512<<20, execenv.NetworkAllowlist),
 		spec(5000, 512<<20, execenv.NetworkNone),
 		spec(1000, 1<<30, execenv.NetworkNone),
 	} {

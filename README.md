@@ -968,19 +968,27 @@ machine sizes to save in Host configuration:
 
 For every catalog image and shape the daemon builds a template in the
 background, one at a time: it boots the image at that size with a
-placeholder disk and no network device, waits until the guest is idle
-before it has touched any grant's disk, and saves it. `Ready` lists each
-template and whether it is ready. A grant with no network device whose
-memory is exactly a shape's, and whose CPU needs no more virtual CPUs than
-the shape has, then starts from the template of its image with the fewest
-such CPUs; its CPU is still throttled to what it reserved. Any other grant,
-and every grant until its template is ready, boots at its exact size.
+placeholder disk, waits until the guest is idle before it has touched any
+grant's disk, and saves it. A host that offers network access (`allow`)
+saves each one a second time with a network device, on a placeholder link
+of its own; the guest has no address on it yet. `Ready` lists each
+template, whether it has a network device, and whether it is ready. A
+grant whose memory is exactly a shape's, and whose CPU needs no more
+virtual CPUs than the shape has, then starts from the template of its image
+with the fewest such CPUs, with a network device exactly when the grant has
+network access; its CPU is still throttled to what it reserved, and its
+disk and network rate limits are its own. Any other grant, and every grant
+until its template is ready, boots at its exact size.
 
 A restored machine is made one grant's before anything in it runs. Guest
 init waits for a start message from the host carrying fresh entropy, the
-time, a machine id and the grant's epoch; it reseeds the random generator,
-sets the clock and the machine id, and only then mounts the grant's own
-disk and starts the helper. So two grants from one template share no
+time, a machine id, the grant's epoch and, with network access, the
+grant's address; it reseeds the random generator, sets the clock and the
+machine id, gives the network device the grant's address and its default
+route through the grant's own link, and only then mounts the grant's own
+disk and starts the helper. A booted guest is configured by the same
+message, so the two start alike. A restored network grant's device is
+backed by the grant's own link from the moment it is loaded. So two grants from one template share no
 randomness, identity or files. Each restored grant maps the template's
 memory privately: pages it writes are its own. Templates live in
 `<state>/work/templates`; a changed image or shape is built again.

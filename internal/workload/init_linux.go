@@ -59,6 +59,10 @@ func RunInit(args []string) error {
 		_ = conn.Close()
 		return err
 	}
+	if err := configureNet(msg.Net); err != nil {
+		_ = conn.Close()
+		return err
+	}
 	if err := mountWorkspace(); err != nil {
 		_ = conn.Close()
 		return err

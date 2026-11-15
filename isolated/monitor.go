@@ -103,8 +103,11 @@ func (m *monitor) save(ctx context.Context) error {
 // load restores a saved machine, paused, from the jail root. Its memory is
 // mapped privately: pages it writes are its own, and the file stays as it
 // was for the next grant.
-func (m *monitor) load(ctx context.Context) error {
-	return m.put(ctx, "/snapshot/load", map[string]any{
+// load restores the saved machine in the jail. dev, when set, is the host
+// device its network device now uses: the saved one was another grant's,
+// or a template's.
+func (m *monitor) load(ctx context.Context, dev string) error {
+	params := map[string]any{
 		"snapshot_path": inside(jailState),
 		"mem_backend": map[string]any{
 			"backend_type": "File",
@@ -112,7 +115,11 @@ func (m *monitor) load(ctx context.Context) error {
 		},
 		"enable_diff_snapshots": false,
 		"resume_vm":             false,
-	})
+	}
+	if dev != "" {
+		params["network_overrides"] = []map[string]any{{"iface_id": "eth0", "host_dev_name": dev}}
+	}
+	return m.put(ctx, "/snapshot/load", params)
 }
 
 // rescanDisk makes the guest see the grant's workspace disk at its own
