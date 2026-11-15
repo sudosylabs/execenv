@@ -66,7 +66,11 @@ recommend MEMORY_BALLOON "balloon device"
 recommend VIRTIO_BALLOON "balloon device"
 recommend PAGE_REPORTING "free page reporting returns freed guest memory to the host"
 recommend BALLOON_COMPACTION "balloon pages stay migratable"
-# Only relevant to a future snapshot restore path; kernel >= 5.18 with ACPI.
-recommend VMGENID "reseeds guest entropy after snapshot restore"
+# Templates and suspend restore saved machines. The start message reseeds
+# the random generator through the random device's ioctls; the generation
+# id device also tells the kernel it was restored (Linux 5.18 or later with
+# ACPI).
+require VMGENID "reseeds guest entropy when a saved machine is restored"
+recommend HW_RANDOM_VIRTIO "host entropy device"
 
 exit $missing

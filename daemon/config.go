@@ -59,6 +59,10 @@ type Config struct {
 	// microVM monitors (default 2000000000). Nothing else may use them.
 	JailUIDBase int     `json:"jail_uid_base,omitempty"`
 	Images      []Image `json:"images"`
+	// Shapes are the machine sizes the isolated adapter saves templates
+	// in, for every image: a grant of exactly a shape's memory starts
+	// from its template instead of booting. Empty builds none.
+	Shapes []isolated.Shape `json:"shapes,omitempty"`
 	// Capacity is what the host gives its grants in all. Every grant
 	// reserves its whole size from it. CPUOvercommit multiplies the CPU
 	// total (1 when unset); memory and disk are never overcommitted.

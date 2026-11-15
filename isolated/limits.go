@@ -1,11 +1,7 @@
 package isolated
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"net"
-	"net/http"
 	"strconv"
 
 	"github.com/sudosylabs/execenv"
@@ -61,14 +57,9 @@ func bucket(b execenv.TokenBucket) map[string]any {
 
 // UpdateLimits patches the running machine's devices through its API socket.
 func (p *processInstance) UpdateLimits(ctx context.Context, limits execenv.Limits, network bool) error {
-	client := &http.Client{Transport: &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, "unix", p.api)
-		},
-	}}
-	defer client.CloseIdleConnections()
-	if err := patch(ctx, client, "/drives/workspace", map[string]any{
+	m := newMonitor(p.api)
+	defer m.close()
+	if err := m.patch(ctx, "/drives/workspace", map[string]any{
 		"drive_id":     "workspace",
 		"rate_limiter": rateLimiter(limits.DiskBytes, limits.DiskOps),
 	}); err != nil {
@@ -77,30 +68,9 @@ func (p *processInstance) UpdateLimits(ctx context.Context, limits execenv.Limit
 	if !network {
 		return nil
 	}
-	return patch(ctx, client, "/network-interfaces/eth0", map[string]any{
+	return m.patch(ctx, "/network-interfaces/eth0", map[string]any{
 		"iface_id":        "eth0",
 		"rx_rate_limiter": rateLimiter(limits.NetworkBytes, execenv.TokenBucket{}),
 		"tx_rate_limiter": rateLimiter(limits.NetworkBytes, execenv.TokenBucket{}),
 	})
-}
-
-func patch(ctx context.Context, client *http.Client, path string, body any) error {
-	raw, err := json.Marshal(body)
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, "http://monitor"+path, bytes.NewReader(raw))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return execenv.ErrUnavailable
-	}
-	_ = resp.Body.Close()
-	if resp.StatusCode/100 != 2 {
-		return execenv.ErrUnavailable
-	}
-	return nil
 }

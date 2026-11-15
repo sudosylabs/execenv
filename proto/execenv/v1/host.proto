@@ -87,6 +87,15 @@ message Report {
   // defaults fill a spec's zero resources; grant_max bounds one grant.
   Resources defaults = 12;
   Resources grant_max = 13;
+  // templates are the saved machines grants start from instead of booting.
+  repeated TemplateStatus templates = 14;
+}
+
+message TemplateStatus {
+  string image = 1;
+  string shape = 2;
+  bool ready = 3;
+  string reason = 4;
 }
 
 message Capacity {
@@ -99,6 +108,7 @@ enum IdleAction {
   IDLE_ACTION_UNSPECIFIED = 0;
   IDLE_ACTION_FREEZE = 1;
   IDLE_ACTION_REVOKE = 2;
+  IDLE_ACTION_SUSPEND = 3;
 }
 
 message Spec {

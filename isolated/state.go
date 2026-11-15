@@ -27,6 +27,9 @@ type grantState struct {
 	// Lost marks a grant whose machine ended without a revoke; it stays
 	// lost across restarts until the caller revokes it.
 	Lost bool `json:"lost,omitempty"`
+	// Suspended says the grant's machine is saved in its grant directory
+	// and not running.
+	Suspended bool `json:"suspended,omitempty"`
 }
 
 // machine finds a grant's machine again. PID and Start name the monitor

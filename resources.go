@@ -92,6 +92,12 @@ const (
 	IdleFreeze IdleAction = "freeze"
 	// IdleRevoke revokes the grant.
 	IdleRevoke IdleAction = "revoke"
+	// IdleSuspend freezes the grant as IdleFreeze does, then saves its
+	// running machine to the host's disk and releases its CPU and memory;
+	// only its disk stays reserved. The caller's thaw restores it where it
+	// stopped, its processes still running. A host that cannot suspend
+	// freezes instead.
+	IdleSuspend IdleAction = "suspend"
 )
 
 // MaxGrantLabels bounds a grant's labels: at most 16 pairs, 512 bytes in
@@ -134,7 +140,7 @@ func validateLifetime(spec Spec) error {
 		if spec.IdleTimeout != 0 {
 			return ErrInvalid
 		}
-	case IdleFreeze, IdleRevoke:
+	case IdleFreeze, IdleRevoke, IdleSuspend:
 		if spec.IdleTimeout == 0 {
 			return ErrInvalid
 		}

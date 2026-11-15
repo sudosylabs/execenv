@@ -42,9 +42,12 @@ type environment struct {
 	// started is when the grant was first ensured; its wall timeout runs
 	// from then, across restarts.
 	started time.Time
-	// adoptPending says a restarted host adopted this grant paused, and
-	// takes over its guest's processes when it thaws.
+	// adoptPending says the host takes over the guest's processes when the
+	// grant thaws: it was adopted paused, or it was suspended.
 	adoptPending bool
+	// suspended says the grant's machine is saved to disk and stopped; a
+	// thaw restores it.
+	suspended bool
 }
 
 func (e *environment) ID() execenv.ID { return e.id }
@@ -121,7 +124,13 @@ func (e *environment) watch() {
 		return
 	case <-inst.Done():
 	}
-	e.host.lose(e)
+	// A suspend stops the machine on purpose.
+	e.mu.Lock()
+	current := e.inst == inst
+	e.mu.Unlock()
+	if current {
+		e.host.lose(e)
+	}
 }
 
 // watchLink waits for a guest link to end. A link that breaks while the
@@ -136,7 +145,12 @@ func (e *environment) watchLink(client *agent.Client) {
 		return
 	case <-client.Done():
 	}
-	e.host.lose(e)
+	e.mu.Lock()
+	current := e.client == client
+	e.mu.Unlock()
+	if current {
+		e.host.lose(e)
+	}
 }
 
 // freeze stops process and journal I/O and pauses the microVM. The instance is
@@ -153,9 +167,11 @@ func (e *environment) freeze(ctx context.Context) error {
 	}
 	e.frozen = true
 	client, inst, paused := e.client, e.inst, e.paused
+	// A suspended machine is saved and stopped: frozen already.
+	suspended := e.suspended
 	e.mu.Unlock()
-	e.procs.Freeze()
-	if paused {
+	e.manager().Freeze()
+	if paused || suspended {
 		return nil
 	}
 	if client == nil || inst == nil {
@@ -186,9 +202,15 @@ func (e *environment) thaw(ctx context.Context) error {
 		e.mu.Unlock()
 		return err
 	}
-	client, inst, frozen, pending := e.client, e.inst, e.frozen, e.adoptPending
+	client, inst, frozen, pending, suspended := e.client, e.inst, e.frozen, e.adoptPending, e.suspended
 	e.mu.Unlock()
 	if !frozen {
+		return nil
+	}
+	if suspended {
+		if err := e.resume(ctx); err != nil {
+			return execenv.Error("thaw", err)
+		}
 		return nil
 	}
 	if inst == nil || (client == nil && !pending) {
@@ -221,7 +243,7 @@ func (e *environment) thaw(ctx context.Context) error {
 		e.mu.Unlock()
 		return execenv.Error("thaw", errors.Join(err, pauseErr))
 	}
-	e.procs.Thaw()
+	e.manager().Thaw()
 	if pending {
 		if err := e.adoptProcesses(ctx, client); err != nil {
 			return execenv.Error("thaw", err)
@@ -263,7 +285,7 @@ func (e *environment) stop(cause error) error {
 	e.mu.Unlock()
 	// Processes end with the cause before the verdict is out, so a reader
 	// whose link broke sees why.
-	e.procs.End(cause)
+	e.manager().End(cause)
 	e.goneOnce.Do(func() { close(e.gone) })
 	if client != nil {
 		client.Hangup(cause)

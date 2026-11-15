@@ -33,6 +33,12 @@ type startRequest struct {
 	// Limits throttle the machine's disk and network devices.
 	Limits execenv.Limits
 	Attach *netAttach
+	// Epoch is the grant occupancy the guest is started for. Empty starts
+	// no guest: a template build probes it instead.
+	Epoch string
+	// Restore, when set, starts the machine from a saved one instead of
+	// booting it.
+	Restore *restoreFrom
 }
 
 // instance is one running isolated environment. Pause must not destroy it.
@@ -65,6 +71,16 @@ type launcher interface {
 // for each grant. A launcher without one starts grants from the seed's tree.
 type seedPreparer interface {
 	prepareSeed(stage string) error
+}
+
+// saver is an instance that can save its running machine to disk.
+type saver interface {
+	Save(ctx context.Context, dir string) error
+}
+
+// templateBuilder is a launcher that can build templates.
+type templateBuilder interface {
+	buildTemplate(ctx context.Context, image Image, shape Shape, dir string) error
 }
 
 // staleCleaner releases host resources a crashed daemon left behind. It

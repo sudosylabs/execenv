@@ -87,6 +87,22 @@ type Report struct {
 	Release string
 	// Isolation is the boundary class this host provides.
 	Isolation Isolation
+	// Templates are the saved machines grants start from instead of
+	// booting: one per image and operator shape, once it is built.
+	Templates []TemplateStatus
+}
+
+// TemplateStatus is one template: a machine of Shape booted from Image and
+// saved, which a grant of exactly its memory, and no more virtual CPUs,
+// starts from.
+type TemplateStatus struct {
+	Image Image
+	Shape string
+	// Ready is whether grants start from it; until then they boot.
+	Ready bool
+	// Reason says why a template is not ready: still building, or why it
+	// failed.
+	Reason string
 }
 
 // Report reasons. Adapters may report other text; these are stable.
@@ -112,9 +128,10 @@ type Spec struct {
 	Resources Resources
 	// WallTimeout, when set, revokes the grant that long after it started.
 	WallTimeout time.Duration
-	// IdleTimeout and IdleAction, set together, freeze or revoke the grant
-	// once it has been idle that long. A grant is busy while a terminal is
-	// attached to it and for a moment after any call on it.
+	// IdleTimeout and IdleAction, set together, freeze, suspend or revoke
+	// the grant once it has been idle that long. A grant is busy while
+	// anything is attached to one of its processes and for a moment after
+	// any call on it.
 	IdleTimeout time.Duration
 	IdleAction  IdleAction
 	// Labels are the caller's, for its own bookkeeping. The host never

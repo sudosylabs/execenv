@@ -1,6 +1,7 @@
 //go:build linux
 
-package agent
+// Package guestlink listens on the guest's end of the host link.
+package guestlink
 
 import (
 	"fmt"
@@ -12,15 +13,15 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// ListenGuest binds the guest-side link the host dials after Ensure.
-// Off a guest, or when the link family is missing, the error is
-// ErrUnavailable. net.FileListener cannot wrap this family.
-func ListenGuest() (net.Listener, error) {
+// Listen binds port on the guest's end of the host link. Off a guest, or
+// when the link family is missing, the error is ErrUnavailable.
+// net.FileListener cannot wrap this family.
+func Listen(port uint32) (net.Listener, error) {
 	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC|unix.SOCK_NONBLOCK, 0)
 	if err != nil {
 		return nil, execenv.ErrUnavailable
 	}
-	sa := &unix.SockaddrVM{CID: unix.VMADDR_CID_ANY, Port: uint32(LinkPort)}
+	sa := &unix.SockaddrVM{CID: unix.VMADDR_CID_ANY, Port: port}
 	if err := unix.Bind(fd, sa); err != nil {
 		_ = unix.Close(fd)
 		return nil, execenv.ErrUnavailable
@@ -29,11 +30,12 @@ func ListenGuest() (net.Listener, error) {
 		_ = unix.Close(fd)
 		return nil, execenv.ErrUnavailable
 	}
-	return &guestListener{f: os.NewFile(uintptr(fd), "guest")}, nil
+	return &guestListener{f: os.NewFile(uintptr(fd), "guest"), port: port}, nil
 }
 
 type guestListener struct {
-	f *os.File
+	f    *os.File
+	port uint32
 }
 
 func (l *guestListener) Accept() (net.Conn, error) {
@@ -70,7 +72,7 @@ func (l *guestListener) Close() error {
 }
 
 func (l *guestListener) Addr() net.Addr {
-	return guestAddr{}
+	return guestAddr{port: l.port}
 }
 
 type guestConn struct {
@@ -92,7 +94,7 @@ func (c *guestConn) SetWriteDeadline(t time.Time) error {
 	return c.f.SetWriteDeadline(t)
 }
 
-type guestAddr struct{}
+type guestAddr struct{ port uint32 }
 
-func (guestAddr) Network() string { return "guest" }
-func (guestAddr) String() string  { return fmt.Sprintf("%d", LinkPort) }
+func (guestAddr) Network() string  { return "guest" }
+func (a guestAddr) String() string { return fmt.Sprintf("%d", a.port) }

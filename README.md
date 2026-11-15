@@ -257,11 +257,17 @@ The guest sees enough virtual CPUs to use its `CPUMillis` and is throttled
 to exactly that; `MemoryBytes` is its memory; `DiskBytes` is its workspace
 disk, shared by the projected tree and the shell's scratch home.
 
-A grant is busy while anything is attached to one of its processes and after any call on
-it. Once idle for `IdleTimeout` the host applies `IdleAction`: `IdleRevoke`
-revokes it; `IdleFreeze` freezes it as a fenced freeze would, keeping the
-caller's fence revision, so `ControlStatus` shows `frozen` and the caller
-thaws it with its next revision. `WallTimeout` revokes the grant that long
+A grant is busy while anything is attached to one of its processes and
+after any call on it. Once idle for `IdleTimeout` the host applies
+`IdleAction`: `IdleRevoke` revokes it; `IdleFreeze` freezes it as a fenced
+freeze would, keeping the caller's fence revision, so `ControlStatus` shows
+`frozen` and the caller thaws it with its next revision. `IdleSuspend`
+freezes it the same way, then saves its running machine to the host's disk
+and stops it: only its disk stays reserved, so its CPU and memory go to
+other grants. The caller's thaw restores the machine where it stopped,
+processes running and output resuming at the same offsets; while the host
+has no room for it the thaw fails with `ErrCapacity` and the grant stays
+suspended. The in-memory host freezes instead. `WallTimeout` revokes the grant that long
 after it started, busy or not. Labels are the caller's, up to 16 pairs and
 512 bytes; the host never reads them.
 
@@ -907,8 +913,38 @@ process running under it except the machines of the grants it adopts.
 The workspace disk is a sparse file in the grant's directory, so only
 written blocks use host storage. It is created when the grant starts and
 removed on revoke, and when a restarted daemon finds a grant's machine
-gone. The
-guest does not reclaim space from deleted files during a grant.
+gone. The guest does not reclaim space from deleted files during a grant.
+
+### Templates
+
+A grant can start from a saved machine instead of booting. List the
+machine sizes to save in Host configuration:
+
+```json
+"shapes": [
+  {"name": "small", "vcpus": 1, "memory_bytes": 536870912},
+  {"name": "large", "vcpus": 4, "memory_bytes": 4294967296}
+]
+```
+
+For every catalog image and shape the daemon builds a template in the
+background, one at a time: it boots the image at that size with a
+placeholder disk and no network device, waits until the guest is idle
+before it has touched any grant's disk, and saves it. `Ready` lists each
+template and whether it is ready. A grant with no network device whose
+memory is exactly a shape's, and whose CPU needs no more virtual CPUs than
+the shape has, then starts from the template of its image with the fewest
+such CPUs; its CPU is still throttled to what it reserved. Any other grant,
+and every grant until its template is ready, boots at its exact size.
+
+A restored machine is made one grant's before anything in it runs. Guest
+init waits for a start message from the host carrying fresh entropy, the
+time, a machine id and the grant's epoch; it reseeds the random generator,
+sets the clock and the machine id, and only then mounts the grant's own
+disk and starts the helper. So two grants from one template share no
+randomness, identity or files. Each restored grant maps the template's
+memory privately: pages it writes are its own. Templates live in
+`<state>/work/templates`; a changed image or shape is built again.
 
 The daemon watches every grant's machine. If a monitor exits, a guest
 panics (guests boot with `panic=1`, so a panic resets and ends the
@@ -921,8 +957,9 @@ reporting and `deflate_on_oom`, so pages the guest frees go back to the
 host and a grant's resident memory follows what it actually uses. This
 needs the guest kernel to have `CONFIG_VIRTIO_BALLOON`,
 `CONFIG_MEMORY_BALLOON` and `CONFIG_PAGE_REPORTING` built in; without
-them the device is inert and grants behave as before. CI checks a guest
-kernel's `.config` with `scripts/check-kernel-config`.
+them the device is inert and grants behave as before. Restoring templates
+and suspended grants needs `CONFIG_VMGENID`. CI checks a guest kernel's
+`.config` with `scripts/check-kernel-config`.
 
 ### Install the operator tool
 

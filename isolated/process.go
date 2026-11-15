@@ -60,7 +60,7 @@ func (p *processInstance) Connect(ctx context.Context) (net.Conn, error) {
 	sock := p.sock
 	var last error
 	for {
-		conn, err := dialGuest(ctx, sock)
+		conn, err := dialGuest(ctx, sock, agent.LinkPort)
 		if err == nil {
 			return conn, nil
 		}
@@ -76,13 +76,14 @@ func (p *processInstance) Connect(ctx context.Context) (net.Conn, error) {
 	}
 }
 
-func dialGuest(ctx context.Context, sock string) (net.Conn, error) {
+// dialGuest connects to port on the guest link.
+func dialGuest(ctx context.Context, sock string, port uint32) (net.Conn, error) {
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "unix", sock)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := fmt.Fprintf(conn, "CONNECT %d\n", agent.LinkPort); err != nil {
+	if _, err := fmt.Fprintf(conn, "CONNECT %d\n", port); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
@@ -153,17 +154,27 @@ func (l *processLauncher) Start(ctx context.Context, req startRequest) (instance
 	// The guest formats nothing: the host creates the empty writable disk
 	// and the guest mounts it. The host never mounts this disk, because its
 	// blocks are written by the guest kernel.
-	if req.Seed != "" {
+	// A suspended grant resumes on the disk it had.
+	switch {
+	case req.Restore != nil && !req.Restore.Start:
+	case req.Seed != "":
 		if err := cloneSeedDisk(ctx, filepath.Join(req.Seed, seedDiskName), req.Disk, req.Resources.DiskBytes); err != nil {
 			return fail(err)
 		}
-	} else if err := createWorkspaceDisk(ctx, mkfs, req.Disk, req.Resources.DiskBytes); err != nil {
-		return fail(err)
+	default:
+		if err := createWorkspaceDisk(ctx, mkfs, req.Disk, req.Resources.DiskBytes); err != nil {
+			return fail(err)
+		}
 	}
 	jail := newJailLayout(l.jailBase(), runtimeBin, req.ID, uid, uid)
 	release = append(release, jail.remove)
 	if err := jail.populate(req); err != nil {
 		return fail(err)
+	}
+	if req.Restore != nil {
+		if err := jail.placeSaved(req.Restore); err != nil {
+			return fail(err)
+		}
 	}
 	// Attach is already prepared by occupancy. None means no NIC. The tap
 	// was created by root; the jailed monitor must be allowed to open it.
@@ -172,9 +183,13 @@ func (l *processLauncher) Start(ctx context.Context, req startRequest) (instance
 			return fail(execenv.ErrNetwork)
 		}
 	}
-	vm, err := writeMachineConfig(req, jail)
-	if err != nil {
-		return fail(err)
+	// A restored machine takes its configuration from what was saved.
+	var vm string
+	if req.Restore == nil {
+		vm, err = writeMachineConfig(req, jail)
+		if err != nil {
+			return fail(err)
+		}
 	}
 	// jailer --id <jail-id> --exec-file <runtime> --uid --gid
 	// --chroot-base-dir <work>/jails -- --config-file /machine.json
@@ -195,7 +210,11 @@ func (l *processLauncher) Start(ctx context.Context, req startRequest) (instance
 	}
 	// The API socket is how UpdateLimits reaches the running machine. It
 	// sits in the jail, owned by the grant's identity.
-	args = append(args, "--", "--config-file", vm, "--api-sock", inside(jailAPISock))
+	args = append(args, "--")
+	if req.Restore == nil {
+		args = append(args, "--config-file", vm)
+	}
+	args = append(args, "--api-sock", inside(jailAPISock))
 	cmd := exec.Command(supervisor, args...)
 	cmd.Dir = filepath.Dir(req.TreeDir)
 	cmd.Stdin = nil
@@ -220,7 +239,14 @@ func (l *processLauncher) Start(ctx context.Context, req startRequest) (instance
 		Sock: jail.host(jailLinkSoc), API: jail.host(jailAPISock),
 		Net: netRecordOf(req.Attach),
 	}
-	return &processInstance{pid: pid, start: start, rec: rec, sock: rec.Sock, api: rec.API, release: release, done: done}, nil
+	p := &processInstance{pid: pid, start: start, rec: rec, sock: rec.Sock, api: rec.API, release: release, done: done}
+	if err := l.bring(ctx, req, p); err != nil {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = p.Stop(stopCtx)
+		cancel()
+		return nil, err
+	}
+	return p, nil
 }
 
 // Adopt takes over a machine a previous host started. It is the same

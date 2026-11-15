@@ -66,6 +66,9 @@ type Config struct {
 	// Allow is the host's IPv4 dests. Grants cannot add dests. Empty
 	// means this host does not offer NetworkAllowlist.
 	Allow []string
+	// Shapes are the machine sizes templates are built in, for every
+	// image. Empty builds none: every grant boots.
+	Shapes []Shape
 }
 
 // Host occupies grants as isolated microVMs.
@@ -86,6 +89,7 @@ type Host struct {
 	lostCount int
 	draining  bool
 	lock      *os.File
+	templates *templates
 }
 
 type ensureCall struct {
@@ -105,6 +109,13 @@ func New(cfg Config) (*Host, error) {
 	}
 	if _, err := parseAllow(cfg.Allow); err != nil {
 		return nil, execenv.Error("isolated", execenv.ErrInvalid)
+	}
+	shapes := map[string]bool{}
+	for _, s := range cfg.Shapes {
+		if !validShape(s) || shapes[s.Name] {
+			return nil, execenv.Error("isolated", execenv.ErrInvalid)
+		}
+		shapes[s.Name] = true
 	}
 	pool, err := capacity.New(cfg.Capacity, cfg.Defaults, cfg.GrantMax)
 	if err != nil {
@@ -161,6 +172,7 @@ func newHost(cfg Config, pool *capacity.Pool, images map[execenv.Image]*imageRec
 		_ = lock.Close()
 		return nil, execenv.Error("isolated", err)
 	}
+	h.startTemplates()
 	return h, nil
 }
 
@@ -237,7 +249,7 @@ func (h *Host) Ready(ctx context.Context) (execenv.Report, error) {
 	if len(h.cfg.Allow) > 0 {
 		networks = append(networks, execenv.NetworkAllowlist)
 	}
-	report := execenv.Report{Usable: usable, Reason: reason, Images: verifiedIDs(images), Networks: networks, Grants: held, Lost: lost, Release: execenv.Release, Isolation: execenv.IsolationVM}
+	report := execenv.Report{Usable: usable, Reason: reason, Images: verifiedIDs(images), Networks: networks, Grants: held, Lost: lost, Release: execenv.Release, Isolation: execenv.IsolationVM, Templates: h.templates.status()}
 	h.pool.Fill(&report)
 	return report, nil
 }
@@ -326,7 +338,9 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 			return h.completeEnsure(call, nil, execenv.Error("ensure", err), treeDir)
 		}
 	}
-	inst, err := h.launch.Start(launchCtx, startRequest{
+	// The epoch exists before the machine: the guest is started for it.
+	ctl := control.New(spec.ID)
+	req := startRequest{
 		ID:        spec.ID,
 		Kernel:    image.Kernel,
 		Rootfs:    image.Rootfs,
@@ -336,7 +350,12 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		Resources: spec.Resources,
 		Limits:    spec.Limits,
 		Attach:    att,
-	})
+		Epoch:     ctl.Epoch(),
+	}
+	if tpl, ok := h.templates.pick(spec); ok {
+		req.Restore = &restoreFrom{Dir: tpl.dir, Start: true}
+	}
+	inst, err := h.launch.Start(launchCtx, req)
 	if err != nil {
 		if att != nil {
 			att.close()
@@ -345,7 +364,7 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 	}
 	env := &environment{
 		gone:    make(chan struct{}),
-		control: control.New(spec.ID),
+		control: ctl,
 		id:      spec.ID,
 		spec:    spec,
 		image:   image,
@@ -373,6 +392,12 @@ func (h *Host) expire(env *environment, r lifetime.Reason) {
 	defer cancel()
 	if r == lifetime.Idle && env.spec.IdleAction == execenv.IdleFreeze {
 		_, _ = env.control.Idle(ctx, func() error { return env.freeze(ctx) })
+		env.persist()
+		return
+	}
+	if r == lifetime.Idle && env.spec.IdleAction == execenv.IdleSuspend {
+		_, _ = env.control.Idle(ctx, func() error { return env.suspend(ctx) })
+		env.persist()
 		return
 	}
 	_ = h.revokeExact(ctx, env)

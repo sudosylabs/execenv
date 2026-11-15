@@ -78,6 +78,9 @@ func ReportTo(r execenv.Report) *execenvv1.Report {
 	for _, n := range r.Networks {
 		out.Networks = append(out.Networks, NetworkTo(n))
 	}
+	for _, tpl := range r.Templates {
+		out.Templates = append(out.Templates, &execenvv1.TemplateStatus{Image: string(tpl.Image), Shape: tpl.Shape, Ready: tpl.Ready, Reason: tpl.Reason})
+	}
 	return out
 }
 
@@ -102,6 +105,9 @@ func ReportFrom(r *execenvv1.Report) execenv.Report {
 		if network, ok := NetworkFrom(n); ok {
 			out.Networks = append(out.Networks, network)
 		}
+	}
+	for _, tpl := range r.GetTemplates() {
+		out.Templates = append(out.Templates, execenv.TemplateStatus{Image: execenv.Image(tpl.GetImage()), Shape: tpl.GetShape(), Ready: tpl.GetReady(), Reason: tpl.GetReason()})
 	}
 	return out
 }
@@ -139,8 +145,9 @@ func LimitsFrom(l *execenvv1.Limits) execenv.Limits {
 }
 
 var idleActions = map[execenv.IdleAction]execenvv1.IdleAction{
-	execenv.IdleFreeze: execenvv1.IdleAction_IDLE_ACTION_FREEZE,
-	execenv.IdleRevoke: execenvv1.IdleAction_IDLE_ACTION_REVOKE,
+	execenv.IdleFreeze:  execenvv1.IdleAction_IDLE_ACTION_FREEZE,
+	execenv.IdleRevoke:  execenvv1.IdleAction_IDLE_ACTION_REVOKE,
+	execenv.IdleSuspend: execenvv1.IdleAction_IDLE_ACTION_SUSPEND,
 }
 
 func SpecTo(s execenv.Spec) *execenvv1.Spec {

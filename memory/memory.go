@@ -289,7 +289,7 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 
 // expire applies a grant's wall or idle timeout.
 func (h *Host) expire(env *environment, r lifetime.Reason) {
-	if r == lifetime.Idle && env.spec.IdleAction == execenv.IdleFreeze {
+	if r == lifetime.Idle && (env.spec.IdleAction == execenv.IdleFreeze || env.spec.IdleAction == execenv.IdleSuspend) {
 		_, _ = env.control.Idle(context.Background(), func() error { return env.freeze(context.Background()) })
 		return
 	}

@@ -147,6 +147,7 @@ func newAdapter(cfg Config) (execenv.Host, error) {
 			Supervisor:  cfg.Supervisor,
 			Mkfs:        cfg.Mkfs,
 			JailUIDBase: cfg.JailUIDBase,
+			Shapes:      append([]isolated.Shape(nil), cfg.Shapes...),
 			Allow:       append([]string(nil), cfg.Allow...),
 		})
 	default:

@@ -77,6 +77,7 @@ const (
 	IdleAction_IDLE_ACTION_UNSPECIFIED IdleAction = 0
 	IdleAction_IDLE_ACTION_FREEZE      IdleAction = 1
 	IdleAction_IDLE_ACTION_REVOKE      IdleAction = 2
+	IdleAction_IDLE_ACTION_SUSPEND     IdleAction = 3
 )
 
 // Enum value maps for IdleAction.
@@ -85,11 +86,13 @@ var (
 		0: "IDLE_ACTION_UNSPECIFIED",
 		1: "IDLE_ACTION_FREEZE",
 		2: "IDLE_ACTION_REVOKE",
+		3: "IDLE_ACTION_SUSPEND",
 	}
 	IdleAction_value = map[string]int32{
 		"IDLE_ACTION_UNSPECIFIED": 0,
 		"IDLE_ACTION_FREEZE":      1,
 		"IDLE_ACTION_REVOKE":      2,
+		"IDLE_ACTION_SUSPEND":     3,
 	}
 )
 
@@ -587,8 +590,10 @@ type Report struct {
 	MemoryBytes *Capacity `protobuf:"bytes,10,opt,name=memory_bytes,json=memoryBytes,proto3" json:"memory_bytes,omitempty"`
 	DiskBytes   *Capacity `protobuf:"bytes,11,opt,name=disk_bytes,json=diskBytes,proto3" json:"disk_bytes,omitempty"`
 	// defaults fill a spec's zero resources; grant_max bounds one grant.
-	Defaults      *Resources `protobuf:"bytes,12,opt,name=defaults,proto3" json:"defaults,omitempty"`
-	GrantMax      *Resources `protobuf:"bytes,13,opt,name=grant_max,json=grantMax,proto3" json:"grant_max,omitempty"`
+	Defaults *Resources `protobuf:"bytes,12,opt,name=defaults,proto3" json:"defaults,omitempty"`
+	GrantMax *Resources `protobuf:"bytes,13,opt,name=grant_max,json=grantMax,proto3" json:"grant_max,omitempty"`
+	// templates are the saved machines grants start from instead of booting.
+	Templates     []*TemplateStatus `protobuf:"bytes,14,rep,name=templates,proto3" json:"templates,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -714,6 +719,81 @@ func (x *Report) GetGrantMax() *Resources {
 	return nil
 }
 
+func (x *Report) GetTemplates() []*TemplateStatus {
+	if x != nil {
+		return x.Templates
+	}
+	return nil
+}
+
+type TemplateStatus struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Image         string                 `protobuf:"bytes,1,opt,name=image,proto3" json:"image,omitempty"`
+	Shape         string                 `protobuf:"bytes,2,opt,name=shape,proto3" json:"shape,omitempty"`
+	Ready         bool                   `protobuf:"varint,3,opt,name=ready,proto3" json:"ready,omitempty"`
+	Reason        string                 `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TemplateStatus) Reset() {
+	*x = TemplateStatus{}
+	mi := &file_execenv_v1_host_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TemplateStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TemplateStatus) ProtoMessage() {}
+
+func (x *TemplateStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_execenv_v1_host_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TemplateStatus.ProtoReflect.Descriptor instead.
+func (*TemplateStatus) Descriptor() ([]byte, []int) {
+	return file_execenv_v1_host_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *TemplateStatus) GetImage() string {
+	if x != nil {
+		return x.Image
+	}
+	return ""
+}
+
+func (x *TemplateStatus) GetShape() string {
+	if x != nil {
+		return x.Shape
+	}
+	return ""
+}
+
+func (x *TemplateStatus) GetReady() bool {
+	if x != nil {
+		return x.Ready
+	}
+	return false
+}
+
+func (x *TemplateStatus) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
 type Capacity struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Total         int64                  `protobuf:"varint,1,opt,name=total,proto3" json:"total,omitempty"`
@@ -725,7 +805,7 @@ type Capacity struct {
 
 func (x *Capacity) Reset() {
 	*x = Capacity{}
-	mi := &file_execenv_v1_host_proto_msgTypes[10]
+	mi := &file_execenv_v1_host_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -737,7 +817,7 @@ func (x *Capacity) String() string {
 func (*Capacity) ProtoMessage() {}
 
 func (x *Capacity) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_v1_host_proto_msgTypes[10]
+	mi := &file_execenv_v1_host_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -750,7 +830,7 @@ func (x *Capacity) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Capacity.ProtoReflect.Descriptor instead.
 func (*Capacity) Descriptor() ([]byte, []int) {
-	return file_execenv_v1_host_proto_rawDescGZIP(), []int{10}
+	return file_execenv_v1_host_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *Capacity) GetTotal() int64 {
@@ -793,7 +873,7 @@ type Spec struct {
 
 func (x *Spec) Reset() {
 	*x = Spec{}
-	mi := &file_execenv_v1_host_proto_msgTypes[11]
+	mi := &file_execenv_v1_host_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -805,7 +885,7 @@ func (x *Spec) String() string {
 func (*Spec) ProtoMessage() {}
 
 func (x *Spec) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_v1_host_proto_msgTypes[11]
+	mi := &file_execenv_v1_host_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -818,7 +898,7 @@ func (x *Spec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Spec.ProtoReflect.Descriptor instead.
 func (*Spec) Descriptor() ([]byte, []int) {
-	return file_execenv_v1_host_proto_rawDescGZIP(), []int{11}
+	return file_execenv_v1_host_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *Spec) GetId() string {
@@ -900,7 +980,7 @@ type EnsureGrantRequest struct {
 
 func (x *EnsureGrantRequest) Reset() {
 	*x = EnsureGrantRequest{}
-	mi := &file_execenv_v1_host_proto_msgTypes[12]
+	mi := &file_execenv_v1_host_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -912,7 +992,7 @@ func (x *EnsureGrantRequest) String() string {
 func (*EnsureGrantRequest) ProtoMessage() {}
 
 func (x *EnsureGrantRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_v1_host_proto_msgTypes[12]
+	mi := &file_execenv_v1_host_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -925,7 +1005,7 @@ func (x *EnsureGrantRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnsureGrantRequest.ProtoReflect.Descriptor instead.
 func (*EnsureGrantRequest) Descriptor() ([]byte, []int) {
-	return file_execenv_v1_host_proto_rawDescGZIP(), []int{12}
+	return file_execenv_v1_host_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *EnsureGrantRequest) GetSpec() *Spec {
@@ -944,7 +1024,7 @@ type EnsureGrantResponse struct {
 
 func (x *EnsureGrantResponse) Reset() {
 	*x = EnsureGrantResponse{}
-	mi := &file_execenv_v1_host_proto_msgTypes[13]
+	mi := &file_execenv_v1_host_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -956,7 +1036,7 @@ func (x *EnsureGrantResponse) String() string {
 func (*EnsureGrantResponse) ProtoMessage() {}
 
 func (x *EnsureGrantResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_v1_host_proto_msgTypes[13]
+	mi := &file_execenv_v1_host_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -969,7 +1049,7 @@ func (x *EnsureGrantResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnsureGrantResponse.ProtoReflect.Descriptor instead.
 func (*EnsureGrantResponse) Descriptor() ([]byte, []int) {
-	return file_execenv_v1_host_proto_rawDescGZIP(), []int{13}
+	return file_execenv_v1_host_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *EnsureGrantResponse) GetEpoch() string {
@@ -991,7 +1071,7 @@ type RevokeGrantRequest struct {
 
 func (x *RevokeGrantRequest) Reset() {
 	*x = RevokeGrantRequest{}
-	mi := &file_execenv_v1_host_proto_msgTypes[14]
+	mi := &file_execenv_v1_host_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1003,7 +1083,7 @@ func (x *RevokeGrantRequest) String() string {
 func (*RevokeGrantRequest) ProtoMessage() {}
 
 func (x *RevokeGrantRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_v1_host_proto_msgTypes[14]
+	mi := &file_execenv_v1_host_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1016,7 +1096,7 @@ func (x *RevokeGrantRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeGrantRequest.ProtoReflect.Descriptor instead.
 func (*RevokeGrantRequest) Descriptor() ([]byte, []int) {
-	return file_execenv_v1_host_proto_rawDescGZIP(), []int{14}
+	return file_execenv_v1_host_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *RevokeGrantRequest) GetGrantId() string {
@@ -1041,7 +1121,7 @@ type RevokeGrantResponse struct {
 
 func (x *RevokeGrantResponse) Reset() {
 	*x = RevokeGrantResponse{}
-	mi := &file_execenv_v1_host_proto_msgTypes[15]
+	mi := &file_execenv_v1_host_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1053,7 +1133,7 @@ func (x *RevokeGrantResponse) String() string {
 func (*RevokeGrantResponse) ProtoMessage() {}
 
 func (x *RevokeGrantResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_v1_host_proto_msgTypes[15]
+	mi := &file_execenv_v1_host_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1066,7 +1146,7 @@ func (x *RevokeGrantResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeGrantResponse.ProtoReflect.Descriptor instead.
 func (*RevokeGrantResponse) Descriptor() ([]byte, []int) {
-	return file_execenv_v1_host_proto_rawDescGZIP(), []int{15}
+	return file_execenv_v1_host_proto_rawDescGZIP(), []int{16}
 }
 
 var File_execenv_v1_host_proto protoreflect.FileDescriptor
@@ -1096,7 +1176,7 @@ const file_execenv_v1_host_proto_rawDesc = "" +
 	"\bfeatures\x18\x02 \x03(\tR\bfeatures\x12\x1a\n" +
 	"\bisolated\x18\x03 \x01(\bR\bisolated\x12\x18\n" +
 	"\arelease\x18\x04 \x01(\tR\arelease\"\x12\n" +
-	"\x10GetReportRequest\"\x86\x04\n" +
+	"\x10GetReportRequest\"\xc0\x04\n" +
 	"\x06Report\x12\x16\n" +
 	"\x06usable\x18\x01 \x01(\bR\x06usable\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x16\n" +
@@ -1113,7 +1193,13 @@ const file_execenv_v1_host_proto_rawDesc = "" +
 	"\n" +
 	"disk_bytes\x18\v \x01(\v2\x14.execenv.v1.CapacityR\tdiskBytes\x121\n" +
 	"\bdefaults\x18\f \x01(\v2\x15.execenv.v1.ResourcesR\bdefaults\x122\n" +
-	"\tgrant_max\x18\r \x01(\v2\x15.execenv.v1.ResourcesR\bgrantMax\"P\n" +
+	"\tgrant_max\x18\r \x01(\v2\x15.execenv.v1.ResourcesR\bgrantMax\x128\n" +
+	"\ttemplates\x18\x0e \x03(\v2\x1a.execenv.v1.TemplateStatusR\ttemplates\"j\n" +
+	"\x0eTemplateStatus\x12\x14\n" +
+	"\x05image\x18\x01 \x01(\tR\x05image\x12\x14\n" +
+	"\x05shape\x18\x02 \x01(\tR\x05shape\x12\x14\n" +
+	"\x05ready\x18\x03 \x01(\bR\x05ready\x12\x16\n" +
+	"\x06reason\x18\x04 \x01(\tR\x06reason\"P\n" +
 	"\bCapacity\x12\x14\n" +
 	"\x05total\x18\x01 \x01(\x03R\x05total\x12\x1a\n" +
 	"\breserved\x18\x02 \x01(\x03R\breserved\x12\x12\n" +
@@ -1145,12 +1231,13 @@ const file_execenv_v1_host_proto_rawDesc = "" +
 	"\tIsolation\x12\x19\n" +
 	"\x15ISOLATION_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eISOLATION_NONE\x10\x01\x12\x10\n" +
-	"\fISOLATION_VM\x10\x02*Y\n" +
+	"\fISOLATION_VM\x10\x02*r\n" +
 	"\n" +
 	"IdleAction\x12\x1b\n" +
 	"\x17IDLE_ACTION_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12IDLE_ACTION_FREEZE\x10\x01\x12\x16\n" +
-	"\x12IDLE_ACTION_REVOKE\x10\x022\xfc\x03\n" +
+	"\x12IDLE_ACTION_REVOKE\x10\x02\x12\x17\n" +
+	"\x13IDLE_ACTION_SUSPEND\x10\x032\xfc\x03\n" +
 	"\vHostService\x12<\n" +
 	"\x05Hello\x12\x18.execenv.v1.HelloRequest\x1a\x19.execenv.v1.HelloResponse\x12=\n" +
 	"\tGetReport\x12\x1c.execenv.v1.GetReportRequest\x1a\x12.execenv.v1.Report\x12N\n" +
@@ -1174,7 +1261,7 @@ func file_execenv_v1_host_proto_rawDescGZIP() []byte {
 }
 
 var file_execenv_v1_host_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_execenv_v1_host_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_execenv_v1_host_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_execenv_v1_host_proto_goTypes = []any{
 	(Isolation)(0),              // 0: execenv.v1.Isolation
 	(IdleAction)(0),             // 1: execenv.v1.IdleAction
@@ -1188,54 +1275,56 @@ var file_execenv_v1_host_proto_goTypes = []any{
 	(*HelloResponse)(nil),       // 9: execenv.v1.HelloResponse
 	(*GetReportRequest)(nil),    // 10: execenv.v1.GetReportRequest
 	(*Report)(nil),              // 11: execenv.v1.Report
-	(*Capacity)(nil),            // 12: execenv.v1.Capacity
-	(*Spec)(nil),                // 13: execenv.v1.Spec
-	(*EnsureGrantRequest)(nil),  // 14: execenv.v1.EnsureGrantRequest
-	(*EnsureGrantResponse)(nil), // 15: execenv.v1.EnsureGrantResponse
-	(*RevokeGrantRequest)(nil),  // 16: execenv.v1.RevokeGrantRequest
-	(*RevokeGrantResponse)(nil), // 17: execenv.v1.RevokeGrantResponse
-	nil,                         // 18: execenv.v1.Spec.LabelsEntry
-	(Network)(0),                // 19: execenv.v1.Network
-	(*Resources)(nil),           // 20: execenv.v1.Resources
-	(*durationpb.Duration)(nil), // 21: google.protobuf.Duration
-	(*Limits)(nil),              // 22: execenv.v1.Limits
+	(*TemplateStatus)(nil),      // 12: execenv.v1.TemplateStatus
+	(*Capacity)(nil),            // 13: execenv.v1.Capacity
+	(*Spec)(nil),                // 14: execenv.v1.Spec
+	(*EnsureGrantRequest)(nil),  // 15: execenv.v1.EnsureGrantRequest
+	(*EnsureGrantResponse)(nil), // 16: execenv.v1.EnsureGrantResponse
+	(*RevokeGrantRequest)(nil),  // 17: execenv.v1.RevokeGrantRequest
+	(*RevokeGrantResponse)(nil), // 18: execenv.v1.RevokeGrantResponse
+	nil,                         // 19: execenv.v1.Spec.LabelsEntry
+	(Network)(0),                // 20: execenv.v1.Network
+	(*Resources)(nil),           // 21: execenv.v1.Resources
+	(*durationpb.Duration)(nil), // 22: google.protobuf.Duration
+	(*Limits)(nil),              // 23: execenv.v1.Limits
 }
 var file_execenv_v1_host_proto_depIdxs = []int32{
 	2,  // 0: execenv.v1.ListSeedsResponse.seeds:type_name -> execenv.v1.Seed
-	19, // 1: execenv.v1.Report.networks:type_name -> execenv.v1.Network
+	20, // 1: execenv.v1.Report.networks:type_name -> execenv.v1.Network
 	0,  // 2: execenv.v1.Report.isolation:type_name -> execenv.v1.Isolation
-	12, // 3: execenv.v1.Report.cpu_millis:type_name -> execenv.v1.Capacity
-	12, // 4: execenv.v1.Report.memory_bytes:type_name -> execenv.v1.Capacity
-	12, // 5: execenv.v1.Report.disk_bytes:type_name -> execenv.v1.Capacity
-	20, // 6: execenv.v1.Report.defaults:type_name -> execenv.v1.Resources
-	20, // 7: execenv.v1.Report.grant_max:type_name -> execenv.v1.Resources
-	19, // 8: execenv.v1.Spec.network:type_name -> execenv.v1.Network
-	20, // 9: execenv.v1.Spec.resources:type_name -> execenv.v1.Resources
-	21, // 10: execenv.v1.Spec.wall_timeout:type_name -> google.protobuf.Duration
-	21, // 11: execenv.v1.Spec.idle_timeout:type_name -> google.protobuf.Duration
-	1,  // 12: execenv.v1.Spec.idle_action:type_name -> execenv.v1.IdleAction
-	18, // 13: execenv.v1.Spec.labels:type_name -> execenv.v1.Spec.LabelsEntry
-	22, // 14: execenv.v1.Spec.limits:type_name -> execenv.v1.Limits
-	13, // 15: execenv.v1.EnsureGrantRequest.spec:type_name -> execenv.v1.Spec
-	8,  // 16: execenv.v1.HostService.Hello:input_type -> execenv.v1.HelloRequest
-	10, // 17: execenv.v1.HostService.GetReport:input_type -> execenv.v1.GetReportRequest
-	14, // 18: execenv.v1.HostService.EnsureGrant:input_type -> execenv.v1.EnsureGrantRequest
-	16, // 19: execenv.v1.HostService.RevokeGrant:input_type -> execenv.v1.RevokeGrantRequest
-	3,  // 20: execenv.v1.HostService.PutSeed:input_type -> execenv.v1.PutSeedRequest
-	4,  // 21: execenv.v1.HostService.ListSeeds:input_type -> execenv.v1.ListSeedsRequest
-	6,  // 22: execenv.v1.HostService.DeleteSeed:input_type -> execenv.v1.DeleteSeedRequest
-	9,  // 23: execenv.v1.HostService.Hello:output_type -> execenv.v1.HelloResponse
-	11, // 24: execenv.v1.HostService.GetReport:output_type -> execenv.v1.Report
-	15, // 25: execenv.v1.HostService.EnsureGrant:output_type -> execenv.v1.EnsureGrantResponse
-	17, // 26: execenv.v1.HostService.RevokeGrant:output_type -> execenv.v1.RevokeGrantResponse
-	2,  // 27: execenv.v1.HostService.PutSeed:output_type -> execenv.v1.Seed
-	5,  // 28: execenv.v1.HostService.ListSeeds:output_type -> execenv.v1.ListSeedsResponse
-	7,  // 29: execenv.v1.HostService.DeleteSeed:output_type -> execenv.v1.DeleteSeedResponse
-	23, // [23:30] is the sub-list for method output_type
-	16, // [16:23] is the sub-list for method input_type
-	16, // [16:16] is the sub-list for extension type_name
-	16, // [16:16] is the sub-list for extension extendee
-	0,  // [0:16] is the sub-list for field type_name
+	13, // 3: execenv.v1.Report.cpu_millis:type_name -> execenv.v1.Capacity
+	13, // 4: execenv.v1.Report.memory_bytes:type_name -> execenv.v1.Capacity
+	13, // 5: execenv.v1.Report.disk_bytes:type_name -> execenv.v1.Capacity
+	21, // 6: execenv.v1.Report.defaults:type_name -> execenv.v1.Resources
+	21, // 7: execenv.v1.Report.grant_max:type_name -> execenv.v1.Resources
+	12, // 8: execenv.v1.Report.templates:type_name -> execenv.v1.TemplateStatus
+	20, // 9: execenv.v1.Spec.network:type_name -> execenv.v1.Network
+	21, // 10: execenv.v1.Spec.resources:type_name -> execenv.v1.Resources
+	22, // 11: execenv.v1.Spec.wall_timeout:type_name -> google.protobuf.Duration
+	22, // 12: execenv.v1.Spec.idle_timeout:type_name -> google.protobuf.Duration
+	1,  // 13: execenv.v1.Spec.idle_action:type_name -> execenv.v1.IdleAction
+	19, // 14: execenv.v1.Spec.labels:type_name -> execenv.v1.Spec.LabelsEntry
+	23, // 15: execenv.v1.Spec.limits:type_name -> execenv.v1.Limits
+	14, // 16: execenv.v1.EnsureGrantRequest.spec:type_name -> execenv.v1.Spec
+	8,  // 17: execenv.v1.HostService.Hello:input_type -> execenv.v1.HelloRequest
+	10, // 18: execenv.v1.HostService.GetReport:input_type -> execenv.v1.GetReportRequest
+	15, // 19: execenv.v1.HostService.EnsureGrant:input_type -> execenv.v1.EnsureGrantRequest
+	17, // 20: execenv.v1.HostService.RevokeGrant:input_type -> execenv.v1.RevokeGrantRequest
+	3,  // 21: execenv.v1.HostService.PutSeed:input_type -> execenv.v1.PutSeedRequest
+	4,  // 22: execenv.v1.HostService.ListSeeds:input_type -> execenv.v1.ListSeedsRequest
+	6,  // 23: execenv.v1.HostService.DeleteSeed:input_type -> execenv.v1.DeleteSeedRequest
+	9,  // 24: execenv.v1.HostService.Hello:output_type -> execenv.v1.HelloResponse
+	11, // 25: execenv.v1.HostService.GetReport:output_type -> execenv.v1.Report
+	16, // 26: execenv.v1.HostService.EnsureGrant:output_type -> execenv.v1.EnsureGrantResponse
+	18, // 27: execenv.v1.HostService.RevokeGrant:output_type -> execenv.v1.RevokeGrantResponse
+	2,  // 28: execenv.v1.HostService.PutSeed:output_type -> execenv.v1.Seed
+	5,  // 29: execenv.v1.HostService.ListSeeds:output_type -> execenv.v1.ListSeedsResponse
+	7,  // 30: execenv.v1.HostService.DeleteSeed:output_type -> execenv.v1.DeleteSeedResponse
+	24, // [24:31] is the sub-list for method output_type
+	17, // [17:24] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_execenv_v1_host_proto_init() }
@@ -1254,7 +1343,7 @@ func file_execenv_v1_host_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_execenv_v1_host_proto_rawDesc), len(file_execenv_v1_host_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   17,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

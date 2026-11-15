@@ -33,6 +33,27 @@ type stubInstance struct {
 	exitOnce sync.Once
 	// limits is what UpdateLimits last applied.
 	limits execenv.Limits
+	// saved is where Save put the machine; its helper keeps running, as the
+	// saved memory would hold it, until a Start restores it.
+	saved string
+}
+
+// Save stands for saving the machine: its link breaks, as a real save
+// resets the guest link, and its helper waits for a restore.
+func (s *stubInstance) Save(_ context.Context, dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	for _, name := range []string{jailState, jailMemory} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
+			return err
+		}
+	}
+	s.mu.Lock()
+	s.saved = dir
+	s.mu.Unlock()
+	s.dropLink()
+	return nil
 }
 
 func (s *stubInstance) Done() <-chan struct{} { return s.exited }
@@ -130,6 +151,11 @@ func (s *stubInstance) Stop(context.Context) error {
 		return s.stopErr
 	}
 	s.stopped = true
+	if s.saved != "" {
+		// The saved machine is gone from memory but not lost.
+		s.exitOnce.Do(func() { close(s.exited) })
+		return nil
+	}
 	if s.cancel != nil {
 		s.cancel()
 		s.cancel = nil
@@ -162,6 +188,7 @@ func (s *stubInstance) Connect(ctx context.Context) (net.Conn, error) {
 type recordingLauncher struct {
 	mu        sync.Mutex
 	starts    int
+	restores  int
 	instances []*stubInstance
 	last      startRequest
 	fail      error
@@ -194,6 +221,21 @@ func (l *recordingLauncher) Start(ctx context.Context, req startRequest) (instan
 	defer l.mu.Unlock()
 	if l.fail != nil {
 		return nil, l.fail
+	}
+	if req.Restore != nil && !req.Restore.Start {
+		for _, inst := range l.instances {
+			inst.mu.Lock()
+			if inst.saved == req.Restore.Dir {
+				inst.saved, inst.stopped = "", false
+				inst.exited, inst.exitOnce = make(chan struct{}), sync.Once{}
+				inst.mu.Unlock()
+				l.restores++
+				l.last = req
+				return inst, nil
+			}
+			inst.mu.Unlock()
+		}
+		return nil, execenv.ErrUnavailable
 	}
 	inst, err := startStubAgent(ctx, req, !l.noJournal, !l.noProcesses)
 	if err != nil {

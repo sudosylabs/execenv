@@ -28,7 +28,7 @@ func (h *Host) recover() error {
 	adopted := map[execenv.ID]instance{}
 	var keep []machine
 	for id, s := range states {
-		if s.Lost {
+		if s.Lost || s.Suspended {
 			continue
 		}
 		if inst, err := h.launch.Adopt(ctx, s.Machine); err == nil {
@@ -47,6 +47,12 @@ func (h *Host) recover() error {
 		}
 	}
 	for id, s := range states {
+		if s.Suspended && !s.Lost {
+			if err := h.adoptSuspended(s); err != nil {
+				h.tombstone(s)
+			}
+			continue
+		}
 		inst := adopted[id]
 		if inst == nil {
 			h.tombstone(s)
@@ -152,6 +158,44 @@ func (h *Host) adopt(ctx context.Context, s grantState, inst instance) error {
 	return nil
 }
 
+// adoptSuspended takes over a grant whose machine is saved: only its disk
+// is reserved until a thaw restores it.
+func (h *Host) adoptSuspended(s grantState) error {
+	if _, err := os.Stat(filepath.Join(h.cfg.WorkDir, "grants", string(s.Spec.ID), suspendedName, jailState)); err != nil {
+		return err
+	}
+	if err := h.pool.Reserve(s.Spec.ID, execenv.Resources{DiskBytes: s.Spec.Resources.DiskBytes}); err != nil {
+		return err
+	}
+	var image Image
+	if record, ok := h.images[s.Spec.Image]; ok {
+		image, _ = record.verified()
+	}
+	env := &environment{
+		gone:         make(chan struct{}),
+		control:      control.Restore(s.Epoch, s.Receipt),
+		id:           s.Spec.ID,
+		spec:         s.Spec,
+		image:        image,
+		host:         h,
+		treeDir:      filepath.Join(h.cfg.WorkDir, "grants", string(s.Spec.ID), workspaceName),
+		started:      s.Started,
+		frozen:       true,
+		suspended:    true,
+		adoptPending: true,
+	}
+	env.public = env
+	env.procs = procs.New(env.startProcess)
+	env.procs.Freeze()
+	if s.Spec.WallTimeout > 0 {
+		wall := max(s.Spec.WallTimeout-time.Since(s.Started), time.Nanosecond)
+		env.timer = lifetime.Start(wall, 0, func(r lifetime.Reason) { h.expire(env, r) })
+		env.public = lifetime.Watch(env, env.timer)
+	}
+	h.grants[s.Spec.ID] = env
+	return nil
+}
+
 // adoptProcesses takes over every process the guest holds, from the
 // oldest output it still has.
 func (e *environment) adoptProcesses(ctx context.Context, client *agent.Client) error {
@@ -165,7 +209,7 @@ func (e *environment) adoptProcesses(ctx context.Context, client *agent.Client) 
 			return err
 		}
 		adopted := procs.Adopted{Spec: gp.Spec, Started: gp.Info.Started, Input: gp.Info.Input, From: gp.First, Until: gp.Info.Output}
-		if err := e.procs.Adopt(adopted, guestProcess{Backend: b, env: e, link: client.Done()}); err != nil {
+		if err := e.manager().Adopt(adopted, guestProcess{Backend: b, env: e, link: client.Done()}); err != nil {
 			return err
 		}
 	}
@@ -177,11 +221,14 @@ func (e *environment) adoptProcesses(ctx context.Context, client *agent.Client) 
 func (e *environment) persist() {
 	receipt, _ := e.control.Status(context.Background())
 	e.mu.Lock()
-	if e.revoked || e.inst == nil {
+	if e.revoked || (e.inst == nil && !e.suspended) {
 		e.mu.Unlock()
 		return
 	}
-	s := grantState{Spec: e.spec, Epoch: e.control.Epoch(), Receipt: receipt, Started: e.started, Paused: e.paused, Machine: e.inst.Machine()}
+	s := grantState{Spec: e.spec, Epoch: e.control.Epoch(), Receipt: receipt, Started: e.started, Paused: e.paused, Suspended: e.suspended}
+	if e.inst != nil {
+		s.Machine = e.inst.Machine()
+	}
 	e.mu.Unlock()
 	_ = saveState(e.host.cfg.WorkDir, s)
 }
