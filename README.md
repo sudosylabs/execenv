@@ -366,6 +366,27 @@ does not name are removed. A file neither seeded nor uploaded fails the whole
 initialization with a `*MissingContentError` naming its paths, and changes
 nothing.
 
+### Files
+
+Callers that keep no durable copy of their own can work on the workspace
+directly. Reads name only the grant; changes carry its fence:
+
+```go
+info, err := env.WriteFile(ctx, fence, "out/report.txt", body,
+	execenv.WriteOptions{ExpectedSHA256: execenv.ExpectAbsent})
+entries, err := env.List(ctx, "out", 2, true) // with digests
+rc, err := env.ReadFile(ctx, "out/report.txt", 0)
+err = env.Import(ctx, fence, "", archiveReader) // all entries or none
+rc, err = env.Export(ctx, []string{"out"}, "zstd")
+```
+
+`WriteFile` lands the file only once its whole body has arrived;
+`ExpectedSHA256` makes it conditional on what is there now (`ExpectAbsent`:
+nothing). `MakeDirectory`, `Move` and `Remove` do what their names say;
+`Remove` needs `recursive` for a directory that is not empty. These are
+guest changes like any other: once a projection is initialized they appear
+in `Observe`. Bodies travel on the content connection.
+
 ### Project the workspace
 
 Your application owns a journal of the workspace. The grant receives it as

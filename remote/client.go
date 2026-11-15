@@ -48,8 +48,11 @@ type Client struct {
 	content execenvv1connect.JournalServiceClient
 	// bulkHost carries seed archives on the content connection.
 	bulkHost execenvv1connect.HostServiceClient
-	terminal execenvv1connect.TerminalServiceClient
-	process  execenvv1connect.ProcessLogServiceClient
+	// files carries file metadata; bulkFiles carries file bodies.
+	files     execenvv1connect.FileServiceClient
+	bulkFiles execenvv1connect.FileServiceClient
+	terminal  execenvv1connect.TerminalServiceClient
+	process   execenvv1connect.ProcessLogServiceClient
 }
 
 // New connects to cfg.Address and says hello. It occupies no grant. It
@@ -76,6 +79,8 @@ func New(cfg Config) (*Client, error) {
 		journal:    execenvv1connect.NewJournalServiceClient(interactive, base),
 		content:    execenvv1connect.NewJournalServiceClient(bulk, base),
 		bulkHost:   execenvv1connect.NewHostServiceClient(bulk, base),
+		files:      execenvv1connect.NewFileServiceClient(interactive, base),
+		bulkFiles:  execenvv1connect.NewFileServiceClient(bulk, base),
 		terminal:   execenvv1connect.NewTerminalServiceClient(interactive, base),
 		process:    execenvv1connect.NewProcessLogServiceClient(interactive, base),
 	}

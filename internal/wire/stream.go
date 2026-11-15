@@ -44,6 +44,79 @@ func (r *ChunkReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
+// Pump sends r in ChunkSize messages until it ends.
+func Pump(r io.Reader, send func([]byte) error) error {
+	buf := make([]byte, ChunkSize)
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			if serr := send(buf[:n]); serr != nil {
+				return serr
+			}
+		}
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
+// StreamReader reads a server stream of content chunks as an io.Reader.
+type StreamReader struct {
+	Stream  *connect.ServerStreamForClient[execenvv1.ContentChunk]
+	Fail    func(error) error
+	Release func()
+	pending []byte
+	err     error
+}
+
+func (r *StreamReader) Read(p []byte) (int, error) {
+	for len(r.pending) == 0 {
+		if r.err != nil {
+			return 0, r.err
+		}
+		if !r.Stream.Receive() {
+			r.err = io.EOF
+			if err := r.Stream.Err(); err != nil {
+				r.err = r.Fail(err)
+			}
+			continue
+		}
+		r.pending = r.Stream.Msg().GetData()
+	}
+	n := copy(p, r.pending)
+	r.pending = r.pending[n:]
+	return n, nil
+}
+
+// Prime surfaces a refusal sent before any content.
+func (r *StreamReader) Prime() error {
+	if len(r.pending) > 0 || r.err != nil {
+		return nil
+	}
+	if !r.Stream.Receive() {
+		r.err = io.EOF
+		if err := r.Stream.Err(); err != nil {
+			r.err = r.Fail(err)
+			return r.err
+		}
+		return nil
+	}
+	r.pending = r.Stream.Msg().GetData()
+	return nil
+}
+
+func (r *StreamReader) Close() error {
+	_ = r.Stream.Close()
+	if r.Release != nil {
+		r.Release()
+		r.Release = nil
+	}
+	return nil
+}
+
 // ContentReader reads a content stream that must match its reference. It
 // fails at the end, not cleanly, when the size or digest differ.
 type ContentReader struct {

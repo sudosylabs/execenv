@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/internal/content"
+	"github.com/sudosylabs/execenv/internal/files"
 	guestv1 "github.com/sudosylabs/execenv/internal/gen/execenv/guest/v1"
 	"github.com/sudosylabs/execenv/internal/gen/execenv/guest/v1/guestv1connect"
 	execenvv1 "github.com/sudosylabs/execenv/internal/gen/execenv/v1"
@@ -118,6 +120,15 @@ func Serve(ctx context.Context, conn net.Conn, cfg Config) error {
 	case cfg.Barrier != nil:
 		s.journal = journal.New(cfg.Home, store, cfg.Barrier, nil)
 	}
+	// File API writes stage beside the content store, on the same disk.
+	fs, err := files.New(cfg.Home, filepath.Join(contentDir, ".files"))
+	if err != nil {
+		return execenv.Error("agent", err)
+	}
+	if group != nil {
+		fs.Own = group.OwnHome
+	}
+	s.files = fs
 	if s.journal != nil {
 		defer s.journal.Close()
 	}
@@ -165,6 +176,7 @@ type server struct {
 	workload    *workload.Group
 	workloadErr error
 	journal     *journal.Journal
+	files       *files.FS
 	// processes is whether the process log source is recording; events
 	// carries its batches to the host's ProcessEvents stream.
 	processes atomic.Bool

@@ -71,6 +71,25 @@ const (
 	// AgentServiceAcknowledgeObservationsProcedure is the fully-qualified name of the AgentService's
 	// AcknowledgeObservations RPC.
 	AgentServiceAcknowledgeObservationsProcedure = "/execenv.guest.v1.AgentService/AcknowledgeObservations"
+	// AgentServiceStatProcedure is the fully-qualified name of the AgentService's Stat RPC.
+	AgentServiceStatProcedure = "/execenv.guest.v1.AgentService/Stat"
+	// AgentServiceListProcedure is the fully-qualified name of the AgentService's List RPC.
+	AgentServiceListProcedure = "/execenv.guest.v1.AgentService/List"
+	// AgentServiceReadFileProcedure is the fully-qualified name of the AgentService's ReadFile RPC.
+	AgentServiceReadFileProcedure = "/execenv.guest.v1.AgentService/ReadFile"
+	// AgentServiceWriteFileProcedure is the fully-qualified name of the AgentService's WriteFile RPC.
+	AgentServiceWriteFileProcedure = "/execenv.guest.v1.AgentService/WriteFile"
+	// AgentServiceMakeDirectoryProcedure is the fully-qualified name of the AgentService's
+	// MakeDirectory RPC.
+	AgentServiceMakeDirectoryProcedure = "/execenv.guest.v1.AgentService/MakeDirectory"
+	// AgentServiceMoveProcedure is the fully-qualified name of the AgentService's Move RPC.
+	AgentServiceMoveProcedure = "/execenv.guest.v1.AgentService/Move"
+	// AgentServiceRemoveProcedure is the fully-qualified name of the AgentService's Remove RPC.
+	AgentServiceRemoveProcedure = "/execenv.guest.v1.AgentService/Remove"
+	// AgentServiceImportProcedure is the fully-qualified name of the AgentService's Import RPC.
+	AgentServiceImportProcedure = "/execenv.guest.v1.AgentService/Import"
+	// AgentServiceExportProcedure is the fully-qualified name of the AgentService's Export RPC.
+	AgentServiceExportProcedure = "/execenv.guest.v1.AgentService/Export"
 )
 
 // AgentServiceClient is a client for the execenv.guest.v1.AgentService service.
@@ -99,6 +118,17 @@ type AgentServiceClient interface {
 	ReadObservationContent(context.Context, *connect.Request[v11.ReadObservationContentRequest]) (*connect.ServerStreamForClient[v11.ContentChunk], error)
 	ConfirmObservationProjection(context.Context, *connect.Request[v11.ConfirmObservationProjectionRequest]) (*connect.Response[v11.ConfirmObservationProjectionResponse], error)
 	AcknowledgeObservations(context.Context, *connect.Request[v11.AcknowledgeObservationsRequest]) (*connect.Response[v11.AcknowledgeObservationsResponse], error)
+	// The plain file API over the workspace. The host checks grant and epoch;
+	// changing calls still carry the fence the guest binds.
+	Stat(context.Context, *connect.Request[v11.StatRequest]) (*connect.Response[v11.FileInfo], error)
+	List(context.Context, *connect.Request[v11.ListRequest]) (*connect.Response[v11.ListResponse], error)
+	ReadFile(context.Context, *connect.Request[v11.ReadFileRequest]) (*connect.ServerStreamForClient[v11.ContentChunk], error)
+	WriteFile(context.Context) *connect.ClientStreamForClient[v11.WriteFileRequest, v11.FileInfo]
+	MakeDirectory(context.Context, *connect.Request[v11.MakeDirectoryRequest]) (*connect.Response[v11.MakeDirectoryResponse], error)
+	Move(context.Context, *connect.Request[v11.MoveRequest]) (*connect.Response[v11.MoveResponse], error)
+	Remove(context.Context, *connect.Request[v11.RemoveRequest]) (*connect.Response[v11.RemoveResponse], error)
+	Import(context.Context) *connect.ClientStreamForClient[v11.ImportRequest, v11.ImportResponse]
+	Export(context.Context, *connect.Request[v11.ExportRequest]) (*connect.ServerStreamForClient[v11.ContentChunk], error)
 }
 
 // NewAgentServiceClient constructs a client for the execenv.guest.v1.AgentService service. By
@@ -202,6 +232,60 @@ func NewAgentServiceClient(httpClient connect.HTTPClient, baseURL string, opts .
 			connect.WithSchema(agentServiceMethods.ByName("AcknowledgeObservations")),
 			connect.WithClientOptions(opts...),
 		),
+		stat: connect.NewClient[v11.StatRequest, v11.FileInfo](
+			httpClient,
+			baseURL+AgentServiceStatProcedure,
+			connect.WithSchema(agentServiceMethods.ByName("Stat")),
+			connect.WithClientOptions(opts...),
+		),
+		list: connect.NewClient[v11.ListRequest, v11.ListResponse](
+			httpClient,
+			baseURL+AgentServiceListProcedure,
+			connect.WithSchema(agentServiceMethods.ByName("List")),
+			connect.WithClientOptions(opts...),
+		),
+		readFile: connect.NewClient[v11.ReadFileRequest, v11.ContentChunk](
+			httpClient,
+			baseURL+AgentServiceReadFileProcedure,
+			connect.WithSchema(agentServiceMethods.ByName("ReadFile")),
+			connect.WithClientOptions(opts...),
+		),
+		writeFile: connect.NewClient[v11.WriteFileRequest, v11.FileInfo](
+			httpClient,
+			baseURL+AgentServiceWriteFileProcedure,
+			connect.WithSchema(agentServiceMethods.ByName("WriteFile")),
+			connect.WithClientOptions(opts...),
+		),
+		makeDirectory: connect.NewClient[v11.MakeDirectoryRequest, v11.MakeDirectoryResponse](
+			httpClient,
+			baseURL+AgentServiceMakeDirectoryProcedure,
+			connect.WithSchema(agentServiceMethods.ByName("MakeDirectory")),
+			connect.WithClientOptions(opts...),
+		),
+		move: connect.NewClient[v11.MoveRequest, v11.MoveResponse](
+			httpClient,
+			baseURL+AgentServiceMoveProcedure,
+			connect.WithSchema(agentServiceMethods.ByName("Move")),
+			connect.WithClientOptions(opts...),
+		),
+		remove: connect.NewClient[v11.RemoveRequest, v11.RemoveResponse](
+			httpClient,
+			baseURL+AgentServiceRemoveProcedure,
+			connect.WithSchema(agentServiceMethods.ByName("Remove")),
+			connect.WithClientOptions(opts...),
+		),
+		_import: connect.NewClient[v11.ImportRequest, v11.ImportResponse](
+			httpClient,
+			baseURL+AgentServiceImportProcedure,
+			connect.WithSchema(agentServiceMethods.ByName("Import")),
+			connect.WithClientOptions(opts...),
+		),
+		export: connect.NewClient[v11.ExportRequest, v11.ContentChunk](
+			httpClient,
+			baseURL+AgentServiceExportProcedure,
+			connect.WithSchema(agentServiceMethods.ByName("Export")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -222,6 +306,15 @@ type agentServiceClient struct {
 	readObservationContent       *connect.Client[v11.ReadObservationContentRequest, v11.ContentChunk]
 	confirmObservationProjection *connect.Client[v11.ConfirmObservationProjectionRequest, v11.ConfirmObservationProjectionResponse]
 	acknowledgeObservations      *connect.Client[v11.AcknowledgeObservationsRequest, v11.AcknowledgeObservationsResponse]
+	stat                         *connect.Client[v11.StatRequest, v11.FileInfo]
+	list                         *connect.Client[v11.ListRequest, v11.ListResponse]
+	readFile                     *connect.Client[v11.ReadFileRequest, v11.ContentChunk]
+	writeFile                    *connect.Client[v11.WriteFileRequest, v11.FileInfo]
+	makeDirectory                *connect.Client[v11.MakeDirectoryRequest, v11.MakeDirectoryResponse]
+	move                         *connect.Client[v11.MoveRequest, v11.MoveResponse]
+	remove                       *connect.Client[v11.RemoveRequest, v11.RemoveResponse]
+	_import                      *connect.Client[v11.ImportRequest, v11.ImportResponse]
+	export                       *connect.Client[v11.ExportRequest, v11.ContentChunk]
 }
 
 // Hello calls execenv.guest.v1.AgentService.Hello.
@@ -299,6 +392,51 @@ func (c *agentServiceClient) AcknowledgeObservations(ctx context.Context, req *c
 	return c.acknowledgeObservations.CallUnary(ctx, req)
 }
 
+// Stat calls execenv.guest.v1.AgentService.Stat.
+func (c *agentServiceClient) Stat(ctx context.Context, req *connect.Request[v11.StatRequest]) (*connect.Response[v11.FileInfo], error) {
+	return c.stat.CallUnary(ctx, req)
+}
+
+// List calls execenv.guest.v1.AgentService.List.
+func (c *agentServiceClient) List(ctx context.Context, req *connect.Request[v11.ListRequest]) (*connect.Response[v11.ListResponse], error) {
+	return c.list.CallUnary(ctx, req)
+}
+
+// ReadFile calls execenv.guest.v1.AgentService.ReadFile.
+func (c *agentServiceClient) ReadFile(ctx context.Context, req *connect.Request[v11.ReadFileRequest]) (*connect.ServerStreamForClient[v11.ContentChunk], error) {
+	return c.readFile.CallServerStream(ctx, req)
+}
+
+// WriteFile calls execenv.guest.v1.AgentService.WriteFile.
+func (c *agentServiceClient) WriteFile(ctx context.Context) *connect.ClientStreamForClient[v11.WriteFileRequest, v11.FileInfo] {
+	return c.writeFile.CallClientStream(ctx)
+}
+
+// MakeDirectory calls execenv.guest.v1.AgentService.MakeDirectory.
+func (c *agentServiceClient) MakeDirectory(ctx context.Context, req *connect.Request[v11.MakeDirectoryRequest]) (*connect.Response[v11.MakeDirectoryResponse], error) {
+	return c.makeDirectory.CallUnary(ctx, req)
+}
+
+// Move calls execenv.guest.v1.AgentService.Move.
+func (c *agentServiceClient) Move(ctx context.Context, req *connect.Request[v11.MoveRequest]) (*connect.Response[v11.MoveResponse], error) {
+	return c.move.CallUnary(ctx, req)
+}
+
+// Remove calls execenv.guest.v1.AgentService.Remove.
+func (c *agentServiceClient) Remove(ctx context.Context, req *connect.Request[v11.RemoveRequest]) (*connect.Response[v11.RemoveResponse], error) {
+	return c.remove.CallUnary(ctx, req)
+}
+
+// Import calls execenv.guest.v1.AgentService.Import.
+func (c *agentServiceClient) Import(ctx context.Context) *connect.ClientStreamForClient[v11.ImportRequest, v11.ImportResponse] {
+	return c._import.CallClientStream(ctx)
+}
+
+// Export calls execenv.guest.v1.AgentService.Export.
+func (c *agentServiceClient) Export(ctx context.Context, req *connect.Request[v11.ExportRequest]) (*connect.ServerStreamForClient[v11.ContentChunk], error) {
+	return c.export.CallServerStream(ctx, req)
+}
+
 // AgentServiceHandler is an implementation of the execenv.guest.v1.AgentService service.
 type AgentServiceHandler interface {
 	// Hello says what this helper serves. The host refuses a helper on
@@ -325,6 +463,17 @@ type AgentServiceHandler interface {
 	ReadObservationContent(context.Context, *connect.Request[v11.ReadObservationContentRequest], *connect.ServerStream[v11.ContentChunk]) error
 	ConfirmObservationProjection(context.Context, *connect.Request[v11.ConfirmObservationProjectionRequest]) (*connect.Response[v11.ConfirmObservationProjectionResponse], error)
 	AcknowledgeObservations(context.Context, *connect.Request[v11.AcknowledgeObservationsRequest]) (*connect.Response[v11.AcknowledgeObservationsResponse], error)
+	// The plain file API over the workspace. The host checks grant and epoch;
+	// changing calls still carry the fence the guest binds.
+	Stat(context.Context, *connect.Request[v11.StatRequest]) (*connect.Response[v11.FileInfo], error)
+	List(context.Context, *connect.Request[v11.ListRequest]) (*connect.Response[v11.ListResponse], error)
+	ReadFile(context.Context, *connect.Request[v11.ReadFileRequest], *connect.ServerStream[v11.ContentChunk]) error
+	WriteFile(context.Context, *connect.ClientStream[v11.WriteFileRequest]) (*connect.Response[v11.FileInfo], error)
+	MakeDirectory(context.Context, *connect.Request[v11.MakeDirectoryRequest]) (*connect.Response[v11.MakeDirectoryResponse], error)
+	Move(context.Context, *connect.Request[v11.MoveRequest]) (*connect.Response[v11.MoveResponse], error)
+	Remove(context.Context, *connect.Request[v11.RemoveRequest]) (*connect.Response[v11.RemoveResponse], error)
+	Import(context.Context, *connect.ClientStream[v11.ImportRequest]) (*connect.Response[v11.ImportResponse], error)
+	Export(context.Context, *connect.Request[v11.ExportRequest], *connect.ServerStream[v11.ContentChunk]) error
 }
 
 // NewAgentServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -424,6 +573,60 @@ func NewAgentServiceHandler(svc AgentServiceHandler, opts ...connect.HandlerOpti
 		connect.WithSchema(agentServiceMethods.ByName("AcknowledgeObservations")),
 		connect.WithHandlerOptions(opts...),
 	)
+	agentServiceStatHandler := connect.NewUnaryHandler(
+		AgentServiceStatProcedure,
+		svc.Stat,
+		connect.WithSchema(agentServiceMethods.ByName("Stat")),
+		connect.WithHandlerOptions(opts...),
+	)
+	agentServiceListHandler := connect.NewUnaryHandler(
+		AgentServiceListProcedure,
+		svc.List,
+		connect.WithSchema(agentServiceMethods.ByName("List")),
+		connect.WithHandlerOptions(opts...),
+	)
+	agentServiceReadFileHandler := connect.NewServerStreamHandler(
+		AgentServiceReadFileProcedure,
+		svc.ReadFile,
+		connect.WithSchema(agentServiceMethods.ByName("ReadFile")),
+		connect.WithHandlerOptions(opts...),
+	)
+	agentServiceWriteFileHandler := connect.NewClientStreamHandler(
+		AgentServiceWriteFileProcedure,
+		svc.WriteFile,
+		connect.WithSchema(agentServiceMethods.ByName("WriteFile")),
+		connect.WithHandlerOptions(opts...),
+	)
+	agentServiceMakeDirectoryHandler := connect.NewUnaryHandler(
+		AgentServiceMakeDirectoryProcedure,
+		svc.MakeDirectory,
+		connect.WithSchema(agentServiceMethods.ByName("MakeDirectory")),
+		connect.WithHandlerOptions(opts...),
+	)
+	agentServiceMoveHandler := connect.NewUnaryHandler(
+		AgentServiceMoveProcedure,
+		svc.Move,
+		connect.WithSchema(agentServiceMethods.ByName("Move")),
+		connect.WithHandlerOptions(opts...),
+	)
+	agentServiceRemoveHandler := connect.NewUnaryHandler(
+		AgentServiceRemoveProcedure,
+		svc.Remove,
+		connect.WithSchema(agentServiceMethods.ByName("Remove")),
+		connect.WithHandlerOptions(opts...),
+	)
+	agentServiceImportHandler := connect.NewClientStreamHandler(
+		AgentServiceImportProcedure,
+		svc.Import,
+		connect.WithSchema(agentServiceMethods.ByName("Import")),
+		connect.WithHandlerOptions(opts...),
+	)
+	agentServiceExportHandler := connect.NewServerStreamHandler(
+		AgentServiceExportProcedure,
+		svc.Export,
+		connect.WithSchema(agentServiceMethods.ByName("Export")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/execenv.guest.v1.AgentService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case AgentServiceHelloProcedure:
@@ -456,6 +659,24 @@ func NewAgentServiceHandler(svc AgentServiceHandler, opts ...connect.HandlerOpti
 			agentServiceConfirmObservationProjectionHandler.ServeHTTP(w, r)
 		case AgentServiceAcknowledgeObservationsProcedure:
 			agentServiceAcknowledgeObservationsHandler.ServeHTTP(w, r)
+		case AgentServiceStatProcedure:
+			agentServiceStatHandler.ServeHTTP(w, r)
+		case AgentServiceListProcedure:
+			agentServiceListHandler.ServeHTTP(w, r)
+		case AgentServiceReadFileProcedure:
+			agentServiceReadFileHandler.ServeHTTP(w, r)
+		case AgentServiceWriteFileProcedure:
+			agentServiceWriteFileHandler.ServeHTTP(w, r)
+		case AgentServiceMakeDirectoryProcedure:
+			agentServiceMakeDirectoryHandler.ServeHTTP(w, r)
+		case AgentServiceMoveProcedure:
+			agentServiceMoveHandler.ServeHTTP(w, r)
+		case AgentServiceRemoveProcedure:
+			agentServiceRemoveHandler.ServeHTTP(w, r)
+		case AgentServiceImportProcedure:
+			agentServiceImportHandler.ServeHTTP(w, r)
+		case AgentServiceExportProcedure:
+			agentServiceExportHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -523,4 +744,40 @@ func (UnimplementedAgentServiceHandler) ConfirmObservationProjection(context.Con
 
 func (UnimplementedAgentServiceHandler) AcknowledgeObservations(context.Context, *connect.Request[v11.AcknowledgeObservationsRequest]) (*connect.Response[v11.AcknowledgeObservationsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.AcknowledgeObservations is not implemented"))
+}
+
+func (UnimplementedAgentServiceHandler) Stat(context.Context, *connect.Request[v11.StatRequest]) (*connect.Response[v11.FileInfo], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.Stat is not implemented"))
+}
+
+func (UnimplementedAgentServiceHandler) List(context.Context, *connect.Request[v11.ListRequest]) (*connect.Response[v11.ListResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.List is not implemented"))
+}
+
+func (UnimplementedAgentServiceHandler) ReadFile(context.Context, *connect.Request[v11.ReadFileRequest], *connect.ServerStream[v11.ContentChunk]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.ReadFile is not implemented"))
+}
+
+func (UnimplementedAgentServiceHandler) WriteFile(context.Context, *connect.ClientStream[v11.WriteFileRequest]) (*connect.Response[v11.FileInfo], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.WriteFile is not implemented"))
+}
+
+func (UnimplementedAgentServiceHandler) MakeDirectory(context.Context, *connect.Request[v11.MakeDirectoryRequest]) (*connect.Response[v11.MakeDirectoryResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.MakeDirectory is not implemented"))
+}
+
+func (UnimplementedAgentServiceHandler) Move(context.Context, *connect.Request[v11.MoveRequest]) (*connect.Response[v11.MoveResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.Move is not implemented"))
+}
+
+func (UnimplementedAgentServiceHandler) Remove(context.Context, *connect.Request[v11.RemoveRequest]) (*connect.Response[v11.RemoveResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.Remove is not implemented"))
+}
+
+func (UnimplementedAgentServiceHandler) Import(context.Context, *connect.ClientStream[v11.ImportRequest]) (*connect.Response[v11.ImportResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.Import is not implemented"))
+}
+
+func (UnimplementedAgentServiceHandler) Export(context.Context, *connect.Request[v11.ExportRequest], *connect.ServerStream[v11.ContentChunk]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.Export is not implemented"))
 }

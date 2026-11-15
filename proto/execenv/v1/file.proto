@@ -1,0 +1,119 @@
+syntax = "proto3";
+
+package execenv.v1;
+
+import "execenv/v1/common.proto";
+import "execenv/v1/journal.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/sudosylabs/execenv/internal/gen/execenv/v1;execenvv1";
+
+// FileService is a plain file API over a grant's workspace. Changing calls
+// carry the grant's fence; reads name the grant and epoch.
+service FileService {
+  rpc Stat(StatRequest) returns (FileInfo);
+  rpc List(ListRequest) returns (ListResponse);
+  rpc ReadFile(ReadFileRequest) returns (stream ContentChunk);
+  // WriteFile: the first message is the header, the rest the body.
+  rpc WriteFile(stream WriteFileRequest) returns (FileInfo);
+  rpc MakeDirectory(MakeDirectoryRequest) returns (MakeDirectoryResponse);
+  rpc Move(MoveRequest) returns (MoveResponse);
+  rpc Remove(RemoveRequest) returns (RemoveResponse);
+  // Import: the first message is the header, the rest the archive.
+  rpc Import(stream ImportRequest) returns (ImportResponse);
+  rpc Export(ExportRequest) returns (stream ContentChunk);
+}
+
+message FileInfo {
+  string path = 1;
+  bool dir = 2;
+  bool executable = 3;
+  int64 size = 4;
+  google.protobuf.Timestamp modified = 5;
+  string sha256 = 6;
+}
+
+message StatRequest {
+  string grant_id = 1;
+  string epoch = 2;
+  string path = 3;
+  bool digest = 4;
+}
+
+message ListRequest {
+  string grant_id = 1;
+  string epoch = 2;
+  string dir = 3;
+  int32 depth = 4;
+  bool digest = 5;
+}
+
+message ListResponse {
+  repeated FileInfo entries = 1;
+}
+
+message ReadFileRequest {
+  string grant_id = 1;
+  string epoch = 2;
+  string path = 3;
+  int64 offset = 4;
+}
+
+message WriteFileHeader {
+  Fence fence = 1;
+  string path = 2;
+  string expected_sha256 = 3;
+  bool executable = 4;
+}
+
+message WriteFileRequest {
+  oneof part {
+    WriteFileHeader header = 1;
+    bytes chunk = 2;
+  }
+}
+
+message MakeDirectoryRequest {
+  Fence fence = 1;
+  string path = 2;
+  bool parents = 3;
+}
+
+message MakeDirectoryResponse {}
+
+message MoveRequest {
+  Fence fence = 1;
+  string from = 2;
+  string to = 3;
+}
+
+message MoveResponse {}
+
+message RemoveRequest {
+  Fence fence = 1;
+  string path = 2;
+  bool recursive = 3;
+}
+
+message RemoveResponse {}
+
+message ImportHeader {
+  Fence fence = 1;
+  string dir = 2;
+}
+
+message ImportRequest {
+  oneof part {
+    ImportHeader header = 1;
+    bytes chunk = 2;
+  }
+}
+
+message ImportResponse {}
+
+message ExportRequest {
+  string grant_id = 1;
+  string epoch = 2;
+  repeated string paths = 3;
+  string codec = 4;
+}

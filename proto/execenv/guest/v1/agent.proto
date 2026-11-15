@@ -3,6 +3,7 @@ syntax = "proto3";
 package execenv.guest.v1;
 
 import "execenv/v1/common.proto";
+import "execenv/v1/file.proto";
 import "execenv/v1/journal.proto";
 import "execenv/v1/process_log.proto";
 import "execenv/v1/terminal.proto";
@@ -41,6 +42,18 @@ service AgentService {
   rpc ReadObservationContent(execenv.v1.ReadObservationContentRequest) returns (stream execenv.v1.ContentChunk);
   rpc ConfirmObservationProjection(execenv.v1.ConfirmObservationProjectionRequest) returns (execenv.v1.ConfirmObservationProjectionResponse);
   rpc AcknowledgeObservations(execenv.v1.AcknowledgeObservationsRequest) returns (execenv.v1.AcknowledgeObservationsResponse);
+
+  // The plain file API over the workspace. The host checks grant and epoch;
+  // changing calls still carry the fence the guest binds.
+  rpc Stat(execenv.v1.StatRequest) returns (execenv.v1.FileInfo);
+  rpc List(execenv.v1.ListRequest) returns (execenv.v1.ListResponse);
+  rpc ReadFile(execenv.v1.ReadFileRequest) returns (stream execenv.v1.ContentChunk);
+  rpc WriteFile(stream execenv.v1.WriteFileRequest) returns (execenv.v1.FileInfo);
+  rpc MakeDirectory(execenv.v1.MakeDirectoryRequest) returns (execenv.v1.MakeDirectoryResponse);
+  rpc Move(execenv.v1.MoveRequest) returns (execenv.v1.MoveResponse);
+  rpc Remove(execenv.v1.RemoveRequest) returns (execenv.v1.RemoveResponse);
+  rpc Import(stream execenv.v1.ImportRequest) returns (execenv.v1.ImportResponse);
+  rpc Export(execenv.v1.ExportRequest) returns (stream execenv.v1.ContentChunk);
 }
 
 message HelloRequest {}

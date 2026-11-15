@@ -34,7 +34,7 @@ const (
 	FeatureProcessLog = "process_log"
 )
 
-var features = []string{FeatureControl, FeatureJournal, FeatureTerminal, FeatureProcessLog, FeatureSeed}
+var features = []string{FeatureControl, FeatureJournal, FeatureTerminal, FeatureProcessLog, FeatureSeed, FeatureFiles}
 
 // Window sizes for HTTP/2 flow control. The host receives uploads and
 // keystrokes; uploads need the large window.
@@ -68,6 +68,7 @@ func Serve(ctx context.Context, ln net.Listener, inner execenv.Host, cfg ServerC
 	mux.Handle(execenvv1connect.NewJournalServiceHandler(h, options))
 	mux.Handle(execenvv1connect.NewTerminalServiceHandler(h, options))
 	mux.Handle(execenvv1connect.NewProcessLogServiceHandler(h, options))
+	mux.Handle(execenvv1connect.NewFileServiceHandler(h, options))
 
 	protocols := new(http.Protocols)
 	if cfg.Security == SecurityTLS {

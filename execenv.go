@@ -189,6 +189,7 @@ type Env interface {
 	// UpdateLimits replaces the grant's device limits while it runs.
 	UpdateLimits(ctx context.Context, fence ProjectionFence, limits Limits) error
 	Revoke(ctx context.Context) error
+	Files
 }
 
 // TerminalID is the opaque identity of one terminal session: one shell and

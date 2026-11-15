@@ -14,6 +14,7 @@ import (
 	"github.com/sudosylabs/execenv/internal/capacity"
 	"github.com/sudosylabs/execenv/internal/content"
 	"github.com/sudosylabs/execenv/internal/control"
+	"github.com/sudosylabs/execenv/internal/files"
 	"github.com/sudosylabs/execenv/internal/journal"
 	"github.com/sudosylabs/execenv/internal/lifetime"
 	"github.com/sudosylabs/execenv/internal/seed"
@@ -85,6 +86,7 @@ type environment struct {
 	grantDir  string
 	workspace string
 	journal   *journal.Journal
+	files     *files.FS
 	journalMu sync.Mutex
 	guestMu   sync.Mutex
 }
@@ -253,6 +255,11 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		workspace: workspace,
 	}
 	env.journal = journal.New(workspace, store, lockBarrier{&env.guestMu}, nil)
+	if env.files, err = files.New(workspace, filepath.Join(grantDir, "staging")); err != nil {
+		_ = os.RemoveAll(grantDir)
+		h.pool.Release(spec.ID)
+		return nil, execenv.Error("ensure", execenv.ErrUnavailable)
+	}
 	// The in-memory shell is a stand-in, not a process; it starts with no
 	// window or isolation beyond the session machinery every adapter shares.
 	env.terminal = terminal.New(terminal.Config{
