@@ -30,9 +30,21 @@ type stubInstance struct {
 	// exited closes when the simulated machine ends: Stop, or die.
 	exited   chan struct{}
 	exitOnce sync.Once
+	// limits is what UpdateLimits last applied.
+	limits execenv.Limits
 }
 
 func (s *stubInstance) Done() <-chan struct{} { return s.exited }
+
+func (s *stubInstance) UpdateLimits(_ context.Context, limits execenv.Limits, _ bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stopped {
+		return execenv.ErrUnavailable
+	}
+	s.limits = limits
+	return nil
+}
 
 // dropLink breaks the guest link while the simulated machine keeps
 // running, as a guest helper that died would.

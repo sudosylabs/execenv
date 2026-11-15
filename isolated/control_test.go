@@ -126,7 +126,7 @@ func refusesHelper(t *testing.T, launch *recordingLauncher) {
 		t.Fatal("refused guest was left running")
 	}
 	report, err := host.Ready(t.Context())
-	if err != nil || report.Slots != host.slots {
+	if err != nil || report.CPUMillis.Free != report.CPUMillis.Total {
 		t.Fatalf("refused guest kept its slot: %+v %v", report, err)
 	}
 }

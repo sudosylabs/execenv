@@ -21,11 +21,14 @@ type startRequest struct {
 	TreeDir string
 	// Disk is the host path of the grant's sparse writable workspace disk,
 	// created by the launcher and removed with the grant directory.
-	Disk      string
-	DiskBytes int64
-	Attach    *netAttach
-	Memory    int64
-	CPU       int
+	Disk string
+	// Resources size the machine: virtual CPUs enough for CPUMillis,
+	// throttled to it; MemoryBytes of guest memory; a DiskBytes workspace
+	// disk.
+	Resources execenv.Resources
+	// Limits throttle the machine's disk and network devices.
+	Limits execenv.Limits
+	Attach *netAttach
 }
 
 // instance is one running isolated environment. Pause must not destroy it.
@@ -40,6 +43,9 @@ type instance interface {
 	Stop(context.Context) error
 	Connect(ctx context.Context) (net.Conn, error)
 	Done() <-chan struct{}
+	// UpdateLimits replaces the running machine's device limits; network
+	// says whether it has a network device to limit.
+	UpdateLimits(ctx context.Context, limits execenv.Limits, network bool) error
 }
 
 type launcher interface {

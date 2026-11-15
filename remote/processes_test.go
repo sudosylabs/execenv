@@ -12,7 +12,7 @@ import (
 func TestProcessConformance(t *testing.T) {
 	execenvtest.RunProcesses(t, func(t *testing.T) execenvtest.Traced {
 		t.Helper()
-		inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Slots: 1})
+		inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Capacity: execenv.DefaultGrant.Times(1)})
 		if err != nil {
 			t.Fatal(err)
 		}

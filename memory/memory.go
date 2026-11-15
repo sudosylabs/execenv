@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/capacity"
 	"github.com/sudosylabs/execenv/internal/control"
 	"github.com/sudosylabs/execenv/internal/guesttree"
+	"github.com/sudosylabs/execenv/internal/lifetime"
 	"github.com/sudosylabs/execenv/internal/observations"
 	"github.com/sudosylabs/execenv/internal/projection"
 	"github.com/sudosylabs/execenv/internal/terminal"
@@ -22,10 +24,19 @@ var (
 	_ execenv.Env  = (*environment)(nil)
 )
 
+// DefaultCapacity is a Config's capacity when it sets none: room for four
+// grants of execenv.DefaultGrant.
+var DefaultCapacity = execenv.DefaultGrant.Times(4)
+
 // Config constructs an in-memory host.
 type Config struct {
-	Images   []execenv.Image
-	Slots    int
+	Images []execenv.Image
+	// Capacity is the host's totals, Defaults what a Spec's zero Resources
+	// fields mean, and GrantMax the most one grant may ask for. Zero values
+	// use DefaultCapacity, execenv.DefaultGrant and Capacity.
+	Capacity execenv.Resources
+	Defaults execenv.Resources
+	GrantMax execenv.Resources
 	Unusable bool
 	// TerminalGrace is how long a detached shell keeps running. Zero uses
 	// execenv.DefaultTerminalGrace.
@@ -36,7 +47,7 @@ type Config struct {
 type Host struct {
 	mu       sync.Mutex
 	images   []execenv.Image
-	slots    int
+	pool     *capacity.Pool
 	unusable bool
 	grace    time.Duration
 	grants   map[execenv.ID]*environment
@@ -55,27 +66,34 @@ type environment struct {
 	projectionFence execenv.ProjectionFence
 	mu              sync.Mutex
 	id              execenv.ID
-	image           execenv.Image
-	network         execenv.Network
+	spec            execenv.Spec
 	host            *Host
 	frozen          bool
 	revoked         bool
 	lost            bool
 	terminal        *terminal.Manager
 	processes       *processLog
+	limits          execenv.Limits
+	timer           *lifetime.Timer
+	// public is what callers hold: the environment, watched for activity.
+	public execenv.Env
 	// files is the current projection. Paths are already-validated.
 	files tree.Snapshot
 }
 
 // New returns an inert in-memory host.
 func New(cfg Config) (*Host, error) {
-	slots := cfg.Slots
-	if slots <= 0 {
-		slots = 1
+	total := cfg.Capacity
+	if total == (execenv.Resources{}) {
+		total = DefaultCapacity
+	}
+	pool, err := capacity.New(total, cfg.Defaults, cfg.GrantMax)
+	if err != nil {
+		return nil, execenv.Error("memory", err)
 	}
 	return &Host{
 		images:   append([]execenv.Image(nil), cfg.Images...),
-		slots:    slots,
+		pool:     pool,
 		unusable: cfg.Unusable,
 		grace:    cfg.TerminalGrace,
 		grants:   make(map[execenv.ID]*environment),
@@ -100,8 +118,8 @@ func (h *Host) SetDraining(on bool) {
 }
 
 // Lose ends a grant's environment as if its machine had died, without a
-// revoke: the slot is freed and every call on the occupancy fails with
-// execenv.ErrLost until the grant is revoked. It reports whether a live
+// revoke: its resources are freed and every call on the occupancy fails
+// with execenv.ErrLost until the grant is revoked. It reports whether a live
 // grant was lost. It is a test hook; nothing else loses an in-memory grant.
 func (h *Host) Lose(id execenv.ID) bool {
 	h.mu.Lock()
@@ -117,20 +135,17 @@ func (h *Host) Lose(id execenv.ID) bool {
 	h.lostCount++
 	h.lost[id] = env
 	delete(h.grants, id)
+	h.pool.Release(id)
 	return true
 }
 
-// Ready reports configured images and remaining slots.
+// Ready reports configured images and free capacity.
 func (h *Host) Ready(ctx context.Context) (execenv.Report, error) {
 	if err := ctx.Err(); err != nil {
 		return execenv.Report{}, execenv.Error("ready", err)
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	free := h.slots - len(h.grants)
-	if free < 0 {
-		free = 0
-	}
 	usable, reason := !h.unusable, ""
 	switch {
 	case !usable:
@@ -138,17 +153,18 @@ func (h *Host) Ready(ctx context.Context) (execenv.Report, error) {
 	case h.draining:
 		usable, reason = false, execenv.ReasonDraining
 	}
-	return execenv.Report{
+	report := execenv.Report{
 		Usable:    usable,
 		Reason:    reason,
 		Grants:    len(h.grants),
 		Lost:      h.lostCount,
 		Images:    append([]execenv.Image(nil), h.images...),
 		Networks:  []execenv.Network{execenv.NetworkNone, execenv.NetworkAllowlist},
-		Slots:     free,
 		Release:   execenv.Release,
 		Isolation: execenv.IsolationNone,
-	}, nil
+	}
+	h.pool.Fill(&report)
+	return report, nil
 }
 
 // Ensure creates or returns the grant named by spec.
@@ -159,6 +175,7 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 	if err := execenv.ValidateSpec(spec); err != nil {
 		return nil, execenv.Error("ensure", err)
 	}
+	spec.Resources = h.pool.Resolve(spec.Resources)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.unusable {
@@ -168,10 +185,10 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		return nil, execenv.Error("ensure", execenv.ErrLost)
 	}
 	if env, ok := h.grants[spec.ID]; ok {
-		if env.image != spec.Image || env.network != spec.Network {
+		if !execenv.SameGrant(env.spec, spec) {
 			return nil, execenv.Error("ensure", execenv.ErrConflict)
 		}
-		return env, nil
+		return env.public, nil
 	}
 	if h.draining {
 		return nil, execenv.Error("ensure", execenv.ErrDraining)
@@ -179,18 +196,18 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 	if !h.hasImage(spec.Image) {
 		return nil, execenv.Error("ensure", execenv.ErrUnknownImage)
 	}
-	if len(h.grants) >= h.slots {
-		return nil, execenv.Error("ensure", execenv.ErrCapacity)
+	if err := h.pool.Reserve(spec.ID, spec.Resources); err != nil {
+		return nil, execenv.Error("ensure", err)
 	}
 	env := &environment{
 		control:    control.New(spec.ID),
 		projection: projection.New(),
 		id:         spec.ID,
-		image:      spec.Image,
-		network:    spec.Network,
+		spec:       spec,
 		host:       h,
 		files:      make(tree.Snapshot),
 		processes:  newProcessLog(),
+		limits:     spec.Limits,
 	}
 	// The in-memory shell is a stand-in, not a process; it starts with no
 	// window or isolation beyond the session machinery every adapter shares.
@@ -200,8 +217,22 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 			return newShell(win, env.processes), nil
 		},
 	})
+	env.public = env
+	if spec.WallTimeout > 0 || spec.IdleTimeout > 0 {
+		env.timer = lifetime.Start(spec.WallTimeout, spec.IdleTimeout, func(r lifetime.Reason) { h.expire(env, r) })
+		env.public = lifetime.Watch(env, env.timer)
+	}
 	h.grants[spec.ID] = env
-	return env, nil
+	return env.public, nil
+}
+
+// expire applies a grant's wall or idle timeout.
+func (h *Host) expire(env *environment, r lifetime.Reason) {
+	if r == lifetime.Idle && env.spec.IdleAction == execenv.IdleFreeze {
+		_, _ = env.control.Idle(context.Background(), func() error { return env.freeze(context.Background()) })
+		return
+	}
+	_ = h.revokeExact(context.Background(), env)
 }
 
 // Revoke destroys the grant if it exists.
@@ -220,6 +251,7 @@ func (h *Host) Revoke(ctx context.Context, id execenv.ID) error {
 		return err
 	}
 	delete(h.grants, id)
+	h.pool.Release(id)
 	return nil
 }
 
@@ -239,6 +271,7 @@ func (h *Host) revokeExact(ctx context.Context, env *environment) error {
 		return err
 	}
 	delete(h.grants, env.id)
+	h.pool.Release(env.id)
 	return nil
 }
 
@@ -259,6 +292,20 @@ func (e *environment) Attach(ctx context.Context, request execenv.AttachRequest)
 		return nil, err
 	}
 	return e.terminal.Attach(ctx, request)
+}
+
+// UpdateLimits records the limits. The in-memory host has no devices to
+// throttle.
+func (e *environment) UpdateLimits(ctx context.Context, fence execenv.ProjectionFence, limits execenv.Limits) error {
+	if err := execenv.ValidateLimits(limits); err != nil {
+		return execenv.Error("update_limits", err)
+	}
+	return e.control.Run(ctx, fence, func() error {
+		e.mu.Lock()
+		e.limits = limits
+		e.mu.Unlock()
+		return nil
+	})
 }
 
 func (e *environment) freeze(ctx context.Context) error {
@@ -302,6 +349,7 @@ func (e *environment) revoke() error {
 
 // stop ends the environment for cause, ErrRevoked or ErrLost.
 func (e *environment) stop(cause error) error {
+	e.timer.Stop()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.revoked = true

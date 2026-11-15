@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -78,7 +79,7 @@ func TestBootstrapWritesConfigWithoutLeakingSecrets(t *testing.T) {
 	if !strings.Contains(stdout, "hash=none") {
 		t.Fatalf("stdout claimed a hash: %q", stdout)
 	}
-	if cfg.Adapter != "isolated" || cfg.Slots != 8 {
+	if cfg.Adapter != "isolated" || cfg.Capacity.CPUMillis != int64(runtime.NumCPU())*1000 || cfg.Capacity.MemoryBytes <= 0 || cfg.Capacity.DiskBytes <= 0 {
 		t.Fatalf("config = %+v", cfg)
 	}
 	if len(cfg.Images) != 0 {
@@ -172,12 +173,12 @@ func TestBootstrapKeepsAllowAndResources(t *testing.T) {
 	}
 	cfg.Network = "allowlist"
 	cfg.Allow = []string{"203.0.113.8"}
-	cfg.CPUMillis = 2000
-	cfg.MemoryBytes = 1 << 31
-	cfg.DiskBytes = 40 << 30
+	cfg.Capacity = daemon.Resources{CPUMillis: 2000, MemoryBytes: 1 << 31, DiskBytes: 40 << 30}
 	if err := daemon.Save(path, cfg); err != nil {
 		t.Fatal(err)
 	}
+	// A re-run without capacity flags keeps what the operator wrote.
+	opts.Capacity = daemon.Resources{}
 	if err := Bootstrap(opts, io.Discard); err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +192,7 @@ func TestBootstrapKeepsAllowAndResources(t *testing.T) {
 	if again.Network != "allowlist" || len(again.Allow) != 1 || again.Allow[0] != "203.0.113.8" {
 		t.Fatalf("allow stripped: %+v", again)
 	}
-	if again.CPUMillis != 2000 || again.MemoryBytes != 1<<31 || again.DiskBytes != 40<<30 {
+	if again.Capacity != cfg.Capacity {
 		t.Fatalf("resources stripped: %+v", again)
 	}
 }
@@ -265,7 +266,7 @@ func testOpts(t *testing.T, root string) Options {
 		State:    filepath.Join(root, "var", "lib", "execenv"),
 		Device:   device,
 		Listen:   "127.0.0.1:8443",
-		Slots:    8,
+		Capacity: daemon.Resources{CPUMillis: 8000, MemoryBytes: 4 << 30, DiskBytes: 16 << 30},
 		Execenv:  execenvBin,
 		Mkfs:     filepath.Join(bindir, mkfsName),
 		NoStart:  true,

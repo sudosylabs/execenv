@@ -122,6 +122,24 @@ func (s *State) Lose(ctx context.Context, effect func() error) (bool, error) {
 	return true, err
 }
 
+// Idle freezes a running epoch on the host's own initiative, for its idle
+// timeout. It keeps the caller's fence revision: the caller sees frozen in
+// ControlStatus and thaws with its next revision, as after its own freeze.
+// It reports false, and runs nothing, unless the epoch is confirmed running.
+func (s *State) Idle(ctx context.Context, effect func() error) (bool, error) {
+	if err := s.acquire(ctx); err != nil {
+		return false, err
+	}
+	defer s.release()
+	if s.lost || s.receipt.State != execenv.ControlRunning || !s.receipt.Confirmed {
+		return false, nil
+	}
+	s.receipt.State, s.receipt.Confirmed = execenv.ControlFrozen, false
+	err := effect()
+	s.receipt.Confirmed = err == nil
+	return true, err
+}
+
 // Run holds the same serialization boundary as control effects. A matching
 // request may use only a confirmed running epoch; a rejected fence performs no I/O.
 func (s *State) Run(ctx context.Context, fence execenv.ProjectionFence, effect func() error) error {

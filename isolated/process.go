@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sudosylabs/execenv"
@@ -39,6 +40,8 @@ func (l *processLauncher) jailBase() string { return filepath.Join(l.cfg.WorkDir
 type processInstance struct {
 	cmd  *exec.Cmd
 	sock string
+	// api is the monitor's API socket, for limits changed while it runs.
+	api  string
 	done <-chan struct{}
 	// release runs in reverse order once the monitor has been reaped. A
 	// failed step is retried by the next Stop.
@@ -79,8 +82,21 @@ func dialGuest(ctx context.Context, sock string) (net.Conn, error) {
 		_ = conn.Close()
 		return nil, err
 	}
-	buf := make([]byte, 3)
-	if _, err := io.ReadFull(conn, buf); err != nil || string(buf) != "OK\n" {
+	// The answer is one line, "OK" and possibly the host-side port. Read it
+	// a byte at a time so nothing of the link's first bytes is consumed.
+	line := make([]byte, 0, 32)
+	one := make([]byte, 1)
+	for len(line) < cap(line) {
+		if _, err := io.ReadFull(conn, one); err != nil {
+			_ = conn.Close()
+			return nil, execenv.ErrUnavailable
+		}
+		if one[0] == '\n' {
+			break
+		}
+		line = append(line, one[0])
+	}
+	if s := string(line); s != "OK" && !strings.HasPrefix(s, "OK ") {
 		_ = conn.Close()
 		return nil, execenv.ErrUnavailable
 	}
@@ -133,7 +149,7 @@ func (l *processLauncher) Start(ctx context.Context, req startRequest) (instance
 	// The guest formats nothing: the host creates the empty writable disk
 	// and the guest mounts it. The host never mounts this disk, because its
 	// blocks are written by the guest kernel.
-	if err := createWorkspaceDisk(ctx, mkfs, req.Disk, req.DiskBytes); err != nil {
+	if err := createWorkspaceDisk(ctx, mkfs, req.Disk, req.Resources.DiskBytes); err != nil {
 		return fail(err)
 	}
 	jail := newJailLayout(l.jailBase(), runtimeBin, req.ID, uid, uid)
@@ -167,8 +183,11 @@ func (l *processLauncher) Start(ctx context.Context, req startRequest) (instance
 	}
 	if cgroupV2() {
 		args = append(args, "--cgroup-version", "2")
+		args = append(args, cgroupLimits(req.Resources)...)
 	}
-	args = append(args, "--", "--config-file", vm)
+	// The API socket is how UpdateLimits reaches the running machine. It
+	// sits in the jail, owned by the grant's identity.
+	args = append(args, "--", "--config-file", vm, "--api-sock", inside(jailAPISock))
 	cmd := exec.Command(supervisor, args...)
 	cmd.Dir = filepath.Dir(req.TreeDir)
 	cmd.Stdin = nil
@@ -185,7 +204,7 @@ func (l *processLauncher) Start(ctx context.Context, req startRequest) (instance
 	}
 	done := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(done) }()
-	return &processInstance{cmd: cmd, sock: jail.host(jailLinkSoc), release: release, done: done}, nil
+	return &processInstance{cmd: cmd, sock: jail.host(jailLinkSoc), api: jail.host(jailAPISock), release: release, done: done}, nil
 }
 
 // cleanStale reclaims what a crashed daemon left: jailed monitors (which
@@ -259,14 +278,8 @@ func guestCID(id execenv.ID) uint32 {
 // in it is the monitor's view from inside the jail root; the returned path
 // is the one to pass after the supervisor's "--".
 func writeMachineConfig(req startRequest, jail jailLayout) (string, error) {
-	mem := req.Memory / (1024 * 1024)
-	if mem <= 0 {
-		mem = 128
-	}
-	vcpus := req.CPU / 1000
-	if vcpus <= 0 {
-		vcpus = 1
-	}
+	mem := req.Resources.MemoryBytes >> 20
+	vcpus := vcpuCount(req.Resources.CPUMillis)
 	// Machine JSON follows the supervisor's config-file schema. Rootfs is
 	// read-only and shared by every grant of the image. The second drive is
 	// this grant's sparse writable disk; the guest init mounts it and
@@ -296,6 +309,7 @@ func writeMachineConfig(req startRequest, jail jailLayout) (string, error) {
 				"path_on_host":   inside(jailDisk),
 				"is_root_device": false,
 				"is_read_only":   false,
+				"rate_limiter":   rateLimiter(req.Limits.DiskBytes, req.Limits.DiskOps),
 			},
 		},
 		"balloon": map[string]any{
@@ -315,9 +329,11 @@ func writeMachineConfig(req startRequest, jail jailLayout) (string, error) {
 	}
 	if req.Attach != nil {
 		doc["network-interfaces"] = []map[string]any{{
-			"iface_id":      "eth0",
-			"guest_mac":     req.Attach.MAC,
-			"host_dev_name": req.Attach.Dev,
+			"iface_id":        "eth0",
+			"guest_mac":       req.Attach.MAC,
+			"host_dev_name":   req.Attach.Dev,
+			"rx_rate_limiter": rateLimiter(req.Limits.NetworkBytes, execenv.TokenBucket{}),
+			"tx_rate_limiter": rateLimiter(req.Limits.NetworkBytes, execenv.TokenBucket{}),
 		}}
 	}
 	raw, err := json.Marshal(doc)

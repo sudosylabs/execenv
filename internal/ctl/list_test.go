@@ -87,9 +87,9 @@ func TestRemoveDropsDiskAndConfig(t *testing.T) {
 		})
 	}
 	host, err := isolated.New(isolated.Config{
-		WorkDir: filepath.Join(root, "ready"),
-		Images:  images,
-		Slots:   1,
+		WorkDir:  filepath.Join(root, "ready"),
+		Images:   images,
+		Capacity: execenv.DefaultGrant.Times(1),
 	})
 	if err != nil {
 		t.Fatal(err)

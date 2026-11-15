@@ -66,9 +66,18 @@ type Report struct {
 	Reason   string
 	Images   []Image
 	Networks []Network
-	// Slots is how many more grants the host has room for. A grant whose
-	// environment was lost no longer holds a slot.
-	Slots int
+	// CPUMillis, MemoryBytes and DiskBytes are the host's capacity. Every
+	// grant reserves its whole Resources from the moment it starts until it
+	// is revoked or lost; a grant being started counts at once. CPU totals
+	// already include the operator's overcommit; memory is never
+	// overcommitted.
+	CPUMillis   Capacity
+	MemoryBytes Capacity
+	DiskBytes   Capacity
+	// Defaults is what a Spec's zero Resources fields mean on this host,
+	// and GrantMax the most one grant may ask for.
+	Defaults Resources
+	GrantMax Resources
 	// Grants is how many grants the host holds now, including those still
 	// starting. Lost grants are not counted.
 	Grants int
@@ -90,11 +99,29 @@ const (
 	ReasonUnavailable = "unavailable"
 )
 
-// Spec asks a host to occupy a grant.
+// Spec asks a host to occupy a grant. Ensure is idempotent on ID: the same
+// spec returns the same grant, and a different one, other than in Limits,
+// is ErrConflict.
 type Spec struct {
 	ID      ID
 	Image   Image
 	Network Network
+	// Resources is what the grant is given. Zero fields use the host's
+	// Defaults. A grant that does not fit is a *CapacityError at once; the
+	// host never queues it.
+	Resources Resources
+	// WallTimeout, when set, revokes the grant that long after it started.
+	WallTimeout time.Duration
+	// IdleTimeout and IdleAction, set together, freeze or revoke the grant
+	// once it has been idle that long. A grant is busy while a terminal is
+	// attached to it and for a moment after any call on it.
+	IdleTimeout time.Duration
+	IdleAction  IdleAction
+	// Labels are the caller's, for its own bookkeeping. The host never
+	// interprets them.
+	Labels map[string]string
+	// Limits throttle the grant's devices from its start.
+	Limits Limits
 }
 
 // Window is a terminal size. Zero Cols or Rows means 80 by 24.
@@ -155,6 +182,8 @@ type Env interface {
 	// sequence. Acknowledging past the events produced is ErrInvalid; an
 	// older acknowledgement is a no-op.
 	AcknowledgeProcesses(ctx context.Context, fence ProjectionFence, through uint64) error
+	// UpdateLimits replaces the grant's device limits while it runs.
+	UpdateLimits(ctx context.Context, fence ProjectionFence, limits Limits) error
 	Revoke(ctx context.Context) error
 }
 

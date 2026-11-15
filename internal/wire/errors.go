@@ -52,10 +52,30 @@ func Error(err error) error {
 	}
 	for _, s := range sentinels {
 		if errors.Is(err, s.err) {
-			return WithDetail(connect.NewError(s.code, s.err), &execenvv1.ErrorDetail{Sentinel: s.name})
+			detail := &execenvv1.ErrorDetail{Sentinel: s.name}
+			var short *execenv.CapacityError
+			if errors.As(err, &short) {
+				detail.Shortfall = &execenvv1.Shortfall{Resource: resources[short.Resource], Requested: short.Requested, Free: short.Free}
+			}
+			return WithDetail(connect.NewError(s.code, s.err), detail)
 		}
 	}
 	return WithDetail(connect.NewError(connect.CodeUnavailable, execenv.ErrUnavailable), &execenvv1.ErrorDetail{Sentinel: "unavailable"})
+}
+
+var resources = map[execenv.Resource]execenvv1.Resource{
+	execenv.ResourceCPU:    execenvv1.Resource_RESOURCE_CPU,
+	execenv.ResourceMemory: execenvv1.Resource_RESOURCE_MEMORY,
+	execenv.ResourceDisk:   execenvv1.Resource_RESOURCE_DISK,
+}
+
+func shortfallFrom(s *execenvv1.Shortfall) error {
+	for k, v := range resources {
+		if v == s.GetResource() {
+			return &execenv.CapacityError{Resource: k, Requested: s.GetRequested(), Free: s.GetFree()}
+		}
+	}
+	return execenv.ErrCapacity
 }
 
 func WithDetail(err *connect.Error, detail *execenvv1.ErrorDetail) *connect.Error {
@@ -83,6 +103,9 @@ func HostError(op string, err error) error {
 		detail, ok := value.(*execenvv1.ErrorDetail)
 		if verr != nil || !ok {
 			continue
+		}
+		if detail.GetSentinel() == "capacity" && detail.GetShortfall() != nil {
+			return execenv.Error(op, shortfallFrom(detail.GetShortfall()))
 		}
 		for _, s := range sentinels {
 			if s.name == detail.GetSentinel() {

@@ -37,7 +37,7 @@ func TestLoadRejectsProductionMemory(t *testing.T) {
 		"tls_cert": "cert.pem",
 		"tls_key": "key.pem",
 		"images": [{"id": "default"}],
-		"slots": 2
+		"capacity": {"cpu_millis": 2000, "memory_bytes": 1073741824, "disk_bytes": 4294967296}
 	}`))
 	if err == nil {
 		t.Fatal("Load() production memory = nil")
@@ -52,15 +52,15 @@ func TestLoadAcceptsLocalMemory(t *testing.T) {
 		"security": "insecure_local",
 		"adapter": "memory",
 		"images": [{"id": "default"}],
-		"slots": 2,
+		"capacity": {"cpu_millis": 2000, "memory_bytes": 1073741824, "disk_bytes": 4294967296},
 		"network": "none",
 		"grace": "30s"
 	}`))
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if cfg.Listen != "127.0.0.1:0" || cfg.Slots != 2 {
-		t.Fatalf("Load() listen=%q slots=%d", cfg.Listen, cfg.Slots)
+	if cfg.Listen != "127.0.0.1:0" || cfg.Capacity.CPUMillis != 2000 || cfg.totals().MemoryBytes != 1<<30 {
+		t.Fatalf("Load() listen=%q capacity=%+v", cfg.Listen, cfg.Capacity)
 	}
 }
 
@@ -75,7 +75,7 @@ func TestLoadAcceptsMutualTLSWithoutToken(t *testing.T) {
 		"tls_client_ca": "client-ca.pem",
 		"work_dir": "/tmp/execenv",
 		"images": [],
-		"slots": 2
+		"capacity": {"cpu_millis": 2000, "memory_bytes": 1073741824, "disk_bytes": 4294967296}
 	}`))
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
@@ -89,7 +89,7 @@ func TestLoadRejectsInsecureLocalWithoutToken(t *testing.T) {
 		"security": "insecure_local",
 		"adapter": "memory",
 		"images": [],
-		"slots": 1
+		"capacity": {"cpu_millis": 1000, "memory_bytes": 536870912, "disk_bytes": 2147483648}
 	}`))
 	if !errors.Is(err, execenv.ErrInvalid) {
 		t.Fatalf("Load() error = %v, want ErrInvalid", err)
@@ -121,7 +121,7 @@ func TestLoadIsolatedRejectsMalformedHash(t *testing.T) {
 		"adapter": "isolated",
 		"work_dir": "/tmp/execenv",
 		"images": [{"id": "default", "kernel": "vmlinux", "path": "rootfs.ext4", "hash": "nope"}],
-		"slots": 2
+		"capacity": {"cpu_millis": 2000, "memory_bytes": 1073741824, "disk_bytes": 4294967296}
 	}`))
 	if err == nil {
 		t.Fatal("Load() isolated with short hash = nil")
@@ -137,7 +137,7 @@ func TestLoadIsolatedRequiresImageHash(t *testing.T) {
 		"adapter": "isolated",
 		"work_dir": "/tmp/execenv",
 		"images": [{"id": "default", "kernel": "vmlinux", "path": "rootfs.ext4"}],
-		"slots": 2
+		"capacity": {"cpu_millis": 2000, "memory_bytes": 1073741824, "disk_bytes": 4294967296}
 	}`))
 	if err == nil {
 		t.Fatal("Load() isolated without hash = nil")
@@ -152,7 +152,7 @@ func TestLoadIsolatedRequiresWorkDir(t *testing.T) {
 		"security": "insecure_local",
 		"adapter": "isolated",
 		"images": [{"id": "default", "kernel": "vmlinux", "path": "rootfs.ext4", "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
-		"slots": 2
+		"capacity": {"cpu_millis": 2000, "memory_bytes": 1073741824, "disk_bytes": 4294967296}
 	}`))
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
@@ -172,7 +172,7 @@ func TestLoadAcceptsIsolatedWithNoImages(t *testing.T) {
 		"adapter": "isolated",
 		"work_dir": "/tmp/execenv",
 		"images": [],
-		"slots": 2
+		"capacity": {"cpu_millis": 2000, "memory_bytes": 1073741824, "disk_bytes": 4294967296}
 	}`))
 	if err != nil {
 		t.Fatalf("Load() empty catalog error = %v", err)
@@ -191,7 +191,7 @@ func TestLoadAllowlistRequiresDests(t *testing.T) {
 		"adapter": "isolated",
 		"work_dir": "/tmp/execenv",
 		"images": [{"id": "default", "kernel": "vmlinux", "rootfs": "disk.ext4", "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
-		"slots": 2,
+		"capacity": {"cpu_millis": 2000, "memory_bytes": 1073741824, "disk_bytes": 4294967296},
 		"network": "allowlist"
 	}`))
 	if err == nil {
@@ -208,7 +208,7 @@ func TestLoadAcceptsRootfsKey(t *testing.T) {
 		"adapter": "isolated",
 		"work_dir": "/tmp/execenv",
 		"images": [{"id": "default", "kernel": "vmlinux", "rootfs": "disk.ext4", "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
-		"slots": 2
+		"capacity": {"cpu_millis": 2000, "memory_bytes": 1073741824, "disk_bytes": 4294967296}
 	}`))
 	if err != nil {
 		t.Fatal(err)
@@ -243,7 +243,7 @@ func TestNewAdapterReadyOmitsUnverifiedImage(t *testing.T) {
 			{"id": "default", "kernel": "`+kernel+`", "rootfs": "`+rootfs+`", "hash": "`+sum+`"},
 			{"id": "missing", "kernel": "`+kernel+`", "rootfs": "`+filepath.Join(dir, "gone")+`", "hash": "`+sum+`"}
 		],
-		"slots": 2
+		"capacity": {"cpu_millis": 2000, "memory_bytes": 1073741824, "disk_bytes": 4294967296}
 	}`))
 	if err != nil {
 		t.Fatal(err)
@@ -269,7 +269,7 @@ func TestSaveRoundTripAllowAndResources(t *testing.T) {
 		"security": "insecure_local",
 		"adapter": "memory",
 		"images": [{"id": "default"}],
-		"slots": 2
+		"capacity": {"cpu_millis": 2000, "memory_bytes": 1073741824, "disk_bytes": 4294967296}
 	}`)
 	cfg, err := Load(path)
 	if err != nil {
@@ -277,9 +277,9 @@ func TestSaveRoundTripAllowAndResources(t *testing.T) {
 	}
 	cfg.Network = "allowlist"
 	cfg.Allow = []string{"203.0.113.8"}
-	cfg.CPUMillis = 1000
-	cfg.MemoryBytes = 1 << 30
-	cfg.DiskBytes = 20 << 30
+	cfg.Capacity = Resources{CPUMillis: 4000, MemoryBytes: 8 << 30, DiskBytes: 40 << 30}
+	cfg.CPUOvercommit = 2
+	cfg.GrantMax = Resources{CPUMillis: 2000, MemoryBytes: 1 << 30, DiskBytes: 20 << 30}
 	if err := Save(path, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +287,7 @@ func TestSaveRoundTripAllowAndResources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again.Token != "secret" || again.CPUMillis != 1000 || again.DiskBytes != 20<<30 {
+	if again.Token != "secret" || again.Capacity != cfg.Capacity || again.GrantMax != cfg.GrantMax || again.totals().CPUMillis != 8000 {
 		t.Fatalf("round-trip = %+v", again)
 	}
 	if len(again.Allow) != 1 || again.Allow[0] != "203.0.113.8" || again.Network != "allowlist" {
@@ -310,7 +310,7 @@ func TestSaveRejectsInvalidLeavesFile(t *testing.T) {
 		"security": "insecure_local",
 		"adapter": "memory",
 		"images": [{"id": "default"}],
-		"slots": 2
+		"capacity": {"cpu_millis": 2000, "memory_bytes": 1073741824, "disk_bytes": 4294967296}
 	}`)
 	before, err := os.ReadFile(path)
 	if err != nil {
@@ -341,7 +341,7 @@ func TestSaveEmitsRootfsNotPath(t *testing.T) {
 		"adapter": "isolated",
 		"work_dir": "/tmp/execenv",
 		"images": [{"id": "default", "kernel": "vmlinux", "path": "disk.ext4", "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
-		"slots": 2
+		"capacity": {"cpu_millis": 2000, "memory_bytes": 1073741824, "disk_bytes": 4294967296}
 	}`)
 	cfg, err := Load(path)
 	if err != nil {
@@ -371,7 +371,7 @@ func writeConfig(t *testing.T, body string) string {
 
 func TestLoadReportsAdapterIsolation(t *testing.T) {
 	t.Parallel()
-	base := `"listen": "127.0.0.1:0", "token": "secret", "security": "insecure_local", "images": [], "slots": 1`
+	base := `"listen": "127.0.0.1:0", "token": "secret", "security": "insecure_local", "images": [], "capacity": {"cpu_millis": 1000, "memory_bytes": 536870912, "disk_bytes": 2147483648}`
 	cases := []struct {
 		name string
 		body string
@@ -380,8 +380,10 @@ func TestLoadReportsAdapterIsolation(t *testing.T) {
 	}{
 		{"isolated is vm", `"adapter": "isolated"`, true, execenv.IsolationVM},
 		{"memory is none", `"adapter": "memory"`, true, execenv.IsolationNone},
-		{"disk below minimum", `"adapter": "isolated", "disk_bytes": 1048576`, false, ""},
-		{"disk at minimum", `"adapter": "isolated", "disk_bytes": 67108864`, true, execenv.IsolationVM},
+		{"grant disk below minimum", `"adapter": "isolated", "grant_defaults": {"cpu_millis": 1000, "memory_bytes": 536870912, "disk_bytes": 1048576}`, false, ""},
+		{"grant disk at minimum", `"adapter": "isolated", "grant_defaults": {"cpu_millis": 1000, "memory_bytes": 536870912, "disk_bytes": 67108864}`, true, execenv.IsolationVM},
+		{"defaults above the maximum", `"adapter": "isolated", "grant_max": {"cpu_millis": 500}`, false, ""},
+		{"negative overcommit", `"adapter": "isolated", "cpu_overcommit": -1`, false, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -399,7 +401,7 @@ func TestLoadReportsAdapterIsolation(t *testing.T) {
 func TestAdapterReportsVMIsolation(t *testing.T) {
 	t.Parallel()
 	cfg, err := Load(writeConfig(t, `{"listen": "127.0.0.1:0", "token": "secret", "security": "insecure_local",
-		"adapter": "isolated", "work_dir": "`+t.TempDir()+`", "images": [], "slots": 1, "disk_bytes": 134217728}`))
+		"adapter": "isolated", "work_dir": "`+t.TempDir()+`", "images": [], "capacity": {"cpu_millis": 1000, "memory_bytes": 536870912, "disk_bytes": 2147483648}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -424,7 +426,7 @@ func TestAdapterReportsVMIsolation(t *testing.T) {
 
 func TestLoadJailUIDBase(t *testing.T) {
 	t.Parallel()
-	base := `"listen": "127.0.0.1:0", "token": "secret", "security": "insecure_local", "adapter": "isolated", "images": [], "slots": 1`
+	base := `"listen": "127.0.0.1:0", "token": "secret", "security": "insecure_local", "adapter": "isolated", "images": [], "capacity": {"cpu_millis": 1000, "memory_bytes": 536870912, "disk_bytes": 2147483648}`
 	for body, ok := range map[string]bool{
 		`, "jail_uid_base": 3000000`:    true,
 		`, "jail_uid_base": -1`:         false,

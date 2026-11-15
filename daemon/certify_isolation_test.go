@@ -163,14 +163,14 @@ func startCertifyHost(t *testing.T) *remote.Client {
 		t.Fatalf("build execenv: %v\n%s", err, out)
 	}
 	opts := ctl.Options{
-		Prefix:  filepath.Join(root, "usr", "local"),
-		Sysconf: filepath.Join(root, "etc", "execenv"),
-		State:   filepath.Join(root, "var", "lib", "execenv"),
-		Listen:  "127.0.0.1:0",
-		Slots:   1,
-		Execenv: stub,
-		NoStart: true,
-		NoFetch: true,
+		Prefix:   filepath.Join(root, "usr", "local"),
+		Sysconf:  filepath.Join(root, "etc", "execenv"),
+		State:    filepath.Join(root, "var", "lib", "execenv"),
+		Listen:   "127.0.0.1:0",
+		Capacity: daemon.Resources{CPUMillis: 1000, MemoryBytes: 512 << 20, DiskBytes: 2 << 30},
+		Execenv:  stub,
+		NoStart:  true,
+		NoFetch:  true,
 	}
 	if err := ctl.Bootstrap(opts, io.Discard); err != nil {
 		t.Fatalf("bootstrap: %v", err)

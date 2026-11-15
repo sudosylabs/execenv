@@ -23,7 +23,6 @@ const (
 	supervisorName  = "jailer"
 	runtimeVersion  = "v1.16.1"
 	defaultListen   = "0.0.0.0:8443"
-	defaultSlots    = 8
 	defaultPrefix   = "/usr/local"
 	defaultSysconf  = "/etc/execenv"
 	defaultState    = "/var/lib/execenv"
@@ -50,8 +49,10 @@ type Options struct {
 	State   string
 	Device  string
 	Listen  string
-	Slots   int
-	Execenv string
+	// Capacity overrides what bootstrap measures on the machine; zero
+	// fields keep the measurement, or what an earlier bootstrap wrote.
+	Capacity daemon.Resources
+	Execenv  string
 	// Mkfs is the ext4 formatter for workspace disks. Empty looks it up on
 	// PATH.
 	Mkfs       string
@@ -77,7 +78,6 @@ func Defaults() Options {
 		State:   defaultState,
 		Device:  defaultDevice,
 		Listen:  defaultListen,
-		Slots:   defaultSlots,
 	}
 }
 
@@ -97,9 +97,6 @@ func (o Options) resolved() Options {
 	}
 	if out.Listen == "" {
 		out.Listen = defaultListen
-	}
-	if out.Slots <= 0 {
-		out.Slots = defaultSlots
 	}
 	return out
 }
@@ -350,7 +347,7 @@ func writeHostConfig(opts Options, mkfs string) error {
 	doc.Device = opts.Device
 	doc.Runtime = opts.runtimePath()
 	doc.Supervisor = opts.supervisorPath()
-	doc.Slots = opts.Slots
+	doc.Capacity = capacityFor(opts, existing.Capacity)
 	doc.OperatorSocket = opts.operatorSocket()
 	if doc.Adapter == "" {
 		doc.Adapter = adapterIsolated

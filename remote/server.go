@@ -299,6 +299,17 @@ func (h *server) ControlStatus(ctx context.Context, req *connect.Request[execenv
 	return connect.NewResponse(wire.ReceiptTo(receipt)), nil
 }
 
+func (h *server) UpdateLimits(ctx context.Context, req *connect.Request[execenvv1.UpdateLimitsRequest]) (*connect.Response[execenvv1.UpdateLimitsResponse], error) {
+	env, fence, err := h.fenced(req.Msg.GetFence())
+	if err != nil {
+		return nil, wire.Error(err)
+	}
+	if err := env.UpdateLimits(ctx, fence, wire.LimitsFrom(req.Msg.GetLimits())); err != nil {
+		return nil, wire.Error(err)
+	}
+	return connect.NewResponse(&execenvv1.UpdateLimitsResponse{}), nil
+}
+
 // JournalService
 
 func (h *server) UploadContent(ctx context.Context, stream *connect.ClientStream[execenvv1.UploadContentRequest]) (*connect.Response[execenvv1.ContentReference], error) {

@@ -275,6 +275,19 @@ func (e *remoteEnv) ControlStatus(ctx context.Context) (execenv.ControlReceipt, 
 	return receipt, nil
 }
 
+func (e *remoteEnv) UpdateLimits(ctx context.Context, fence execenv.ProjectionFence, limits execenv.Limits) error {
+	if err := e.guard(fence); err != nil {
+		return err
+	}
+	if err := execenv.ValidateLimits(limits); err != nil {
+		return err
+	}
+	ctx, cancel := e.client.call(ctx)
+	defer cancel()
+	_, err := e.client.control.UpdateLimits(ctx, connect.NewRequest(&execenvv1.UpdateLimitsRequest{Fence: wire.FenceTo(fence), Limits: wire.LimitsTo(limits)}))
+	return wire.HostError("update_limits", err)
+}
+
 // UploadProjectionContent streams body on the bulk connection. The host
 // hashes what it receives; a reference that does not match what was sent
 // is refused here.

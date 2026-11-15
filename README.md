@@ -85,8 +85,8 @@ import (
 func main() {
 	ctx := context.Background()
 	host, err := memory.New(memory.Config{
-		Images: []execenv.Image{"python", "default"},
-		Slots:  4,
+		Images:   []execenv.Image{"python", "default"},
+		Capacity: execenv.DefaultGrant.Times(4), // room for four default grants
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -99,8 +99,8 @@ func run(ctx context.Context, host execenv.Host) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("usable=%v images=%v networks=%v slots=%d release=%s\n",
-		rep.Usable, rep.Images, rep.Networks, rep.Slots, rep.Release)
+	fmt.Printf("usable=%v images=%v networks=%v free memory=%d release=%s\n",
+		rep.Usable, rep.Images, rep.Networks, rep.MemoryBytes.Free, rep.Release)
 }
 ```
 
@@ -181,11 +181,16 @@ if !rep.Usable {
 ```
 
 `Images` is the catalog ids on that machine. `Networks` is the network modes
-the host offers. `Slots` is how many more grants it has room for. `Grants`
-is how many it holds now, and `Lost` how many it has lost since it started
-(see Lost grants). `Release` is the host's release, for display. One client
-talks to one host. If you have several
-machines, you choose among them.
+the host offers. `CPUMillis`, `MemoryBytes` and `DiskBytes` are its
+capacity, each with `Total`, `Reserved` and `Free`: every grant reserves its
+whole size from the moment it starts until it is revoked or lost. CPU totals
+already include the operator's overcommit; memory is never overcommitted.
+`Defaults` is what a grant gets when its Spec leaves a size unset, and
+`GrantMax` the most one grant may ask for. `Grants` is how many grants the
+host holds now, and `Lost` how many it has lost since it started (see Lost
+grants). `Release` is the host's release, for display. One client talks to
+one host. If you have several machines, you choose among them, by the
+capacity each reports.
 
 `Usable` false means the host takes no new grants; `Reason` says why.
 `execenv.ReasonDraining` means its operator is draining it before a
@@ -208,7 +213,22 @@ env, err := host.Ensure(ctx, execenv.Spec{
 	ID:      "job-7f3a",
 	Image:   "python",
 	Network: execenv.NetworkNone,
+	// Zero fields use the host's Defaults.
+	Resources: execenv.Resources{CPUMillis: 2000, MemoryBytes: 2 << 30, DiskBytes: 8 << 30},
+	// Revoke the grant two hours after it starts, and freeze it after
+	// fifteen idle minutes.
+	WallTimeout: 2 * time.Hour,
+	IdleTimeout: 15 * time.Minute,
+	IdleAction:  execenv.IdleFreeze,
+	Labels:      map[string]string{"queue": "nightly"},
+	Limits: execenv.Limits{
+		DiskBytes: execenv.TokenBucket{Rate: 64 << 20, Burst: 256 << 20},
+	},
 })
+var short *execenv.CapacityError
+if errors.As(err, &short) {
+	// short.Resource is what this host lacks; try another host.
+}
 if err != nil {
 	return err
 }
@@ -217,10 +237,11 @@ if err != nil {
 | Situation | Result |
 | --- | --- |
 | New id | occupies a grant |
-| Same id, same image, same network | returns the existing occupancy |
-| Same id, different image or network | `ErrConflict` |
+| Same id and spec (Limits aside) | returns the existing occupancy |
+| Same id, any other field different | `ErrConflict` |
 | Image not installed on the host | `ErrUnknownImage` |
-| No remaining slots | `ErrCapacity` |
+| Does not fit in what is free, or above `GrantMax` | `*CapacityError`, matching `ErrCapacity`, naming the short resource |
+| Size below the minimums (100 CPU millis, 128 MiB, 64 MiB disk) | `ErrInvalid` |
 | Host draining, id not held | `ErrDraining` |
 | Id was lost and not yet revoked | `ErrLost` |
 | Allowlist requested, host has no dests | `ErrNetwork` |
@@ -229,7 +250,31 @@ if err != nil {
 
 Ids and image names are 1–64 characters in `[A-Za-z0-9._-:]`. Concurrent
 identical `Ensure` calls for one new id coalesce into one launch. Ensure does
-not download images; occupying a new grant starts its guest.
+not download images; occupying a new grant starts its guest, and it never
+queues: a grant that does not fit is refused at once.
+
+The guest sees enough virtual CPUs to use its `CPUMillis` and is throttled
+to exactly that; `MemoryBytes` is its memory; `DiskBytes` is its workspace
+disk, shared by the projected tree and the shell's scratch home.
+
+A grant is busy while a terminal is attached to it and after any call on
+it. Once idle for `IdleTimeout` the host applies `IdleAction`: `IdleRevoke`
+revokes it; `IdleFreeze` freezes it as a fenced freeze would, keeping the
+caller's fence revision, so `ControlStatus` shows `frozen` and the caller
+thaws it with its next revision. `WallTimeout` revokes the grant that long
+after it started, busy or not. Labels are the caller's, up to 16 pairs and
+512 bytes; the host never reads them.
+
+`Limits` throttle the grant's workspace disk (operations and bytes per
+second) and its network device (bytes per second each way) with token
+buckets: a rate, and a burst allowed once. A zero rate is no limit. Change
+them while the grant runs with `UpdateLimits`, under the current fence:
+
+```go
+err := env.UpdateLimits(ctx, fence, execenv.Limits{
+	DiskOps: execenv.TokenBucket{Rate: 2000},
+})
+```
 
 Every `Env` has the whole contract below: fenced control, journal projection,
 semantic observations, one terminal and revoke. There is nothing to discover
@@ -275,7 +320,7 @@ gate closed and pauses the instance again. Any error requires reconciliation; it
 is never evidence that the requested state was reached.
 
 Revocation is terminal even if destruction initially fails. Failed destruction
-retains the occupancy's slot until a successful retry. Administrative
+keeps the grant's resources reserved until a successful retry. Administrative
 `Host.Revoke(id)` destroys the current grant; `Env.Revoke` targets only the
 captured epoch and cannot destroy a replacement. Remote attach requests bind
 their captured epoch; input, resize and hangup name the attachment by an
@@ -351,9 +396,9 @@ Freeze and thaw preserve the projection; neither requires a new snapshot.
 
 File contents travel separately as immutable, scoped SHA-256 references, within
 the 10-MiB file and 50-MiB tree limits. Unconsumed content expires after five
-minutes, with at most 512 handles per environment. The remote wire uses 64-KiB
-chunks and four active upload slots per listener; incomplete uploads expire
-after 30 idle seconds and are released on disconnect. References cannot name
+minutes, with at most 512 handles per environment. Over the remote wire each
+upload is one stream of 64-KiB messages on the content connection; one that
+breaks off leaves nothing behind. References cannot name
 paths, URLs, credentials, another environment or observation content.
 
 Paths are POSIX-relative: no leading `/`, no `..`, no NUL, UTF-8.
@@ -401,8 +446,8 @@ Each ordered event binds its original projected cursor and version, an
 epoch-stable node identity and immutable captured bytes; it never means
 reading the current path later. Directory moves are single subtree
 operations, parent creates precede children, and recursive directory deletion
-is explicit. Download streams use 64-KiB chunks, four active listener-wide
-slots, immutable-reference verification, and idle expiry.
+is explicit. Content is read as one stream of 64-KiB messages, checked
+against its reference's size and digest before the reader reports its end.
 
 After accepting a guest event durably, call `ConfirmObservationProjection` with
 its host sequence and the exact resulting journal mutation before acknowledging
@@ -601,7 +646,7 @@ before this call.
 
 A grant's environment can end without a revoke: its machine exits, its
 guest kernel panics, or the host loses the guest link for good. The host
-notices on its own. It frees the slot and cleans up as a revoke would, and
+notices on its own. It frees the grant's resources and cleans up as a revoke would, and
 every call on that occupancy fails with `ErrLost`: Attach, Control,
 ControlStatus, projection, Observe, the process log, and an attached
 terminal's Read and Write. Over the wire the same sentinel reaches the
@@ -637,7 +682,7 @@ Match with `errors.Is`. Wrappers preserve the sentinel.
 | --- | --- |
 | `ErrInvalid` | bad id, image, path, fence, or config |
 | `ErrUnknownImage` | that catalog id is not on the host |
-| `ErrCapacity` | no remaining slots |
+| `ErrCapacity` | the grant does not fit; `errors.As` a `*CapacityError` for the short resource |
 | `ErrDraining` | host is draining; it serves held grants only |
 | `ErrConflict` | live grant mismatch, stale fence, or unobserved guest change |
 | `ErrUnavailable` | host unusable, or it refused the client's credentials |
@@ -682,8 +727,8 @@ Do not log tokens, tree bodies, or PTY octets.
 | Terminals per environment | 1 |
 
 The workspace inside the guest is `/workspace`; `$HOME` is
-`/run/execenv/home`. Both share the grant's workspace disk (`disk_bytes`,
-default 2 GiB).
+`/run/execenv/home`. Both share the grant's workspace disk, its
+`Resources.DiskBytes`.
 
 ---
 
@@ -731,15 +776,22 @@ Ready is unusable or grants fail to start.
 
 ### Grant resources
 
-These Host configuration keys apply to every grant:
+Grants ask for their own size; the Host configuration says how much the host
+gives in all and what a grant gets by default:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `cpu_millis` | 1000 | vCPUs, rounded down to whole CPUs |
-| `memory_bytes` | 128 MiB | guest memory |
-| `disk_bytes` | 2 GiB | sparse workspace disk; minimum 64 MiB |
+| `capacity` | measured by bootstrap | `cpu_millis`, `memory_bytes`, `disk_bytes` the host gives grants in all |
+| `cpu_overcommit` | 1 | multiplies the CPU total; memory and disk are never overcommitted |
+| `grant_defaults` | 1000 millis, 512 MiB, 2 GiB | a grant's size where its Spec leaves one unset |
+| `grant_max` | the capacity | the most one grant may ask for |
 | `mkfs` | `mkfs.ext4` on `PATH` | formatter for workspace disks |
 | `jail_uid_base` | 2000000000 | first of 65536 host uids reserved for jailed microVM monitors |
+
+A grant's machine gets enough virtual CPUs for its `cpu_millis`; its cgroup
+throttles it to exactly that and caps its memory at its `memory_bytes` plus
+the monitor's own overhead, with no swap. Its workspace disk and network
+device carry the grant's rate limits, changeable while it runs.
 
 Each grant's monitor runs in its own jail under
 `<state>/work/jails`, as its own unprivileged uid from the
@@ -757,7 +809,7 @@ guest does not reclaim space from deleted files during a grant.
 The daemon watches every grant's machine. If a monitor exits, a guest
 panics (guests boot with `panic=1`, so a panic resets and ends the
 machine), or the guest link breaks, the daemon releases that grant's jail,
-disk, tap and uid at once, as a revoke would, and its slot is free again.
+disk, tap and uid at once, as a revoke would, and its resources are free again.
 Callers see `ErrLost`; `Ready` counts it in `Lost`.
 
 Each microVM also gets a balloon device with free page
@@ -797,7 +849,9 @@ Defaults:
 | `--sysconf` | `/etc/execenv` |
 | `--state` | `/var/lib/execenv` |
 | `--listen` | `0.0.0.0:8443` |
-| `--slots` | `8` |
+| `--cpu-millis` | every CPU, 1000 each |
+| `--memory-bytes` | the machine's memory, less 1 GiB or a tenth for the host |
+| `--disk-bytes` | 90% of the free space under `--state` |
 | `--device` | `/dev/kvm` |
 | `--mkfs` | `mkfs.ext4` on `PATH` |
 
@@ -833,7 +887,9 @@ sudo execenvctl status
 daemon does not answer on its operator socket; `grants` is how many grants
 it holds.
 
-Useful flags: `--listen`, `--slots`, `--execenv ./execenv`, `--no-start`,
+The capacity flags override what bootstrap measures; a re-run without them
+keeps the capacity already written. Useful flags: `--listen`,
+`--execenv ./execenv`, `--no-start`,
 `--no-fetch`. `--insecure` writes cleartext for loopback labs only; do
 not use it in production.
 
@@ -976,7 +1032,7 @@ That replaces `execenv` and `execenvctl` from this binary’s tag, then
 reinstalls every catalog id already on the host so the guest agent
 matches, then restarts the daemon once. Drain first (see above); without
 `--force` it refuses before replacing anything while grants are live.
-Token, TLS files, listen address, slots, and allowlist stay.
+Token, TLS files, listen address, capacity, and allowlist stay.
 If an installed id is missing from the new index, upgrade fails before
 binaries move. When everything already matches: `upgraded=already current`.
 

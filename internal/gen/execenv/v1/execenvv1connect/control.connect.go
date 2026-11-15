@@ -38,12 +38,17 @@ const (
 	// ControlServiceControlStatusProcedure is the fully-qualified name of the ControlService's
 	// ControlStatus RPC.
 	ControlServiceControlStatusProcedure = "/execenv.v1.ControlService/ControlStatus"
+	// ControlServiceUpdateLimitsProcedure is the fully-qualified name of the ControlService's
+	// UpdateLimits RPC.
+	ControlServiceUpdateLimitsProcedure = "/execenv.v1.ControlService/UpdateLimits"
 )
 
 // ControlServiceClient is a client for the execenv.v1.ControlService service.
 type ControlServiceClient interface {
 	Control(context.Context, *connect.Request[v1.ControlRequest]) (*connect.Response[v1.ControlReceipt], error)
 	ControlStatus(context.Context, *connect.Request[v1.ControlStatusRequest]) (*connect.Response[v1.ControlReceipt], error)
+	// UpdateLimits replaces the grant's device limits while it runs.
+	UpdateLimits(context.Context, *connect.Request[v1.UpdateLimitsRequest]) (*connect.Response[v1.UpdateLimitsResponse], error)
 }
 
 // NewControlServiceClient constructs a client for the execenv.v1.ControlService service. By
@@ -69,6 +74,12 @@ func NewControlServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(controlServiceMethods.ByName("ControlStatus")),
 			connect.WithClientOptions(opts...),
 		),
+		updateLimits: connect.NewClient[v1.UpdateLimitsRequest, v1.UpdateLimitsResponse](
+			httpClient,
+			baseURL+ControlServiceUpdateLimitsProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("UpdateLimits")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -76,6 +87,7 @@ func NewControlServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 type controlServiceClient struct {
 	control       *connect.Client[v1.ControlRequest, v1.ControlReceipt]
 	controlStatus *connect.Client[v1.ControlStatusRequest, v1.ControlReceipt]
+	updateLimits  *connect.Client[v1.UpdateLimitsRequest, v1.UpdateLimitsResponse]
 }
 
 // Control calls execenv.v1.ControlService.Control.
@@ -88,10 +100,17 @@ func (c *controlServiceClient) ControlStatus(ctx context.Context, req *connect.R
 	return c.controlStatus.CallUnary(ctx, req)
 }
 
+// UpdateLimits calls execenv.v1.ControlService.UpdateLimits.
+func (c *controlServiceClient) UpdateLimits(ctx context.Context, req *connect.Request[v1.UpdateLimitsRequest]) (*connect.Response[v1.UpdateLimitsResponse], error) {
+	return c.updateLimits.CallUnary(ctx, req)
+}
+
 // ControlServiceHandler is an implementation of the execenv.v1.ControlService service.
 type ControlServiceHandler interface {
 	Control(context.Context, *connect.Request[v1.ControlRequest]) (*connect.Response[v1.ControlReceipt], error)
 	ControlStatus(context.Context, *connect.Request[v1.ControlStatusRequest]) (*connect.Response[v1.ControlReceipt], error)
+	// UpdateLimits replaces the grant's device limits while it runs.
+	UpdateLimits(context.Context, *connect.Request[v1.UpdateLimitsRequest]) (*connect.Response[v1.UpdateLimitsResponse], error)
 }
 
 // NewControlServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -113,12 +132,20 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 		connect.WithSchema(controlServiceMethods.ByName("ControlStatus")),
 		connect.WithHandlerOptions(opts...),
 	)
+	controlServiceUpdateLimitsHandler := connect.NewUnaryHandler(
+		ControlServiceUpdateLimitsProcedure,
+		svc.UpdateLimits,
+		connect.WithSchema(controlServiceMethods.ByName("UpdateLimits")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/execenv.v1.ControlService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case ControlServiceControlProcedure:
 			controlServiceControlHandler.ServeHTTP(w, r)
 		case ControlServiceControlStatusProcedure:
 			controlServiceControlStatusHandler.ServeHTTP(w, r)
+		case ControlServiceUpdateLimitsProcedure:
+			controlServiceUpdateLimitsHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -134,4 +161,8 @@ func (UnimplementedControlServiceHandler) Control(context.Context, *connect.Requ
 
 func (UnimplementedControlServiceHandler) ControlStatus(context.Context, *connect.Request[v1.ControlStatusRequest]) (*connect.Response[v1.ControlReceipt], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.v1.ControlService.ControlStatus is not implemented"))
+}
+
+func (UnimplementedControlServiceHandler) UpdateLimits(context.Context, *connect.Request[v1.UpdateLimitsRequest]) (*connect.Response[v1.UpdateLimitsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.v1.ControlService.UpdateLimits is not implemented"))
 }

@@ -36,6 +36,10 @@ func requireLive(t *testing.T) {
 	}
 }
 
+// liveGrant is the size of every live test grant: small enough that a
+// laptop runs a handful at once.
+var liveGrant = execenv.Resources{CPUMillis: 1000, MemoryBytes: 256 << 20, DiskBytes: 512 << 20}
+
 func liveHost(t *testing.T, slots int, workDir string) *Host {
 	t.Helper()
 	requireLive(t)
@@ -53,8 +57,8 @@ func liveHost(t *testing.T, slots int, workDir string) *Host {
 	}
 	host, err := New(Config{
 		WorkDir:   workDir,
-		Slots:     slots,
-		DiskBytes: 512 << 20,
+		Capacity: liveGrant.Times(int64(slots)),
+		Defaults: liveGrant,
 		Images: []Image{
 			{ID: "default", Kernel: kernel, Rootfs: rootfs, Hash: hash},
 			{ID: "alt", Kernel: kernel, Rootfs: rootfs, Hash: hash},
@@ -177,9 +181,9 @@ func TestLiveStaleCleanupAfterCrash(t *testing.T) {
 func TestLiveReadyRequiresDevice(t *testing.T) {
 	requireLive(t)
 	host, err := New(Config{
-		WorkDir: t.TempDir(),
-		Slots:   1,
-		Images:  []Image{writeCatalogImage(t, t.TempDir(), "default", "rootfs")},
+		WorkDir:  t.TempDir(),
+		Capacity: execenv.DefaultGrant.Times(1),
+		Images:   []Image{writeCatalogImage(t, t.TempDir(), "default", "rootfs")},
 	})
 	if err != nil {
 		t.Fatal(err)

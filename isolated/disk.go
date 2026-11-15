@@ -10,12 +10,10 @@ import (
 )
 
 const (
-	// defaultDiskBytes is the per-grant workspace disk when the operator
-	// sets none. The file is sparse: only written blocks use host disk.
-	defaultDiskBytes = 2 << 30
 	// minDiskBytes keeps mkfs from producing a filesystem too small to
-	// hold its own metadata plus a useful tree.
-	minDiskBytes = 64 << 20
+	// hold its own metadata plus a useful tree. The file is sparse: only
+	// written blocks use host disk.
+	minDiskBytes = execenv.MinGrantDiskBytes
 	defaultMkfs  = "mkfs.ext4"
 	// diskName is the grant-relative file that backs the writable disk.
 	diskName = "workspace.ext4"
@@ -25,13 +23,6 @@ const (
 	diskWorkspace = "workspace"
 	diskHome      = "home"
 )
-
-func diskBytes(cfg Config) int64 {
-	if cfg.DiskBytes <= 0 {
-		return defaultDiskBytes
-	}
-	return cfg.DiskBytes
-}
 
 // createWorkspaceDisk makes a sparse ext4 image at path. Inode tables and
 // the journal are left uninitialised because a fresh sparse file already

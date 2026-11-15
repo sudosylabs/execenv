@@ -73,6 +73,94 @@ func (ControlState) EnumDescriptor() ([]byte, []int) {
 	return file_execenv_v1_control_proto_rawDescGZIP(), []int{0}
 }
 
+type UpdateLimitsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Fence         *Fence                 `protobuf:"bytes,1,opt,name=fence,proto3" json:"fence,omitempty"`
+	Limits        *Limits                `protobuf:"bytes,2,opt,name=limits,proto3" json:"limits,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateLimitsRequest) Reset() {
+	*x = UpdateLimitsRequest{}
+	mi := &file_execenv_v1_control_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateLimitsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateLimitsRequest) ProtoMessage() {}
+
+func (x *UpdateLimitsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_execenv_v1_control_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateLimitsRequest.ProtoReflect.Descriptor instead.
+func (*UpdateLimitsRequest) Descriptor() ([]byte, []int) {
+	return file_execenv_v1_control_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *UpdateLimitsRequest) GetFence() *Fence {
+	if x != nil {
+		return x.Fence
+	}
+	return nil
+}
+
+func (x *UpdateLimitsRequest) GetLimits() *Limits {
+	if x != nil {
+		return x.Limits
+	}
+	return nil
+}
+
+type UpdateLimitsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateLimitsResponse) Reset() {
+	*x = UpdateLimitsResponse{}
+	mi := &file_execenv_v1_control_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateLimitsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateLimitsResponse) ProtoMessage() {}
+
+func (x *UpdateLimitsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_execenv_v1_control_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateLimitsResponse.ProtoReflect.Descriptor instead.
+func (*UpdateLimitsResponse) Descriptor() ([]byte, []int) {
+	return file_execenv_v1_control_proto_rawDescGZIP(), []int{1}
+}
+
 type ControlRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Fence         *Fence                 `protobuf:"bytes,1,opt,name=fence,proto3" json:"fence,omitempty"`
@@ -83,7 +171,7 @@ type ControlRequest struct {
 
 func (x *ControlRequest) Reset() {
 	*x = ControlRequest{}
-	mi := &file_execenv_v1_control_proto_msgTypes[0]
+	mi := &file_execenv_v1_control_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -95,7 +183,7 @@ func (x *ControlRequest) String() string {
 func (*ControlRequest) ProtoMessage() {}
 
 func (x *ControlRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_v1_control_proto_msgTypes[0]
+	mi := &file_execenv_v1_control_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -108,7 +196,7 @@ func (x *ControlRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ControlRequest.ProtoReflect.Descriptor instead.
 func (*ControlRequest) Descriptor() ([]byte, []int) {
-	return file_execenv_v1_control_proto_rawDescGZIP(), []int{0}
+	return file_execenv_v1_control_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *ControlRequest) GetFence() *Fence {
@@ -135,7 +223,7 @@ type ControlStatusRequest struct {
 
 func (x *ControlStatusRequest) Reset() {
 	*x = ControlStatusRequest{}
-	mi := &file_execenv_v1_control_proto_msgTypes[1]
+	mi := &file_execenv_v1_control_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -147,7 +235,7 @@ func (x *ControlStatusRequest) String() string {
 func (*ControlStatusRequest) ProtoMessage() {}
 
 func (x *ControlStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_v1_control_proto_msgTypes[1]
+	mi := &file_execenv_v1_control_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -160,7 +248,7 @@ func (x *ControlStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ControlStatusRequest.ProtoReflect.Descriptor instead.
 func (*ControlStatusRequest) Descriptor() ([]byte, []int) {
-	return file_execenv_v1_control_proto_rawDescGZIP(), []int{1}
+	return file_execenv_v1_control_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *ControlStatusRequest) GetGrantId() string {
@@ -188,7 +276,7 @@ type ControlReceipt struct {
 
 func (x *ControlReceipt) Reset() {
 	*x = ControlReceipt{}
-	mi := &file_execenv_v1_control_proto_msgTypes[2]
+	mi := &file_execenv_v1_control_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -200,7 +288,7 @@ func (x *ControlReceipt) String() string {
 func (*ControlReceipt) ProtoMessage() {}
 
 func (x *ControlReceipt) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_v1_control_proto_msgTypes[2]
+	mi := &file_execenv_v1_control_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -213,7 +301,7 @@ func (x *ControlReceipt) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ControlReceipt.ProtoReflect.Descriptor instead.
 func (*ControlReceipt) Descriptor() ([]byte, []int) {
-	return file_execenv_v1_control_proto_rawDescGZIP(), []int{2}
+	return file_execenv_v1_control_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ControlReceipt) GetFence() *Fence {
@@ -242,7 +330,11 @@ var File_execenv_v1_control_proto protoreflect.FileDescriptor
 const file_execenv_v1_control_proto_rawDesc = "" +
 	"\n" +
 	"\x18execenv/v1/control.proto\x12\n" +
-	"execenv.v1\x1a\x17execenv/v1/common.proto\"i\n" +
+	"execenv.v1\x1a\x17execenv/v1/common.proto\"j\n" +
+	"\x13UpdateLimitsRequest\x12'\n" +
+	"\x05fence\x18\x01 \x01(\v2\x11.execenv.v1.FenceR\x05fence\x12*\n" +
+	"\x06limits\x18\x02 \x01(\v2\x12.execenv.v1.LimitsR\x06limits\"\x16\n" +
+	"\x14UpdateLimitsResponse\"i\n" +
 	"\x0eControlRequest\x12'\n" +
 	"\x05fence\x18\x01 \x01(\v2\x11.execenv.v1.FenceR\x05fence\x12.\n" +
 	"\x05state\x18\x02 \x01(\x0e2\x18.execenv.v1.ControlStateR\x05state\"G\n" +
@@ -257,10 +349,11 @@ const file_execenv_v1_control_proto_rawDesc = "" +
 	"\x19CONTROL_STATE_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15CONTROL_STATE_RUNNING\x10\x01\x12\x18\n" +
 	"\x14CONTROL_STATE_FROZEN\x10\x02\x12\x19\n" +
-	"\x15CONTROL_STATE_REVOKED\x10\x032\xa2\x01\n" +
+	"\x15CONTROL_STATE_REVOKED\x10\x032\xf5\x01\n" +
 	"\x0eControlService\x12A\n" +
 	"\aControl\x12\x1a.execenv.v1.ControlRequest\x1a\x1a.execenv.v1.ControlReceipt\x12M\n" +
-	"\rControlStatus\x12 .execenv.v1.ControlStatusRequest\x1a\x1a.execenv.v1.ControlReceiptBAZ?github.com/sudosylabs/execenv/internal/gen/execenv/v1;execenvv1b\x06proto3"
+	"\rControlStatus\x12 .execenv.v1.ControlStatusRequest\x1a\x1a.execenv.v1.ControlReceipt\x12Q\n" +
+	"\fUpdateLimits\x12\x1f.execenv.v1.UpdateLimitsRequest\x1a .execenv.v1.UpdateLimitsResponseBAZ?github.com/sudosylabs/execenv/internal/gen/execenv/v1;execenvv1b\x06proto3"
 
 var (
 	file_execenv_v1_control_proto_rawDescOnce sync.Once
@@ -275,28 +368,35 @@ func file_execenv_v1_control_proto_rawDescGZIP() []byte {
 }
 
 var file_execenv_v1_control_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_execenv_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_execenv_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_execenv_v1_control_proto_goTypes = []any{
 	(ControlState)(0),            // 0: execenv.v1.ControlState
-	(*ControlRequest)(nil),       // 1: execenv.v1.ControlRequest
-	(*ControlStatusRequest)(nil), // 2: execenv.v1.ControlStatusRequest
-	(*ControlReceipt)(nil),       // 3: execenv.v1.ControlReceipt
-	(*Fence)(nil),                // 4: execenv.v1.Fence
+	(*UpdateLimitsRequest)(nil),  // 1: execenv.v1.UpdateLimitsRequest
+	(*UpdateLimitsResponse)(nil), // 2: execenv.v1.UpdateLimitsResponse
+	(*ControlRequest)(nil),       // 3: execenv.v1.ControlRequest
+	(*ControlStatusRequest)(nil), // 4: execenv.v1.ControlStatusRequest
+	(*ControlReceipt)(nil),       // 5: execenv.v1.ControlReceipt
+	(*Fence)(nil),                // 6: execenv.v1.Fence
+	(*Limits)(nil),               // 7: execenv.v1.Limits
 }
 var file_execenv_v1_control_proto_depIdxs = []int32{
-	4, // 0: execenv.v1.ControlRequest.fence:type_name -> execenv.v1.Fence
-	0, // 1: execenv.v1.ControlRequest.state:type_name -> execenv.v1.ControlState
-	4, // 2: execenv.v1.ControlReceipt.fence:type_name -> execenv.v1.Fence
-	0, // 3: execenv.v1.ControlReceipt.state:type_name -> execenv.v1.ControlState
-	1, // 4: execenv.v1.ControlService.Control:input_type -> execenv.v1.ControlRequest
-	2, // 5: execenv.v1.ControlService.ControlStatus:input_type -> execenv.v1.ControlStatusRequest
-	3, // 6: execenv.v1.ControlService.Control:output_type -> execenv.v1.ControlReceipt
-	3, // 7: execenv.v1.ControlService.ControlStatus:output_type -> execenv.v1.ControlReceipt
-	6, // [6:8] is the sub-list for method output_type
-	4, // [4:6] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	6, // 0: execenv.v1.UpdateLimitsRequest.fence:type_name -> execenv.v1.Fence
+	7, // 1: execenv.v1.UpdateLimitsRequest.limits:type_name -> execenv.v1.Limits
+	6, // 2: execenv.v1.ControlRequest.fence:type_name -> execenv.v1.Fence
+	0, // 3: execenv.v1.ControlRequest.state:type_name -> execenv.v1.ControlState
+	6, // 4: execenv.v1.ControlReceipt.fence:type_name -> execenv.v1.Fence
+	0, // 5: execenv.v1.ControlReceipt.state:type_name -> execenv.v1.ControlState
+	3, // 6: execenv.v1.ControlService.Control:input_type -> execenv.v1.ControlRequest
+	4, // 7: execenv.v1.ControlService.ControlStatus:input_type -> execenv.v1.ControlStatusRequest
+	1, // 8: execenv.v1.ControlService.UpdateLimits:input_type -> execenv.v1.UpdateLimitsRequest
+	5, // 9: execenv.v1.ControlService.Control:output_type -> execenv.v1.ControlReceipt
+	5, // 10: execenv.v1.ControlService.ControlStatus:output_type -> execenv.v1.ControlReceipt
+	2, // 11: execenv.v1.ControlService.UpdateLimits:output_type -> execenv.v1.UpdateLimitsResponse
+	9, // [9:12] is the sub-list for method output_type
+	6, // [6:9] is the sub-list for method input_type
+	6, // [6:6] is the sub-list for extension type_name
+	6, // [6:6] is the sub-list for extension extendee
+	0, // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_execenv_v1_control_proto_init() }
@@ -311,7 +411,7 @@ func file_execenv_v1_control_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_execenv_v1_control_proto_rawDesc), len(file_execenv_v1_control_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   3,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

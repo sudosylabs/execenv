@@ -24,8 +24,9 @@ import (
 )
 
 // Factory returns a Host isolated enough for one conformance subtest.
-// The host must advertise images "default" and "alt" and accept two grants,
-// and must apply cfg.
+// The host must advertise images "default" and "alt", must apply cfg, and
+// must have room for exactly two grants of its default size: twice its
+// Defaults in every resource, and grant maximums no smaller than Defaults.
 type Factory func(t *testing.T, cfg Config) execenv.Host
 
 // Config is what a subtest needs from the host it asks for.
@@ -41,6 +42,7 @@ func Run(t *testing.T, factory Factory) {
 	runControl(t, factory)
 	runProjection(t, factory)
 	runTerminal(t, factory)
+	runResources(t, factory)
 
 	t.Run("ready reports the default image", func(t *testing.T) {
 		host := factory(t, Config{})
@@ -57,8 +59,13 @@ func Run(t *testing.T, factory Factory) {
 		if !hasNetwork(report.Networks, execenv.NetworkNone) {
 			t.Fatalf("Ready() Networks = %v, want NetworkNone", report.Networks)
 		}
-		if report.Slots < 1 {
-			t.Fatalf("Ready() Slots = %d, want at least 1", report.Slots)
+		for _, c := range []execenv.Capacity{report.CPUMillis, report.MemoryBytes, report.DiskBytes} {
+			if c.Total <= 0 || c.Free != c.Total || c.Reserved != 0 {
+				t.Fatalf("Ready() capacity = %+v, want all of it free", c)
+			}
+		}
+		if report.Defaults.CPUMillis <= 0 || report.Defaults.MemoryBytes <= 0 || report.Defaults.DiskBytes <= 0 {
+			t.Fatalf("Ready() Defaults = %+v", report.Defaults)
 		}
 	})
 
@@ -137,7 +144,7 @@ func Run(t *testing.T, factory Factory) {
 		}
 	})
 
-	t.Run("ensure refuses a third grant when only two slots exist", func(t *testing.T) {
+	t.Run("ensure refuses a third grant when only two fit", func(t *testing.T) {
 		host := factory(t, Config{})
 		if _, err := host.Ensure(context.Background(), execenv.Spec{ID: "grant-1", Image: "default"}); err != nil {
 			t.Fatalf("Ensure() error = %v", err)
@@ -148,6 +155,10 @@ func Run(t *testing.T, factory Factory) {
 		_, err := host.Ensure(context.Background(), execenv.Spec{ID: "grant-3", Image: "default"})
 		if !errors.Is(err, execenv.ErrCapacity) {
 			t.Fatalf("Ensure() error = %v, want ErrCapacity", err)
+		}
+		var short *execenv.CapacityError
+		if !errors.As(err, &short) || short.Free != 0 || short.Requested <= 0 {
+			t.Fatalf("Ensure() error = %#v, want the short resource with nothing free", err)
 		}
 	})
 

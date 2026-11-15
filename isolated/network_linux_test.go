@@ -146,9 +146,9 @@ func TestLiveAllowlistDeniesFromGuest(t *testing.T) {
 		t.Fatal(err)
 	}
 	host, err := New(Config{
-		WorkDir: t.TempDir(),
-		Slots:   1,
-		Allow:   []string{"203.0.113.1"},
+		WorkDir:  t.TempDir(),
+		Capacity: execenv.DefaultGrant.Times(1),
+		Allow:    []string{"203.0.113.1"},
 		Images: []Image{{
 			ID:     "fixture",
 			Kernel: kernel,

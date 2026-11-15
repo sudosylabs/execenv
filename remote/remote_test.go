@@ -21,7 +21,7 @@ func TestConformance(t *testing.T) {
 		t.Helper()
 		inner, err := memory.New(memory.Config{
 			Images:        []execenv.Image{"default", "alt"},
-			Slots:         2,
+			Capacity:      execenv.DefaultGrant.Times(2),
 			TerminalGrace: cfg.TerminalGrace,
 		})
 		if err != nil {
@@ -36,7 +36,7 @@ func TestConformance(t *testing.T) {
 func TestLossConformance(t *testing.T) {
 	execenvtest.RunLoss(t, func(t *testing.T) execenvtest.Lossy {
 		t.Helper()
-		inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Slots: 2})
+		inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Capacity: execenv.DefaultGrant.Times(2)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -49,7 +49,7 @@ func TestLossConformance(t *testing.T) {
 }
 
 func TestDrainingCrossesTheWire(t *testing.T) {
-	inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Slots: 2})
+	inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Capacity: execenv.DefaultGrant.Times(2)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestAttachEchoesBytes(t *testing.T) {
 }
 
 func TestAttachKeepsOutputProducedBeforeReply(t *testing.T) {
-	inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Slots: 1})
+	inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Capacity: execenv.DefaultGrant.Times(1)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestAttachKeepsOutputProducedBeforeReply(t *testing.T) {
 }
 
 func TestDifferentGrantsDoNotBlockEachOther(t *testing.T) {
-	inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Slots: 2})
+	inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Capacity: execenv.DefaultGrant.Times(2)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +226,7 @@ func TestDifferentGrantsDoNotBlockEachOther(t *testing.T) {
 }
 
 func TestObservationsReplayAcrossRemoteReconnect(t *testing.T) {
-	inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Slots: 1})
+	inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Capacity: execenv.DefaultGrant.Times(1)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,8 +317,8 @@ func TestDroppedPtyIsHangupNotRevoke(t *testing.T) {
 func startLoopback(t *testing.T) execenv.Host {
 	t.Helper()
 	inner, err := memory.New(memory.Config{
-		Images: []execenv.Image{"default", "alt"},
-		Slots:  2,
+		Images:   []execenv.Image{"default", "alt"},
+		Capacity: execenv.DefaultGrant.Times(2),
 	})
 	if err != nil {
 		t.Fatal(err)

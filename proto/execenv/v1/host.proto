@@ -3,6 +3,7 @@ syntax = "proto3";
 package execenv.v1;
 
 import "execenv/v1/common.proto";
+import "google/protobuf/duration.proto";
 
 option go_package = "github.com/sudosylabs/execenv/internal/gen/execenv/v1;execenvv1";
 
@@ -44,17 +45,42 @@ message Report {
   string reason = 2;
   repeated string images = 3;
   repeated Network networks = 4;
-  int64 slots = 5;
-  int64 grants = 6;
-  int64 lost = 7;
-  string release = 8;
-  Isolation isolation = 9;
+  int64 grants = 5;
+  int64 lost = 6;
+  string release = 7;
+  Isolation isolation = 8;
+  // The host's capacity. CPU already includes the operator's overcommit;
+  // memory is never overcommitted.
+  Capacity cpu_millis = 9;
+  Capacity memory_bytes = 10;
+  Capacity disk_bytes = 11;
+  // defaults fill a spec's zero resources; grant_max bounds one grant.
+  Resources defaults = 12;
+  Resources grant_max = 13;
+}
+
+message Capacity {
+  int64 total = 1;
+  int64 reserved = 2;
+  int64 free = 3;
+}
+
+enum IdleAction {
+  IDLE_ACTION_UNSPECIFIED = 0;
+  IDLE_ACTION_FREEZE = 1;
+  IDLE_ACTION_REVOKE = 2;
 }
 
 message Spec {
   string id = 1;
   string image = 2;
   Network network = 3;
+  Resources resources = 4;
+  google.protobuf.Duration wall_timeout = 5;
+  google.protobuf.Duration idle_timeout = 6;
+  IdleAction idle_action = 7;
+  map<string, string> labels = 8;
+  Limits limits = 9;
 }
 
 message EnsureGrantRequest {

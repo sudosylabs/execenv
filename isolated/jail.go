@@ -26,6 +26,7 @@ const (
 	jailDisk    = diskName
 	jailConfig  = "machine.json"
 	jailLinkSoc = "guest.sock"
+	jailAPISock = "api.sock"
 	// defaultJailUIDBase is the first host uid (and gid) given to a jailed
 	// monitor. Each live grant holds its own uid so one escaped monitor
 	// cannot signal, trace or read another. The range sits far above

@@ -44,7 +44,7 @@ func TestNewCleansStaleGrantsAndLocksWorkDir(t *testing.T) {
 	}
 	imageDir := t.TempDir()
 	image := writeCatalogImage(t, imageDir, "default", "root")
-	host, err := New(Config{WorkDir: workDir, Images: []Image{image}, Slots: 1})
+	host, err := New(Config{WorkDir: workDir, Images: []Image{image}, Capacity: execenv.DefaultGrant.Times(1)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestNewCleansStaleGrantsAndLocksWorkDir(t *testing.T) {
 	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("stale grant stat error = %v, want not exist", err)
 	}
-	if _, err := New(Config{WorkDir: workDir, Images: []Image{image}, Slots: 1}); err == nil {
+	if _, err := New(Config{WorkDir: workDir, Images: []Image{image}, Capacity: execenv.DefaultGrant.Times(1)}); err == nil {
 		t.Fatal("second host acquired the same work directory")
 	}
 }
@@ -64,10 +64,10 @@ func TestReadyFailsClosedWhenDeviceMissing(t *testing.T) {
 	}
 	dir := t.TempDir()
 	host, err := New(Config{
-		WorkDir: t.TempDir(),
-		Slots:   1,
-		Device:  filepath.Join(dir, "missing"),
-		Images:  []Image{writeCatalogImage(t, dir, "default", "rootfs")},
+		WorkDir:  t.TempDir(),
+		Capacity: execenv.DefaultGrant.Times(1),
+		Device:   filepath.Join(dir, "missing"),
+		Images:   []Image{writeCatalogImage(t, dir, "default", "rootfs")},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -313,9 +313,9 @@ func testHost(t *testing.T, probe func() error, launch launcher) *Host {
 func testHostWithImages(t *testing.T, probe func() error, launch launcher, images ...Image) *Host {
 	t.Helper()
 	h, err := New(Config{
-		WorkDir: t.TempDir(),
-		Slots:   2,
-		Images:  images,
+		WorkDir:  t.TempDir(),
+		Capacity: execenv.DefaultGrant.Times(2),
+		Images:   images,
 	})
 	if err != nil {
 		t.Fatal(err)

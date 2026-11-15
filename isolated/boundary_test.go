@@ -146,8 +146,8 @@ func TestEnsurePassesWorkspaceDiskAndRevokeRemovesIt(t *testing.T) {
 	req := launch.last
 	launch.mu.Unlock()
 	grantDir := filepath.Join(host.cfg.WorkDir, "grants", "grant-1")
-	if req.Disk != filepath.Join(grantDir, diskName) || req.DiskBytes != defaultDiskBytes {
-		t.Fatalf("disk = %q (%d)", req.Disk, req.DiskBytes)
+	if req.Disk != filepath.Join(grantDir, diskName) || req.Resources.DiskBytes != execenv.DefaultGrant.DiskBytes {
+		t.Fatalf("disk = %q (%d)", req.Disk, req.Resources.DiskBytes)
 	}
 	if err := os.WriteFile(req.Disk, nil, 0o600); err != nil {
 		t.Fatal(err)
@@ -163,7 +163,7 @@ func TestEnsurePassesWorkspaceDiskAndRevokeRemovesIt(t *testing.T) {
 func TestNewRejectsUndersizedDisk(t *testing.T) {
 	t.Parallel()
 	image := writeCatalogImage(t, t.TempDir(), "default", "root")
-	if _, err := New(Config{WorkDir: t.TempDir(), Images: []Image{image}, DiskBytes: minDiskBytes - 1}); !errors.Is(err, execenv.ErrInvalid) {
+	if _, err := New(Config{WorkDir: t.TempDir(), Images: []Image{image}, Capacity: execenv.DefaultGrant, Defaults: execenv.Resources{CPUMillis: 1000, MemoryBytes: 512 << 20, DiskBytes: minDiskBytes - 1}}); !errors.Is(err, execenv.ErrInvalid) {
 		t.Fatalf("New() error = %v, want ErrInvalid", err)
 	}
 }
@@ -171,7 +171,7 @@ func TestNewRejectsUndersizedDisk(t *testing.T) {
 func TestReadyReportsVMIsolation(t *testing.T) {
 	t.Parallel()
 	image := writeCatalogImage(t, t.TempDir(), "default", "root")
-	host, err := New(Config{WorkDir: t.TempDir(), Images: []Image{image}})
+	host, err := New(Config{WorkDir: t.TempDir(), Images: []Image{image}, Capacity: execenv.DefaultGrant})
 	if err != nil {
 		t.Fatal(err)
 	}

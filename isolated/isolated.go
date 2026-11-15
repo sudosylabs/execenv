@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/capacity"
 	"github.com/sudosylabs/execenv/internal/control"
+	"github.com/sudosylabs/execenv/internal/lifetime"
 	"github.com/sudosylabs/execenv/internal/terminal"
 )
 
@@ -37,18 +39,21 @@ type Image struct {
 // device, the machine monitor, and its jail supervisor. Empty values use
 // platform defaults. Those defaults live in the probe, not in this type.
 type Config struct {
-	Images      []Image
-	Slots       int
-	WorkDir     string
-	Device      string
-	Runtime     string
-	Supervisor  string
-	CPUMillis   int
-	MemoryBytes int64
-	// DiskBytes sizes each grant's sparse writable workspace disk. Zero
-	// uses 2 GiB. The disk holds the projected tree and the shell's scratch
-	// home; it is removed on revoke and on stale-grant cleanup.
-	DiskBytes int64
+	Images     []Image
+	WorkDir    string
+	Device     string
+	Runtime    string
+	Supervisor string
+	// Capacity is the host's totals. CPUMillis already includes the
+	// operator's overcommit; memory is never overcommitted. Defaults is
+	// what a Spec's zero Resources fields mean, and GrantMax the most one
+	// grant may ask for (zero fields: the totals). Each grant's sparse
+	// writable workspace disk is its DiskBytes; it holds the projected tree
+	// and the shell's scratch home and is removed on revoke and on
+	// stale-grant cleanup.
+	Capacity execenv.Resources
+	Defaults execenv.Resources
+	GrantMax execenv.Resources
 	// Mkfs is the ext4 formatter used for workspace disks. Empty uses
 	// mkfs.ext4 from PATH.
 	Mkfs string
@@ -70,7 +75,7 @@ type Host struct {
 	mu      sync.Mutex
 	cfg     Config
 	images  map[execenv.Image]*imageRecord
-	slots   int
+	pool    *capacity.Pool
 	probe   func() error
 	launch  launcher
 	attach  attacher
@@ -99,15 +104,12 @@ func New(cfg Config) (*Host, error) {
 	if cfg.WorkDir == "" {
 		return nil, execenv.Error("isolated", execenv.ErrInvalid)
 	}
-	slots := cfg.Slots
-	if slots <= 0 {
-		slots = 1
-	}
 	if _, err := parseAllow(cfg.Allow); err != nil {
 		return nil, execenv.Error("isolated", execenv.ErrInvalid)
 	}
-	if cfg.DiskBytes != 0 && cfg.DiskBytes < minDiskBytes {
-		return nil, execenv.Error("isolated", execenv.ErrInvalid)
+	pool, err := capacity.New(cfg.Capacity, cfg.Defaults, cfg.GrantMax)
+	if err != nil {
+		return nil, execenv.Error("isolated", err)
 	}
 	images := make(map[execenv.Image]*imageRecord, len(cfg.Images))
 	for _, image := range cfg.Images {
@@ -134,7 +136,7 @@ func New(cfg Config) (*Host, error) {
 	h := &Host{
 		cfg:     cfg,
 		images:  images,
-		slots:   slots,
+		pool:    pool,
 		probe:   probe,
 		launch:  launch,
 		attach:  attach,
@@ -177,7 +179,6 @@ func (h *Host) Ready(ctx context.Context) (execenv.Report, error) {
 	}
 	h.mu.Lock()
 	images := h.snapshotImages()
-	free := h.slots - len(h.grants) - len(h.pending)
 	held := len(h.pending)
 	for _, env := range h.grants {
 		if !env.isLost() {
@@ -189,16 +190,15 @@ func (h *Host) Ready(ctx context.Context) (execenv.Report, error) {
 	if usable && draining {
 		usable, reason = false, execenv.ReasonDraining
 	}
-	if free < 0 {
-		free = 0
-	}
 	// Hash files outside the lock so a large or odd rootfs cannot stall
 	// every other grant on this host.
 	networks := []execenv.Network{execenv.NetworkNone}
 	if len(h.cfg.Allow) > 0 {
 		networks = append(networks, execenv.NetworkAllowlist)
 	}
-	return execenv.Report{Usable: usable, Reason: reason, Images: verifiedIDs(images), Networks: networks, Slots: free, Grants: held, Lost: lost, Release: execenv.Release, Isolation: execenv.IsolationVM}, nil
+	report := execenv.Report{Usable: usable, Reason: reason, Images: verifiedIDs(images), Networks: networks, Grants: held, Lost: lost, Release: execenv.Release, Isolation: execenv.IsolationVM}
+	h.pool.Fill(&report)
+	return report, nil
 }
 
 // Ensure starts a microVM for a new grant or returns the existing occupancy.
@@ -209,6 +209,7 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 	if err := execenv.ValidateSpec(spec); err != nil {
 		return nil, execenv.Error("ensure", err)
 	}
+	spec.Resources = h.pool.Resolve(spec.Resources)
 	if err := h.probe(); err != nil {
 		return nil, execenv.Error("ensure", execenv.ErrUnavailable)
 	}
@@ -221,7 +222,7 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		if err != nil {
 			return nil, execenv.Error("ensure", err)
 		}
-		return env, nil
+		return env.public, nil
 	}
 	record, ok := h.images[spec.Image]
 	h.mu.Unlock()
@@ -245,15 +246,15 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		if err != nil {
 			return nil, execenv.Error("ensure", err)
 		}
-		return env, nil
+		return env.public, nil
 	}
 	if spec.Network == execenv.NetworkAllowlist && len(h.cfg.Allow) == 0 {
 		h.mu.Unlock()
 		return nil, execenv.Error("ensure", execenv.ErrNetwork)
 	}
-	if len(h.grants)+len(h.pending) >= h.slots {
+	if err := h.pool.Reserve(spec.ID, spec.Resources); err != nil {
 		h.mu.Unlock()
-		return nil, execenv.Error("ensure", execenv.ErrCapacity)
+		return nil, execenv.Error("ensure", err)
 	}
 	launchCtx, cancel := context.WithCancel(ctx)
 	call := &ensureCall{spec: spec, done: make(chan struct{}), cancel: cancel}
@@ -261,6 +262,7 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 	treeDir := filepath.Join(h.cfg.WorkDir, "grants", string(spec.ID), workspaceName)
 	if err := os.MkdirAll(treeDir, 0o700); err != nil {
 		delete(h.pending, spec.ID)
+		h.pool.Release(spec.ID)
 		cancel()
 		h.mu.Unlock()
 		return nil, execenv.Error("ensure", err)
@@ -281,10 +283,9 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		Rootfs:    image.Rootfs,
 		TreeDir:   treeDir,
 		Disk:      filepath.Join(filepath.Dir(treeDir), diskName),
-		DiskBytes: diskBytes(h.cfg),
+		Resources: spec.Resources,
+		Limits:    spec.Limits,
 		Attach:    att,
-		Memory:    h.cfg.MemoryBytes,
-		CPU:       h.cfg.CPUMillis,
 	})
 	if err != nil {
 		if att != nil {
@@ -296,18 +297,34 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		gone:    make(chan struct{}),
 		control: control.New(spec.ID),
 		id:      spec.ID,
+		spec:    spec,
 		image:   image,
-		network: spec.Network,
 		host:    h,
 		inst:    inst,
 		treeDir: treeDir,
 	}
+	env.public = env
 	env.terminal = terminal.New(terminal.Config{Grace: h.cfg.TerminalGrace, Start: env.startShell})
 	if err := env.dial(launchCtx); err != nil {
 		_ = env.revoke()
 		return h.completeEnsure(call, nil, execenv.Error("ensure", err), treeDir)
 	}
+	if spec.WallTimeout > 0 || spec.IdleTimeout > 0 {
+		env.timer = lifetime.Start(spec.WallTimeout, spec.IdleTimeout, func(r lifetime.Reason) { h.expire(env, r) })
+		env.public = lifetime.Watch(env, env.timer)
+	}
 	return h.completeEnsure(call, env, nil, treeDir)
+}
+
+// expire applies a grant's wall or idle timeout.
+func (h *Host) expire(env *environment, r lifetime.Reason) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if r == lifetime.Idle && env.spec.IdleAction == execenv.IdleFreeze {
+		_, _ = env.control.Idle(ctx, func() error { return env.freeze(ctx) })
+		return
+	}
+	_ = h.revokeExact(ctx, env)
 }
 
 // occupiedLocked resolves an Ensure that needs no new machine: the grant is
@@ -318,13 +335,13 @@ func (h *Host) occupiedLocked(spec execenv.Spec) (*environment, *ensureCall, err
 		return nil, nil, execenv.ErrLost
 	}
 	if env, exists := h.grants[spec.ID]; exists {
-		if env.image.ID != spec.Image || env.network != spec.Network {
+		if !execenv.SameGrant(env.spec, spec) {
 			return nil, nil, execenv.ErrConflict
 		}
 		return env, nil, nil
 	}
 	if call, exists := h.pending[spec.ID]; exists {
-		if call.spec.Image != spec.Image || call.spec.Network != spec.Network {
+		if !execenv.SameGrant(call.spec, spec) {
 			return nil, nil, execenv.ErrConflict
 		}
 		return nil, call, nil
@@ -340,7 +357,10 @@ func waitEnsure(ctx context.Context, call *ensureCall) (execenv.Env, error) {
 	case <-ctx.Done():
 		return nil, execenv.Error("ensure", ctx.Err())
 	case <-call.done:
-		return call.env, call.err
+		if call.err != nil {
+			return nil, call.err
+		}
+		return call.env.public, nil
 	}
 }
 
@@ -349,6 +369,8 @@ func (h *Host) completeEnsure(call *ensureCall, env *environment, err error, tre
 	delete(h.pending, call.spec.ID)
 	if err == nil {
 		h.grants[call.spec.ID] = env
+	} else {
+		h.pool.Release(call.spec.ID)
 	}
 	call.env = env
 	call.err = err
@@ -360,10 +382,10 @@ func (h *Host) completeEnsure(call *ensureCall, env *environment, err error, tre
 		return nil, err
 	}
 	go env.watch()
-	return env, nil
+	return env.public, nil
 }
 
-// Revoke stops the microVM and frees the slot.
+// Revoke stops the microVM and frees its resources.
 func (h *Host) Revoke(ctx context.Context, id execenv.ID) error {
 	if err := ctx.Err(); err != nil {
 		return execenv.Error("revoke", err)
@@ -408,10 +430,10 @@ func (h *Host) revokeExact(ctx context.Context, env *environment) error {
 	return h.retireLocked(env)
 }
 
-// lose retires env because its machine ended without a revoke. It frees the
-// slot and every host resource the grant held, as a revoke would, and keeps
-// the id lost until the caller revokes it. If release fails the slot stays
-// held, the grant stays lost, and the caller's Revoke retries the release.
+// lose retires env because its machine ended without a revoke. It frees
+// every host resource the grant held, as a revoke would, and keeps the id
+// lost until the caller revokes it. If release fails the resources stay
+// reserved, the grant stays lost, and the caller's Revoke retries.
 func (h *Host) lose(env *environment) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -431,9 +453,10 @@ func (h *Host) lose(env *environment) {
 		return
 	}
 	delete(h.grants, env.id)
+	h.pool.Release(env.id)
 }
 
-// Keep the slot and identity reserved until destruction is acknowledged. This
+// Keep the resources and identity reserved until destruction is acknowledged. This
 // also prevents old cleanup from deleting a newly occupied grant directory.
 func (h *Host) retireLocked(env *environment) error {
 	if err := env.revoke(); err != nil {
@@ -443,5 +466,6 @@ func (h *Host) retireLocked(env *environment) error {
 		return execenv.Error("revoke", err)
 	}
 	delete(h.grants, env.id)
+	h.pool.Release(env.id)
 	return nil
 }

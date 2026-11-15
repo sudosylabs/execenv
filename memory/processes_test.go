@@ -12,7 +12,7 @@ import (
 
 func tracedMemory(t *testing.T) (execenv.Env, execenv.ProjectionFence) {
 	t.Helper()
-	host, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Slots: 1})
+	host, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Capacity: execenv.DefaultGrant.Times(1)})
 	if err != nil {
 		t.Fatal(err)
 	}

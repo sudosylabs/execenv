@@ -119,7 +119,9 @@ func newAdapter(cfg Config) (execenv.Host, error) {
 	case adapterMemory:
 		return memory.New(memory.Config{
 			Images:        cfg.imageIDs(),
-			Slots:         cfg.Slots,
+			Capacity:      cfg.totals(),
+			Defaults:      cfg.GrantDefaults.contract(),
+			GrantMax:      cfg.GrantMax.contract(),
 			TerminalGrace: cfg.Grace,
 		})
 	case adapterIsolated:
@@ -137,14 +139,13 @@ func newAdapter(cfg Config) (execenv.Host, error) {
 		}
 		return isolated.New(isolated.Config{
 			Images:      images,
-			Slots:       cfg.Slots,
+			Capacity:    cfg.totals(),
+			Defaults:    cfg.GrantDefaults.contract(),
+			GrantMax:    cfg.GrantMax.contract(),
 			WorkDir:     cfg.WorkDir,
 			Device:      cfg.Device,
 			Runtime:     cfg.Runtime,
 			Supervisor:  cfg.Supervisor,
-			CPUMillis:   cfg.CPUMillis,
-			MemoryBytes: cfg.MemoryBytes,
-			DiskBytes:   cfg.DiskBytes,
 			Mkfs:        cfg.Mkfs,
 			JailUIDBase: cfg.JailUIDBase,
 			Allow:       append([]string(nil), cfg.Allow...),

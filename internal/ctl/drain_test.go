@@ -55,7 +55,7 @@ func TestRestartVerdict(t *testing.T) {
 // short enough to bind.
 func liveDaemon(t *testing.T, opts Options) *memory.Host {
 	t.Helper()
-	host, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Slots: 4})
+	host, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Capacity: execenv.DefaultGrant.Times(4)})
 	if err != nil {
 		t.Fatal(err)
 	}

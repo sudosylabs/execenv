@@ -9,6 +9,7 @@ import (
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/agent"
 	"github.com/sudosylabs/execenv/internal/control"
+	"github.com/sudosylabs/execenv/internal/lifetime"
 	"github.com/sudosylabs/execenv/internal/terminal"
 )
 
@@ -20,15 +21,19 @@ type environment struct {
 	terminal *terminal.Manager
 	mu       sync.Mutex
 	id       execenv.ID
+	spec     execenv.Spec
 	image    Image
-	network  execenv.Network
 	host     *Host
-	inst     instance
-	client   *agent.Client
-	treeDir  string
-	frozen   bool
-	paused   bool
-	revoked  bool
+	timer    *lifetime.Timer
+	// public is what callers hold: the environment, watched for activity
+	// when the grant has a timeout.
+	public  execenv.Env
+	inst    instance
+	client  *agent.Client
+	treeDir string
+	frozen  bool
+	paused  bool
+	revoked bool
 	// lost is set when the machine ended without a revoke. It implies
 	// revoked: the environment is gone, but calls report ErrLost.
 	lost bool
@@ -249,6 +254,7 @@ func (e *environment) revoke() error {
 // stop ends the environment for cause, ErrRevoked or ErrLost, and releases
 // its machine. A failed release is retried by the next stop.
 func (e *environment) stop(cause error) error {
+	e.timer.Stop()
 	e.mu.Lock()
 	e.revoked = true
 	if errors.Is(cause, execenv.ErrLost) {
@@ -278,6 +284,30 @@ func (e *environment) stop(cause error) error {
 		e.mu.Unlock()
 	}
 	return nil
+}
+
+// UpdateLimits replaces the grant's disk and network limits in its running
+// machine.
+func (e *environment) UpdateLimits(ctx context.Context, fence execenv.ProjectionFence, limits execenv.Limits) error {
+	if err := execenv.ValidateLimits(limits); err != nil {
+		return execenv.Error("update_limits", err)
+	}
+	return e.control.Run(ctx, fence, func() error {
+		e.mu.Lock()
+		inst := e.inst
+		network := e.spec.Network
+		e.mu.Unlock()
+		if inst == nil {
+			return execenv.Error("update_limits", execenv.ErrUnavailable)
+		}
+		if err := inst.UpdateLimits(ctx, limits, network == execenv.NetworkAllowlist); err != nil {
+			return execenv.Error("update_limits", err)
+		}
+		e.mu.Lock()
+		e.spec.Limits = limits
+		e.mu.Unlock()
+		return nil
+	})
 }
 
 func (e *environment) live(op string) (*agent.Client, error) {

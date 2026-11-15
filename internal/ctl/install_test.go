@@ -150,7 +150,7 @@ func TestInstallFetchesFixtureAndLeavesToken(t *testing.T) {
 			Rootfs: cfg.Images[0].Rootfs,
 			Hash:   cfg.Images[0].Hash,
 		}},
-		Slots: 1,
+		Capacity: execenv.DefaultGrant.Times(1),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -199,7 +199,7 @@ func TestInstallLeavesAllowAndResources(t *testing.T) {
 	}
 	cfg.Network = "allowlist"
 	cfg.Allow = []string{"198.51.100.2"}
-	cfg.CPUMillis = 1500
+	cfg.GrantMax = daemon.Resources{CPUMillis: 1500}
 	if err := daemon.Save(path, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +220,7 @@ func TestInstallLeavesAllowAndResources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again.Token != cfg.Token || again.Network != "allowlist" || again.CPUMillis != 1500 {
+	if again.Token != cfg.Token || again.Network != "allowlist" || again.GrantMax.CPUMillis != 1500 {
 		t.Fatalf("install mutated host configuration: %+v", again)
 	}
 	if len(again.Allow) != 1 || again.Allow[0] != "198.51.100.2" {
@@ -293,8 +293,8 @@ func TestInstallRejectsHashMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := newReleaseServer(t, map[string][]byte{
-		"index.json":         []byte(`{"kernel":"vmlinux","images":[{"id":"fixture","rootfs":"rootfs-fixture.ext4","hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]}`),
-		"vmlinux":            []byte("k"),
+		"index.json":          []byte(`{"kernel":"vmlinux","images":[{"id":"fixture","rootfs":"rootfs-fixture.ext4","hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]}`),
+		"vmlinux":             []byte("k"),
 		"rootfs-fixture.ext4": []byte("r"),
 	})
 	opts.ReleaseURL = srv.URL

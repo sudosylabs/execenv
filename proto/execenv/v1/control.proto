@@ -10,7 +10,16 @@ option go_package = "github.com/sudosylabs/execenv/internal/gen/execenv/v1;exece
 service ControlService {
   rpc Control(ControlRequest) returns (ControlReceipt);
   rpc ControlStatus(ControlStatusRequest) returns (ControlReceipt);
+  // UpdateLimits replaces the grant's device limits while it runs.
+  rpc UpdateLimits(UpdateLimitsRequest) returns (UpdateLimitsResponse);
 }
+
+message UpdateLimitsRequest {
+  Fence fence = 1;
+  Limits limits = 2;
+}
+
+message UpdateLimitsResponse {}
 
 enum ControlState {
   CONTROL_STATE_UNSPECIFIED = 0;

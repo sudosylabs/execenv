@@ -58,7 +58,7 @@ func attachWhenDetached(t *testing.T, env execenv.Env, request execenv.AttachReq
 
 func TestLostConnectionThenResumeContinuesExactly(t *testing.T) {
 	t.Parallel()
-	inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Slots: 1})
+	inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Capacity: execenv.DefaultGrant.Times(1)})
 	if err != nil {
 		t.Fatal(err)
 	}

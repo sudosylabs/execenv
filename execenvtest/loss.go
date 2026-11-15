@@ -89,7 +89,7 @@ func RunLoss(t *testing.T, factory LossFactory) {
 		}
 	})
 
-	t.Run("a lost grant frees its slot and stays lost until revoked", func(t *testing.T) {
+	t.Run("a lost grant frees its resources and stays lost until revoked", func(t *testing.T) {
 		l := factory(t)
 		before, err := l.Host.Ready(t.Context())
 		if err != nil {
@@ -101,7 +101,7 @@ func RunLoss(t *testing.T, factory LossFactory) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if held.Slots != before.Slots-1 || held.Grants != before.Grants+1 {
+		if held.MemoryBytes.Free >= before.MemoryBytes.Free || held.Grants != before.Grants+1 {
 			t.Fatalf("Ready() with a grant = %+v, before %+v", held, before)
 		}
 		l.Lose(t, spec.ID)
@@ -110,7 +110,7 @@ func RunLoss(t *testing.T, factory LossFactory) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if after.Slots != before.Slots || after.Grants != before.Grants || after.Lost != before.Lost+1 {
+		if after.MemoryBytes.Free != before.MemoryBytes.Free || after.Grants != before.Grants || after.Lost != before.Lost+1 {
 			t.Fatalf("Ready() after the loss = %+v, before %+v", after, before)
 		}
 		if _, err := l.Host.Ensure(t.Context(), spec); !errors.Is(err, execenv.ErrLost) {

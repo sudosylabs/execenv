@@ -4,6 +4,7 @@
 package wire
 
 import (
+	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/sudosylabs/execenv"
@@ -59,13 +60,17 @@ func IsolationFrom(i execenvv1.Isolation) execenv.Isolation {
 
 func ReportTo(r execenv.Report) *execenvv1.Report {
 	out := &execenvv1.Report{
-		Usable:    r.Usable,
-		Reason:    r.Reason,
-		Slots:     int64(r.Slots),
-		Grants:    int64(r.Grants),
-		Lost:      int64(r.Lost),
-		Release:   r.Release,
-		Isolation: IsolationTo(r.Isolation),
+		Usable:      r.Usable,
+		Reason:      r.Reason,
+		Grants:      int64(r.Grants),
+		Lost:        int64(r.Lost),
+		Release:     r.Release,
+		Isolation:   IsolationTo(r.Isolation),
+		CpuMillis:   capacityTo(r.CPUMillis),
+		MemoryBytes: capacityTo(r.MemoryBytes),
+		DiskBytes:   capacityTo(r.DiskBytes),
+		Defaults:    ResourcesTo(r.Defaults),
+		GrantMax:    ResourcesTo(r.GrantMax),
 	}
 	for _, image := range r.Images {
 		out.Images = append(out.Images, string(image))
@@ -78,13 +83,17 @@ func ReportTo(r execenv.Report) *execenvv1.Report {
 
 func ReportFrom(r *execenvv1.Report) execenv.Report {
 	out := execenv.Report{
-		Usable:    r.GetUsable(),
-		Reason:    r.GetReason(),
-		Slots:     int(r.GetSlots()),
-		Grants:    int(r.GetGrants()),
-		Lost:      int(r.GetLost()),
-		Release:   r.GetRelease(),
-		Isolation: IsolationFrom(r.GetIsolation()),
+		Usable:      r.GetUsable(),
+		Reason:      r.GetReason(),
+		Grants:      int(r.GetGrants()),
+		Lost:        int(r.GetLost()),
+		Release:     r.GetRelease(),
+		Isolation:   IsolationFrom(r.GetIsolation()),
+		CPUMillis:   capacityFrom(r.GetCpuMillis()),
+		MemoryBytes: capacityFrom(r.GetMemoryBytes()),
+		DiskBytes:   capacityFrom(r.GetDiskBytes()),
+		Defaults:    ResourcesFrom(r.GetDefaults()),
+		GrantMax:    ResourcesFrom(r.GetGrantMax()),
 	}
 	for _, image := range r.GetImages() {
 		out.Images = append(out.Images, execenv.Image(image))
@@ -97,13 +106,92 @@ func ReportFrom(r *execenvv1.Report) execenv.Report {
 	return out
 }
 
-func SpecTo(s execenv.Spec) *execenvv1.Spec {
-	return &execenvv1.Spec{Id: string(s.ID), Image: string(s.Image), Network: NetworkTo(s.Network)}
+func capacityTo(c execenv.Capacity) *execenvv1.Capacity {
+	return &execenvv1.Capacity{Total: c.Total, Reserved: c.Reserved, Free: c.Free}
 }
 
+func capacityFrom(c *execenvv1.Capacity) execenv.Capacity {
+	return execenv.Capacity{Total: c.GetTotal(), Reserved: c.GetReserved(), Free: c.GetFree()}
+}
+
+func ResourcesTo(r execenv.Resources) *execenvv1.Resources {
+	return &execenvv1.Resources{CpuMillis: r.CPUMillis, MemoryBytes: r.MemoryBytes, DiskBytes: r.DiskBytes}
+}
+
+func ResourcesFrom(r *execenvv1.Resources) execenv.Resources {
+	return execenv.Resources{CPUMillis: r.GetCpuMillis(), MemoryBytes: r.GetMemoryBytes(), DiskBytes: r.GetDiskBytes()}
+}
+
+func bucketTo(b execenv.TokenBucket) *execenvv1.TokenBucket {
+	return &execenvv1.TokenBucket{Rate: b.Rate, Burst: b.Burst}
+}
+
+func bucketFrom(b *execenvv1.TokenBucket) execenv.TokenBucket {
+	return execenv.TokenBucket{Rate: b.GetRate(), Burst: b.GetBurst()}
+}
+
+func LimitsTo(l execenv.Limits) *execenvv1.Limits {
+	return &execenvv1.Limits{DiskOps: bucketTo(l.DiskOps), DiskBytes: bucketTo(l.DiskBytes), NetworkBytes: bucketTo(l.NetworkBytes)}
+}
+
+func LimitsFrom(l *execenvv1.Limits) execenv.Limits {
+	return execenv.Limits{DiskOps: bucketFrom(l.GetDiskOps()), DiskBytes: bucketFrom(l.GetDiskBytes()), NetworkBytes: bucketFrom(l.GetNetworkBytes())}
+}
+
+var idleActions = map[execenv.IdleAction]execenvv1.IdleAction{
+	execenv.IdleFreeze: execenvv1.IdleAction_IDLE_ACTION_FREEZE,
+	execenv.IdleRevoke: execenvv1.IdleAction_IDLE_ACTION_REVOKE,
+}
+
+func SpecTo(s execenv.Spec) *execenvv1.Spec {
+	out := &execenvv1.Spec{
+		Id:         string(s.ID),
+		Image:      string(s.Image),
+		Network:    NetworkTo(s.Network),
+		Resources:  ResourcesTo(s.Resources),
+		IdleAction: idleActions[s.IdleAction],
+		Labels:     s.Labels,
+		Limits:     LimitsTo(s.Limits),
+	}
+	if s.WallTimeout != 0 {
+		out.WallTimeout = durationpb.New(s.WallTimeout)
+	}
+	if s.IdleTimeout != 0 {
+		out.IdleTimeout = durationpb.New(s.IdleTimeout)
+	}
+	return out
+}
+
+// SpecFrom reports false for an enum outside the schema.
 func SpecFrom(s *execenvv1.Spec) (execenv.Spec, bool) {
 	network, ok := NetworkFrom(s.GetNetwork())
-	return execenv.Spec{ID: execenv.ID(s.GetId()), Image: execenv.Image(s.GetImage()), Network: network}, ok
+	out := execenv.Spec{
+		ID:        execenv.ID(s.GetId()),
+		Image:     execenv.Image(s.GetImage()),
+		Network:   network,
+		Resources: ResourcesFrom(s.GetResources()),
+		Labels:    s.GetLabels(),
+		Limits:    LimitsFrom(s.GetLimits()),
+	}
+	if len(out.Labels) == 0 {
+		out.Labels = nil
+	}
+	if s.WallTimeout != nil {
+		out.WallTimeout = s.GetWallTimeout().AsDuration()
+	}
+	if s.IdleTimeout != nil {
+		out.IdleTimeout = s.GetIdleTimeout().AsDuration()
+	}
+	if action := s.GetIdleAction(); action != execenvv1.IdleAction_IDLE_ACTION_UNSPECIFIED {
+		found := false
+		for k, v := range idleActions {
+			if v == action {
+				out.IdleAction, found = k, true
+			}
+		}
+		ok = ok && found
+	}
+	return out, ok
 }
 
 func FenceTo(f execenv.ProjectionFence) *execenvv1.Fence {

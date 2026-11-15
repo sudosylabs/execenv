@@ -36,10 +36,10 @@ func TestParseAllowAcceptsIPv4Only(t *testing.T) {
 func TestNewRejectsBadAllow(t *testing.T) {
 	t.Parallel()
 	_, err := New(Config{
-		WorkDir: t.TempDir(),
-		Slots:   1,
-		Images:  []Image{writeCatalogImage(t, t.TempDir(), "default", "root")},
-		Allow:   []string{"not-an-ip"},
+		WorkDir:  t.TempDir(),
+		Capacity: execenv.DefaultGrant.Times(1),
+		Images:   []Image{writeCatalogImage(t, t.TempDir(), "default", "root")},
+		Allow:    []string{"not-an-ip"},
 	})
 	if !errors.Is(err, execenv.ErrInvalid) {
 		t.Fatalf("New() error = %v, want ErrInvalid", err)
@@ -135,10 +135,10 @@ func TestEnsureNetworkChangeConflicts(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	h, err := New(Config{
-		WorkDir: t.TempDir(),
-		Slots:   2,
-		Images:  []Image{writeCatalogImage(t, dir, "default", "root")},
-		Allow:   []string{"203.0.113.10"},
+		WorkDir:  t.TempDir(),
+		Capacity: execenv.DefaultGrant.Times(2),
+		Images:   []Image{writeCatalogImage(t, dir, "default", "root")},
+		Allow:    []string{"203.0.113.10"},
 	})
 	if err != nil {
 		t.Fatal(err)

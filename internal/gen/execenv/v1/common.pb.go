@@ -70,6 +70,58 @@ func (Network) EnumDescriptor() ([]byte, []int) {
 	return file_execenv_v1_common_proto_rawDescGZIP(), []int{0}
 }
 
+type Resource int32
+
+const (
+	Resource_RESOURCE_UNSPECIFIED Resource = 0
+	Resource_RESOURCE_CPU         Resource = 1
+	Resource_RESOURCE_MEMORY      Resource = 2
+	Resource_RESOURCE_DISK        Resource = 3
+)
+
+// Enum value maps for Resource.
+var (
+	Resource_name = map[int32]string{
+		0: "RESOURCE_UNSPECIFIED",
+		1: "RESOURCE_CPU",
+		2: "RESOURCE_MEMORY",
+		3: "RESOURCE_DISK",
+	}
+	Resource_value = map[string]int32{
+		"RESOURCE_UNSPECIFIED": 0,
+		"RESOURCE_CPU":         1,
+		"RESOURCE_MEMORY":      2,
+		"RESOURCE_DISK":        3,
+	}
+)
+
+func (x Resource) Enum() *Resource {
+	p := new(Resource)
+	*p = x
+	return p
+}
+
+func (x Resource) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (Resource) Descriptor() protoreflect.EnumDescriptor {
+	return file_execenv_v1_common_proto_enumTypes[1].Descriptor()
+}
+
+func (Resource) Type() protoreflect.EnumType {
+	return &file_execenv_v1_common_proto_enumTypes[1]
+}
+
+func (x Resource) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use Resource.Descriptor instead.
+func (Resource) EnumDescriptor() ([]byte, []int) {
+	return file_execenv_v1_common_proto_rawDescGZIP(), []int{1}
+}
+
 // Fence names one incarnation of a grant and the newest control revision
 // its caller has issued.
 type Fence struct {
@@ -192,20 +244,257 @@ func (x *ContentReference) GetTransferId() string {
 	return ""
 }
 
+type Resources struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CpuMillis     int64                  `protobuf:"varint,1,opt,name=cpu_millis,json=cpuMillis,proto3" json:"cpu_millis,omitempty"`
+	MemoryBytes   int64                  `protobuf:"varint,2,opt,name=memory_bytes,json=memoryBytes,proto3" json:"memory_bytes,omitempty"`
+	DiskBytes     int64                  `protobuf:"varint,3,opt,name=disk_bytes,json=diskBytes,proto3" json:"disk_bytes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Resources) Reset() {
+	*x = Resources{}
+	mi := &file_execenv_v1_common_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Resources) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Resources) ProtoMessage() {}
+
+func (x *Resources) ProtoReflect() protoreflect.Message {
+	mi := &file_execenv_v1_common_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Resources.ProtoReflect.Descriptor instead.
+func (*Resources) Descriptor() ([]byte, []int) {
+	return file_execenv_v1_common_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *Resources) GetCpuMillis() int64 {
+	if x != nil {
+		return x.CpuMillis
+	}
+	return 0
+}
+
+func (x *Resources) GetMemoryBytes() int64 {
+	if x != nil {
+		return x.MemoryBytes
+	}
+	return 0
+}
+
+func (x *Resources) GetDiskBytes() int64 {
+	if x != nil {
+		return x.DiskBytes
+	}
+	return 0
+}
+
+// TokenBucket is a rate per second with a one-time burst. A zero rate is no
+// limit.
+type TokenBucket struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Rate          int64                  `protobuf:"varint,1,opt,name=rate,proto3" json:"rate,omitempty"`
+	Burst         int64                  `protobuf:"varint,2,opt,name=burst,proto3" json:"burst,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TokenBucket) Reset() {
+	*x = TokenBucket{}
+	mi := &file_execenv_v1_common_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TokenBucket) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TokenBucket) ProtoMessage() {}
+
+func (x *TokenBucket) ProtoReflect() protoreflect.Message {
+	mi := &file_execenv_v1_common_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TokenBucket.ProtoReflect.Descriptor instead.
+func (*TokenBucket) Descriptor() ([]byte, []int) {
+	return file_execenv_v1_common_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *TokenBucket) GetRate() int64 {
+	if x != nil {
+		return x.Rate
+	}
+	return 0
+}
+
+func (x *TokenBucket) GetBurst() int64 {
+	if x != nil {
+		return x.Burst
+	}
+	return 0
+}
+
+type Limits struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	DiskOps       *TokenBucket           `protobuf:"bytes,1,opt,name=disk_ops,json=diskOps,proto3" json:"disk_ops,omitempty"`
+	DiskBytes     *TokenBucket           `protobuf:"bytes,2,opt,name=disk_bytes,json=diskBytes,proto3" json:"disk_bytes,omitempty"`
+	NetworkBytes  *TokenBucket           `protobuf:"bytes,3,opt,name=network_bytes,json=networkBytes,proto3" json:"network_bytes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Limits) Reset() {
+	*x = Limits{}
+	mi := &file_execenv_v1_common_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Limits) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Limits) ProtoMessage() {}
+
+func (x *Limits) ProtoReflect() protoreflect.Message {
+	mi := &file_execenv_v1_common_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Limits.ProtoReflect.Descriptor instead.
+func (*Limits) Descriptor() ([]byte, []int) {
+	return file_execenv_v1_common_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *Limits) GetDiskOps() *TokenBucket {
+	if x != nil {
+		return x.DiskOps
+	}
+	return nil
+}
+
+func (x *Limits) GetDiskBytes() *TokenBucket {
+	if x != nil {
+		return x.DiskBytes
+	}
+	return nil
+}
+
+func (x *Limits) GetNetworkBytes() *TokenBucket {
+	if x != nil {
+		return x.NetworkBytes
+	}
+	return nil
+}
+
+// Shortfall is what a refused grant asked for and what was free.
+type Shortfall struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Resource      Resource               `protobuf:"varint,1,opt,name=resource,proto3,enum=execenv.v1.Resource" json:"resource,omitempty"`
+	Requested     int64                  `protobuf:"varint,2,opt,name=requested,proto3" json:"requested,omitempty"`
+	Free          int64                  `protobuf:"varint,3,opt,name=free,proto3" json:"free,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Shortfall) Reset() {
+	*x = Shortfall{}
+	mi := &file_execenv_v1_common_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Shortfall) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Shortfall) ProtoMessage() {}
+
+func (x *Shortfall) ProtoReflect() protoreflect.Message {
+	mi := &file_execenv_v1_common_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Shortfall.ProtoReflect.Descriptor instead.
+func (*Shortfall) Descriptor() ([]byte, []int) {
+	return file_execenv_v1_common_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *Shortfall) GetResource() Resource {
+	if x != nil {
+		return x.Resource
+	}
+	return Resource_RESOURCE_UNSPECIFIED
+}
+
+func (x *Shortfall) GetRequested() int64 {
+	if x != nil {
+		return x.Requested
+	}
+	return 0
+}
+
+func (x *Shortfall) GetFree() int64 {
+	if x != nil {
+		return x.Free
+	}
+	return 0
+}
+
 // ErrorDetail rides on every error the host returns. sentinel names the
 // execenv error, for example "conflict" or "capacity".
 type ErrorDetail struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	Sentinel string                 `protobuf:"bytes,1,opt,name=sentinel,proto3" json:"sentinel,omitempty"`
 	// feature is the missing feature of a refused Hello.
-	Feature       string `protobuf:"bytes,2,opt,name=feature,proto3" json:"feature,omitempty"`
+	Feature string `protobuf:"bytes,2,opt,name=feature,proto3" json:"feature,omitempty"`
+	// shortfall explains a "capacity" refusal.
+	Shortfall     *Shortfall `protobuf:"bytes,3,opt,name=shortfall,proto3" json:"shortfall,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ErrorDetail) Reset() {
 	*x = ErrorDetail{}
-	mi := &file_execenv_v1_common_proto_msgTypes[2]
+	mi := &file_execenv_v1_common_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -217,7 +506,7 @@ func (x *ErrorDetail) String() string {
 func (*ErrorDetail) ProtoMessage() {}
 
 func (x *ErrorDetail) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_v1_common_proto_msgTypes[2]
+	mi := &file_execenv_v1_common_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -230,7 +519,7 @@ func (x *ErrorDetail) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ErrorDetail.ProtoReflect.Descriptor instead.
 func (*ErrorDetail) Descriptor() ([]byte, []int) {
-	return file_execenv_v1_common_proto_rawDescGZIP(), []int{2}
+	return file_execenv_v1_common_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ErrorDetail) GetSentinel() string {
@@ -247,6 +536,13 @@ func (x *ErrorDetail) GetFeature() string {
 	return ""
 }
 
+func (x *ErrorDetail) GetShortfall() *Shortfall {
+	if x != nil {
+		return x.Shortfall
+	}
+	return nil
+}
+
 var File_execenv_v1_common_proto protoreflect.FileDescriptor
 
 const file_execenv_v1_common_proto_rawDesc = "" +
@@ -261,14 +557,38 @@ const file_execenv_v1_common_proto_rawDesc = "" +
 	"\x04size\x18\x01 \x01(\x03R\x04size\x12\x16\n" +
 	"\x06sha256\x18\x02 \x01(\tR\x06sha256\x12\x1f\n" +
 	"\vtransfer_id\x18\x03 \x01(\tR\n" +
-	"transferId\"C\n" +
+	"transferId\"l\n" +
+	"\tResources\x12\x1d\n" +
+	"\n" +
+	"cpu_millis\x18\x01 \x01(\x03R\tcpuMillis\x12!\n" +
+	"\fmemory_bytes\x18\x02 \x01(\x03R\vmemoryBytes\x12\x1d\n" +
+	"\n" +
+	"disk_bytes\x18\x03 \x01(\x03R\tdiskBytes\"7\n" +
+	"\vTokenBucket\x12\x12\n" +
+	"\x04rate\x18\x01 \x01(\x03R\x04rate\x12\x14\n" +
+	"\x05burst\x18\x02 \x01(\x03R\x05burst\"\xb2\x01\n" +
+	"\x06Limits\x122\n" +
+	"\bdisk_ops\x18\x01 \x01(\v2\x17.execenv.v1.TokenBucketR\adiskOps\x126\n" +
+	"\n" +
+	"disk_bytes\x18\x02 \x01(\v2\x17.execenv.v1.TokenBucketR\tdiskBytes\x12<\n" +
+	"\rnetwork_bytes\x18\x03 \x01(\v2\x17.execenv.v1.TokenBucketR\fnetworkBytes\"o\n" +
+	"\tShortfall\x120\n" +
+	"\bresource\x18\x01 \x01(\x0e2\x14.execenv.v1.ResourceR\bresource\x12\x1c\n" +
+	"\trequested\x18\x02 \x01(\x03R\trequested\x12\x12\n" +
+	"\x04free\x18\x03 \x01(\x03R\x04free\"x\n" +
 	"\vErrorDetail\x12\x1a\n" +
 	"\bsentinel\x18\x01 \x01(\tR\bsentinel\x12\x18\n" +
-	"\afeature\x18\x02 \x01(\tR\afeature*K\n" +
+	"\afeature\x18\x02 \x01(\tR\afeature\x123\n" +
+	"\tshortfall\x18\x03 \x01(\v2\x15.execenv.v1.ShortfallR\tshortfall*K\n" +
 	"\aNetwork\x12\x17\n" +
 	"\x13NETWORK_UNSPECIFIED\x10\x00\x12\x10\n" +
 	"\fNETWORK_NONE\x10\x01\x12\x15\n" +
-	"\x11NETWORK_ALLOWLIST\x10\x02BAZ?github.com/sudosylabs/execenv/internal/gen/execenv/v1;execenvv1b\x06proto3"
+	"\x11NETWORK_ALLOWLIST\x10\x02*^\n" +
+	"\bResource\x12\x18\n" +
+	"\x14RESOURCE_UNSPECIFIED\x10\x00\x12\x10\n" +
+	"\fRESOURCE_CPU\x10\x01\x12\x13\n" +
+	"\x0fRESOURCE_MEMORY\x10\x02\x12\x11\n" +
+	"\rRESOURCE_DISK\x10\x03BAZ?github.com/sudosylabs/execenv/internal/gen/execenv/v1;execenvv1b\x06proto3"
 
 var (
 	file_execenv_v1_common_proto_rawDescOnce sync.Once
@@ -282,20 +602,30 @@ func file_execenv_v1_common_proto_rawDescGZIP() []byte {
 	return file_execenv_v1_common_proto_rawDescData
 }
 
-var file_execenv_v1_common_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_execenv_v1_common_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_execenv_v1_common_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_execenv_v1_common_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_execenv_v1_common_proto_goTypes = []any{
 	(Network)(0),             // 0: execenv.v1.Network
-	(*Fence)(nil),            // 1: execenv.v1.Fence
-	(*ContentReference)(nil), // 2: execenv.v1.ContentReference
-	(*ErrorDetail)(nil),      // 3: execenv.v1.ErrorDetail
+	(Resource)(0),            // 1: execenv.v1.Resource
+	(*Fence)(nil),            // 2: execenv.v1.Fence
+	(*ContentReference)(nil), // 3: execenv.v1.ContentReference
+	(*Resources)(nil),        // 4: execenv.v1.Resources
+	(*TokenBucket)(nil),      // 5: execenv.v1.TokenBucket
+	(*Limits)(nil),           // 6: execenv.v1.Limits
+	(*Shortfall)(nil),        // 7: execenv.v1.Shortfall
+	(*ErrorDetail)(nil),      // 8: execenv.v1.ErrorDetail
 }
 var file_execenv_v1_common_proto_depIdxs = []int32{
-	0, // [0:0] is the sub-list for method output_type
-	0, // [0:0] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	5, // 0: execenv.v1.Limits.disk_ops:type_name -> execenv.v1.TokenBucket
+	5, // 1: execenv.v1.Limits.disk_bytes:type_name -> execenv.v1.TokenBucket
+	5, // 2: execenv.v1.Limits.network_bytes:type_name -> execenv.v1.TokenBucket
+	1, // 3: execenv.v1.Shortfall.resource:type_name -> execenv.v1.Resource
+	7, // 4: execenv.v1.ErrorDetail.shortfall:type_name -> execenv.v1.Shortfall
+	5, // [5:5] is the sub-list for method output_type
+	5, // [5:5] is the sub-list for method input_type
+	5, // [5:5] is the sub-list for extension type_name
+	5, // [5:5] is the sub-list for extension extendee
+	0, // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_execenv_v1_common_proto_init() }
@@ -308,8 +638,8 @@ func file_execenv_v1_common_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_execenv_v1_common_proto_rawDesc), len(file_execenv_v1_common_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   3,
+			NumEnums:      2,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

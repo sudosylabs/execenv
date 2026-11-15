@@ -67,7 +67,7 @@ func (t *floodTerminal) Close() error {
 // A terminal whose output nobody reads fills only its own stream window:
 // calls and other terminals on the same connection keep moving.
 func TestUnreadTerminalDelaysNoOtherStreamOrCall(t *testing.T) {
-	inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Slots: 2})
+	inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Capacity: execenv.DefaultGrant.Times(2)})
 	if err != nil {
 		t.Fatal(err)
 	}

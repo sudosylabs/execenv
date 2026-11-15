@@ -18,7 +18,7 @@ import (
 
 func serveToken(t *testing.T, token string) string {
 	t.Helper()
-	inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Slots: 1})
+	inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Capacity: execenv.DefaultGrant.Times(1)})
 	if err != nil {
 		t.Fatal(err)
 	}
