@@ -80,25 +80,37 @@ func (j *Journal) missing(current *guesttree.Snapshot, next tree.Snapshot) []str
 func (j *Journal) sweep() {
 	live := make(map[string]bool)
 	j.state.Live(live)
-	if j.log != nil {
-		j.log.Live(live)
-	}
 	_ = j.store.Sweep(live)
 }
 
 // Initialized reports whether the projection has been initialized.
 func (j *Journal) Initialized() bool { return j.state.Initialized() }
 
-// Body opens the retained observation body ref names.
-func (j *Journal) Body(fence execenv.ProjectionFence, ref execenv.ContentReference) (*os.File, error) {
+// Body opens the file a retained observation names, as it is now. The
+// reader hashes what it returns and ends with ErrStale, never io.EOF, when
+// the file is no longer the body observed; a file gone or replaced by
+// anything but a regular file is ErrStale at once.
+func (j *Journal) Body(fence execenv.ProjectionFence, ref execenv.ContentReference) (io.ReadCloser, error) {
 	if err := j.Bind(fence); err != nil {
 		return nil, err
 	}
-	blob, err := j.log.Content(ref)
+	name, blob, err := j.log.Content(ref)
 	if err != nil {
 		return nil, err
 	}
-	return j.store.Open(blob)
+	root, err := os.OpenRoot(j.home)
+	if err != nil {
+		return nil, execenv.ErrUnavailable
+	}
+	defer root.Close()
+	if info, err := root.Lstat(name); err != nil || !info.Mode().IsRegular() || info.Size() != blob.Size {
+		return nil, execenv.ErrStale
+	}
+	f, err := root.Open(name)
+	if err != nil {
+		return nil, execenv.ErrStale
+	}
+	return content.Verify(f, blob, execenv.ErrStale), nil
 }
 func (j *Journal) Close() { j.snapshot.Close() }
 func (j *Journal) Bind(fence execenv.ProjectionFence) error {
@@ -264,7 +276,7 @@ func (j *Journal) observeCaptured() error {
 	var next *guesttree.Snapshot
 	var err error
 	for range 5 {
-		next, err = guesttree.CaptureInto(j.home, j.snapshot, j.observePolicy(), j.store)
+		next, err = guesttree.Capture(j.home, j.snapshot, j.observePolicy())
 		if !errors.Is(err, guesttree.ErrChanged) {
 			break
 		}
@@ -295,13 +307,9 @@ func (j *Journal) observeCaptured() error {
 		}
 		var body content.Blob
 		if change.Operation == guesttree.CreateFile || change.Operation == guesttree.WriteFile {
-			// The guest is stopped, so the captured file still holds what
-			// was hashed. Keep a copy: the event's body must not change.
-			if body, err = j.keep(change); err != nil {
-				next.Close()
-				j.log.Lagged()
-				return err
-			}
+			// Only the digest is kept: the body is read from the workspace
+			// when the caller asks for it.
+			body = change.Content
 		}
 		captured = append(captured, observations.Captured{Event: event, Content: body})
 	}
@@ -435,16 +443,6 @@ func (j *Journal) Content(fence execenv.ProjectionFence, reference execenv.Conte
 	return j.Body(fence, reference)
 }
 
-// keep copies a captured file's body into the store, refusing one that no
-// longer matches its capture.
-func (j *Journal) keep(change guesttree.Change) (content.Blob, error) {
-	// The capture copied every new or changed body into the store as it
-	// hashed it.
-	if j.store.Has(change.Content) {
-		return change.Content, nil
-	}
-	return content.Blob{}, execenv.ErrLagged
-}
 func (j *Journal) Acknowledge(fence execenv.ProjectionFence, through uint64) error {
 	if err := j.Bind(fence); err != nil {
 		return err

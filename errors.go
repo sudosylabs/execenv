@@ -47,6 +47,10 @@ var (
 	// resynchronize from its own journal. For the process log it means the
 	// requested position was already acknowledged.
 	ErrLagged = errors.New("execenv: observation lagged")
+	// ErrStale indicates an observed file changed after it was observed, so
+	// its content can no longer be read as observed. A later observation of
+	// the same entry reports the change: skip this one and read on.
+	ErrStale = errors.New("execenv: observation content changed")
 	// ErrTooLarge indicates a file or tree exceeds the documented limits.
 	ErrTooLarge = errors.New("execenv: too large")
 	// ErrConnection indicates the remote session was lost. The host treats

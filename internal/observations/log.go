@@ -1,5 +1,7 @@
-// Package observations retains immutable, ordered guest effects until their
-// caller durably records an outcome. The owning environment serializes access.
+// Package observations retains ordered guest effects until their caller
+// durably records an outcome. A created or written file is named by its
+// digest; its body stays in the workspace and is read from there. The owning
+// environment serializes access.
 package observations
 
 import (
@@ -12,8 +14,8 @@ import (
 
 const maxRetainedEvents = 4096
 
-// Captured is one guest effect. A created or written file names its body,
-// already in the content store.
+// Captured is one guest effect. A created or written file names the digest
+// and size of the body it was captured with.
 type Captured struct {
 	Event   execenv.ExecutionObservation
 	Content content.Blob
@@ -23,7 +25,7 @@ type retained struct {
 	blob  content.Blob
 }
 
-// Log holds events and the names of their bodies; the bodies are on disk.
+// Log holds events and the digests of their bodies.
 type Log struct {
 	grant        execenv.ID
 	epoch        string
@@ -102,28 +104,20 @@ func (l *Log) Page(after uint64, limit int) (execenv.ObservationPage, error) {
 	return page, nil
 }
 
-// Content is the body a retained event names. An acknowledged or unknown
-// reference is ErrConflict.
-func (l *Log) Content(reference execenv.ContentReference) (content.Blob, error) {
+// Content is the path and body a retained event names. An acknowledged or
+// unknown reference is ErrConflict.
+func (l *Log) Content(reference execenv.ContentReference) (string, content.Blob, error) {
 	if execenv.ValidateContentReference(reference) != nil {
-		return content.Blob{}, execenv.ErrInvalid
+		return "", content.Blob{}, execenv.ErrInvalid
 	}
 	for _, item := range l.events {
 		if item.event.Content != nil && *item.event.Content == reference {
-			return item.blob, nil
+			return item.event.Path, item.blob, nil
 		}
 	}
-	return content.Blob{}, execenv.ErrConflict
+	return "", content.Blob{}, execenv.ErrConflict
 }
 
-// Live adds the digest of every retained body to live.
-func (l *Log) Live(live map[string]bool) {
-	for _, item := range l.events {
-		if item.blob.Digest != "" {
-			live[item.blob.Digest] = true
-		}
-	}
-}
 func (l *Log) Acknowledge(through uint64) error {
 	if through > l.cursor {
 		return execenv.ErrInvalid

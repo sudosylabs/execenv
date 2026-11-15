@@ -48,9 +48,6 @@ func TestNativeJournalWireStreamsContentAndRetainsGuestEvents(t *testing.T) {
 	if err != nil || len(page.Observations) != 1 {
 		t.Fatalf("guest observation: %+v %v", page, err)
 	}
-	if err := os.WriteFile(filepath.Join(home, "guest"), []byte("later"), 0600); err != nil {
-		t.Fatal(err)
-	}
 	reader, err := client.OpenObservationContent(ctx, fence, *page.Observations[0].Content)
 	if err != nil {
 		t.Fatal(err)
@@ -58,7 +55,13 @@ func TestNativeJournalWireStreamsContentAndRetainsGuestEvents(t *testing.T) {
 	body, err := io.ReadAll(reader)
 	_ = reader.Close()
 	if err != nil || !bytes.Equal(body, bytes.Repeat([]byte("captured\n"), 20000)) {
-		t.Fatalf("immutable streamed content: %v", err)
+		t.Fatalf("streamed content: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "guest"), []byte("later"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.OpenObservationContent(ctx, fence, *page.Observations[0].Content); !errors.Is(err, execenv.ErrStale) {
+		t.Fatalf("changed content = %v, want ErrStale", err)
 	}
 	ownRef, err := client.UploadProjectionContent(ctx, fence, bytes.NewReader(body))
 	if err != nil {

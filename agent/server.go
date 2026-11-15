@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -426,8 +427,9 @@ func (s *server) Observe(ctx context.Context, req *connect.Request[execenvv1.Obs
 	return connect.NewResponse(wire.ObservationPageTo(page)), nil
 }
 
-// ReadObservationContent streams a retained body from the content store.
-// An unknown or retired one is refused before anything is sent.
+// ReadObservationContent streams the file an observation names, as it is
+// now, ending with ErrStale when it is no longer the body observed. An
+// unknown or retired observation is refused before anything is sent.
 func (s *server) ReadObservationContent(_ context.Context, req *connect.Request[execenvv1.ReadObservationContentRequest], stream *connect.ServerStream[execenvv1.ContentChunk]) error {
 	ref := wire.ContentFrom(req.Msg.GetContent())
 	if ref == nil || execenv.ValidateContentReference(*ref) != nil {
@@ -435,7 +437,7 @@ func (s *server) ReadObservationContent(_ context.Context, req *connect.Request[
 	}
 	s.mu.Lock()
 	fence, err := s.bound(req.Msg.GetFence())
-	var body *os.File
+	var body io.ReadCloser
 	if err == nil {
 		body, err = s.journal.Body(fence, *ref)
 	}
@@ -454,6 +456,11 @@ func (s *server) ReadObservationContent(_ context.Context, req *connect.Request[
 		}
 		if err == io.EOF {
 			return nil
+		}
+		if errors.Is(err, execenv.ErrStale) {
+			// The file changed after it was observed: a later observation
+			// reports it.
+			return wire.Error(err)
 		}
 		if err != nil {
 			return wire.Error(execenv.ErrUnavailable)

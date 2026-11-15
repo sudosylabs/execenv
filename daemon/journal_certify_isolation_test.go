@@ -69,7 +69,6 @@ func TestCertifyRemoteJournalPreservesLiveWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	shell.run(t, `test "$(cat dir/file)" = saved`)
-	shell.run(t, "printf 'guest-later' > guest")
 	reader, err := journal.OpenObservationContent(t.Context(), fence, *guest.Content)
 	if err != nil {
 		t.Fatal(err)
@@ -77,7 +76,19 @@ func TestCertifyRemoteJournalPreservesLiveWork(t *testing.T) {
 	captured, err := io.ReadAll(reader)
 	_ = reader.Close()
 	if err != nil || string(captured) != "guest-first" {
-		t.Fatalf("observation used later live bytes: %q %v", captured, err)
+		t.Fatalf("observed content: %q %v", captured, err)
+	}
+	// Content is read live: once the guest changes the file, the older
+	// observation is stale rather than passing off later bytes as its own.
+	shell.run(t, "printf 'guest-later' > guest")
+	if reader, err := journal.OpenObservationContent(t.Context(), fence, *guest.Content); err == nil {
+		_, err = io.ReadAll(reader)
+		_ = reader.Close()
+		if !errors.Is(err, execenv.ErrStale) {
+			t.Fatalf("changed content read = %v, want ErrStale", err)
+		}
+	} else if !errors.Is(err, execenv.ErrStale) {
+		t.Fatalf("changed content = %v, want ErrStale", err)
 	}
 	reference, err = journal.UploadProjectionContent(t.Context(), fence, bytes.NewReader(captured))
 	if err != nil {

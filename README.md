@@ -494,15 +494,15 @@ if err != nil {
 for _, event := range page.Observations {
 	if event.Content != nil {
 		body, err := env.OpenObservationContent(ctx, fence, *event.Content)
-		if err != nil {
+		if err == nil {
+			_, err = io.ReadAll(body) // the file as it is now
+			_ = body.Close()
+		}
+		if errors.Is(err, execenv.ErrStale) {
+			// Changed since: a later event of this entry reports it.
+		} else if err != nil {
 			return err
 		}
-		data, err := io.ReadAll(body)
-		_ = body.Close()
-		if err != nil {
-			return err
-		}
-		_ = data // the bytes the guest wrote, captured when it wrote them
 	}
 	mutation, accepted := decideInYourStore(event) // you own durable files
 	if accepted {
@@ -521,26 +521,32 @@ hostCursor = page.HostCursor
 ```
 
 Each ordered event binds its original projected cursor and version, an
-epoch-stable node identity and immutable captured bytes; it never means
-reading the current path later. Directory moves are single subtree
-operations, parent creates precede children, and recursive directory deletion
-is explicit. Content is read as one stream of 64-KiB messages, checked
-against its reference's size and digest before the reader reports its end.
+epoch-stable node identity, and the size and SHA-256 of a created or written
+file as it was observed. The body is not copied: `OpenObservationContent`
+reads the file from the workspace as it is now, as one stream of 64-KiB
+messages, hashing it as it goes. A file changed since then ends the stream
+with `ErrStale` instead of its end, and a file gone or replaced fails with
+`ErrStale` at once. That is safe to treat as "skip this one": every change
+after an observation is a later observation of the same entry (a newer
+write, a move or a delete), so reading the newest event of each entry
+reaches the final state. Directory moves are single subtree operations,
+parent creates precede children, and recursive directory deletion is
+explicit.
 
 After accepting a guest event durably, call `ConfirmObservationProjection` with
 its host sequence and the exact resulting journal mutation before acknowledging
 it. The host binds the original identity, topology and content digest to that
 outcome. A later consecutive Apply of that mutation advances the baseline while
 suppressing only that known echo, preserving any later guest writes. A
-confirmation retry tolerates a new upload handle for the same immutable
-content; changing the outcome conflicts. Rejected or ignored outcomes need no
+confirmation retry tolerates a new upload handle for the same content;
+changing the outcome conflicts. Rejected or ignored outcomes need no
 confirmation.
 
 Acknowledge only after recording the outcome durably. Acknowledgement releases
-retained content; it does not itself imply acceptance or advance projection
-versions. Unacknowledged retention is bounded to 4096 events; their bodies are
-kept on the grant's disk, each copied as it was observed, and removed once
-acknowledged.
+the events, after which their content can no longer be opened; it does not
+itself imply acceptance or advance projection versions. Unacknowledged
+retention is bounded to 4096 events, and none of them holds a copy of a
+body.
 Overflow reports `ErrLagged` without discarding the retained prefix. A cursor
 before the acknowledged prefix also returns `ErrLagged`.
 
@@ -801,6 +807,7 @@ Match with `errors.Is`. Wrappers preserve the sentinel.
 | `ErrClosed` | attachment or content reader closed, or input to a process that exited (not revoke) |
 | `ErrNotFound` | path missing from the projection, or no process has that tag |
 | `ErrLagged` | observations no longer retained, or a process log position already acknowledged |
+| `ErrStale` | an observed file changed after it was observed; read its later event |
 | `ErrTooLarge` | metadata over its bound, or too many content handles |
 | `ErrQuota` | the grant's workspace disk is full; the call changed nothing |
 | `ErrConnection` | remote session lost |

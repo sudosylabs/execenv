@@ -405,9 +405,10 @@ func (e *remoteEnv) Observe(ctx context.Context, fence execenv.ProjectionFence, 
 	return page, nil
 }
 
-// OpenObservationContent streams the body on the bulk connection. The
-// reader checks size and digest at its end, so a body that does not match
-// its reference fails instead of ending cleanly.
+// OpenObservationContent streams the observed file, as it is now, on the
+// bulk connection. The reader checks size and digest at its end, so a file
+// changed since it was observed fails with ErrStale instead of ending
+// cleanly.
 func (e *remoteEnv) OpenObservationContent(ctx context.Context, fence execenv.ProjectionFence, ref execenv.ContentReference) (io.ReadCloser, error) {
 	if err := e.guard(fence); err != nil {
 		return nil, err

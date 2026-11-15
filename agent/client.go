@@ -284,8 +284,9 @@ func (c *Client) AcknowledgeObservations(ctx context.Context, fence execenv.Proj
 	return c.failure("journal_acknowledge", err)
 }
 
-// OpenObservationContent streams a retained body. An unknown handle fails
-// here, not at the first Read, so it cannot pass for an empty body.
+// OpenObservationContent streams an observed file as it is now; a changed
+// one ends with ErrStale. An unknown handle fails here, not at the first
+// Read, so it cannot pass for an empty body.
 func (c *Client) OpenObservationContent(ctx context.Context, fence execenv.ProjectionFence, ref execenv.ContentReference) (io.ReadCloser, error) {
 	if execenv.ValidateContentReference(ref) != nil {
 		return nil, execenv.ErrInvalid

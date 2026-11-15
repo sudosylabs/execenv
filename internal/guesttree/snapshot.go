@@ -105,14 +105,8 @@ func (s *Snapshot) node(name string) (Node, bool) {
 // open until this call succeeds and the observation transaction is retained.
 // Failure is a typed resynchronization error, never a plausible empty tree.
 // observe leaves ignored paths out; see Observe.
-func Capture(home string, previous *Snapshot, observe Observe) (*Snapshot, error) {
-	return CaptureInto(home, previous, observe, nil)
-}
-
-// CaptureInto is Capture that also keeps every new or changed file's body in
-// store, copied in the same pass that hashes it, so a body a change reports
-// is exactly what was hashed. Unchanged files are neither hashed nor copied.
-func CaptureInto(home string, previous *Snapshot, observe Observe, store *content.Store) (result *Snapshot, err error) {
+// Only new or changed files are hashed; nothing is copied.
+func Capture(home string, previous *Snapshot, observe Observe) (result *Snapshot, err error) {
 	root, err := os.OpenRoot(home)
 	if err != nil {
 		return nil, execenv.ErrLagged
@@ -182,7 +176,7 @@ func CaptureInto(home string, previous *Snapshot, observe Observe, store *conten
 					result.Nodes[name] = node
 					continue
 				}
-				blob, err := hashFile(root, name, info, st, store)
+				blob, err := hashFile(root, name, info, st)
 				if err != nil {
 					return err
 				}
@@ -198,10 +192,9 @@ func CaptureInto(home string, previous *Snapshot, observe Observe, store *conten
 	return result, err
 }
 
-// hashFile reads one file once: hashed, and copied into store when there is
-// one. A file that is not the one listed, or that changes while read, is
-// ErrChanged.
-func hashFile(root *os.Root, name string, listed os.FileInfo, st stamp, store *content.Store) (content.Blob, error) {
+// hashFile reads one file once to hash it. A file that is not the one
+// listed, or that changes while read, is ErrChanged.
+func hashFile(root *os.Root, name string, listed os.FileInfo, st stamp) (content.Blob, error) {
 	file, err := root.Open(name)
 	if err != nil {
 		return content.Blob{}, ErrChanged
@@ -211,12 +204,7 @@ func hashFile(root *os.Root, name string, listed os.FileInfo, st stamp, store *c
 	if err != nil || !os.SameFile(listed, actual) || stampOf(actual) != st {
 		return content.Blob{}, ErrChanged
 	}
-	var blob content.Blob
-	if store != nil {
-		blob, err = store.Put(file)
-	} else {
-		blob, err = content.Hash(file)
-	}
+	blob, err := content.Hash(file)
 	if err != nil {
 		return content.Blob{}, execenv.ErrLagged
 	}

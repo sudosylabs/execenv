@@ -25,7 +25,7 @@ func TestRetainedContentSurvivesReplayUntilAcknowledged(t *testing.T) {
 		if event.HostSequence != uint64(i+1) || event.BasedOnWorkspaceCursor != 7 || event.ExpectedContentVersion != "v1" {
 			t.Fatalf("lost original baseline: %+v", event)
 		}
-		body, err := log.Content(*event.Content)
+		_, body, err := log.Content(*event.Content)
 		if err != nil || body != blob(want) {
 			t.Fatalf("immutable event: %+v %v", body, err)
 		}
@@ -37,13 +37,13 @@ func TestRetainedContentSurvivesReplayUntilAcknowledged(t *testing.T) {
 		t.Fatal("page mutated retained envelope")
 	}
 	foreign := New("other", "epoch")
-	if _, err := foreign.Content(reference); !errors.Is(err, execenv.ErrConflict) {
+	if _, _, err := foreign.Content(reference); !errors.Is(err, execenv.ErrConflict) {
 		t.Fatalf("cross-grant reference: %v", err)
 	}
 	if err := log.Acknowledge(1); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := log.Content(reference); !errors.Is(err, execenv.ErrConflict) {
+	if _, _, err := log.Content(reference); !errors.Is(err, execenv.ErrConflict) {
 		t.Fatalf("acknowledged bytes retained: %v", err)
 	}
 	if _, err := log.Page(0, 1); !errors.Is(err, execenv.ErrLagged) {
@@ -54,11 +54,6 @@ func TestRetainedContentSurvivesReplayUntilAcknowledged(t *testing.T) {
 	}
 	if err := log.Acknowledge(1); err != nil {
 		t.Fatal("acknowledgement retry failed")
-	}
-	live := map[string]bool{}
-	log.Live(live)
-	if len(live) != 1 || !live[blob("second").Digest] {
-		t.Fatalf("retained bodies = %v, want only the second", live)
 	}
 }
 func TestCaptureValidationIsAtomicAndOverflowRetainsEvidence(t *testing.T) {
@@ -83,7 +78,7 @@ func TestCaptureValidationIsAtomicAndOverflowRetainsEvidence(t *testing.T) {
 	if err := log.Append(over); !errors.Is(err, execenv.ErrLagged) {
 		t.Fatalf("unbounded retained events: %v", err)
 	}
-	body, err := log.Content(ref)
+	_, body, err := log.Content(ref)
 	if err != nil || body != blob("retained") {
 		t.Fatal("overflow discarded unacknowledged evidence")
 	}
