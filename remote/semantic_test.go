@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -143,7 +144,7 @@ func TestRemoteInitialProjectionRetainsLargeSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	replay, err := projection.InitializeProjection(t.Context(), request)
-	if err != nil || replay != receipt {
+	if err != nil || !reflect.DeepEqual(replay, receipt) {
 		t.Fatalf("large initial replay: %v", err)
 	}
 	if receipt.AppliedWorkspaceCursor != 0 {

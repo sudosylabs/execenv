@@ -205,6 +205,16 @@ func (j *Journal) Apply(ctx context.Context, request execenv.ProjectionApply) (e
 			if err != nil {
 				return err
 			}
+			// Overwrites discard the guest changes they replace; one they
+			// would only half replace refuses the Apply before any write.
+			var replaced []observations.Replaced
+			for _, o := range plan.Overwrites() {
+				replaced = append(replaced, observations.Replaced{JournalCursor: o.JournalCursor, Path: o.Path})
+			}
+			discards, err := j.log.Discardable(replaced)
+			if err != nil {
+				return err
+			}
 			disk = prepared.Batch
 			if len(disk.Mutations) == 0 {
 				return nil
@@ -212,6 +222,14 @@ func (j *Journal) Apply(ctx context.Context, request execenv.ProjectionApply) (e
 			touched = true
 			if err := applyHome(j.store, j.home, disk); err != nil {
 				return err
+			}
+			j.log.Discard(discards)
+			if len(discards) > 0 {
+				sequences := make([]uint64, 0, len(discards))
+				for _, d := range discards {
+					sequences = append(sequences, d.Sequence)
+				}
+				plan.Discard(sequences)
 			}
 			roots := make([]string, 0, len(disk.Mutations))
 			for _, m := range disk.Mutations {

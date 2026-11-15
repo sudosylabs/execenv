@@ -16,7 +16,10 @@
 // into the grant, each bound to a ProjectionFence. Observe reports what the
 // isolated environment wrote, with immutable captured content, until the
 // caller acknowledges it; with a Wait it holds the call until there is
-// something new, so a caller never polls. IgnoreRules name a caller-chosen file of
+// something new, so a caller never polls. A projection mutation marked
+// Overwrite replaces the guest's unconfirmed change on its path instead of
+// refusing, and the receipt lists the observations it discarded.
+// IgnoreRules name a caller-chosen file of
 // gitignore patterns for paths Observe leaves out; held paths stay
 // observed. Losing a grant must not be treated as losing
 // caller state the caller already has.

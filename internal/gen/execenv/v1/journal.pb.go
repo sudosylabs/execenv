@@ -325,8 +325,11 @@ type ProjectionMutation struct {
 	ResultingContentVersion string                 `protobuf:"bytes,8,opt,name=resulting_content_version,json=resultingContentVersion,proto3" json:"resulting_content_version,omitempty"`
 	Recursive               *bool                  `protobuf:"varint,9,opt,name=recursive,proto3,oneof" json:"recursive,omitempty"`
 	Content                 *ContentReference      `protobuf:"bytes,10,opt,name=content,proto3" json:"content,omitempty"`
-	unknownFields           protoimpl.UnknownFields
-	sizeCache               protoimpl.SizeCache
+	// overwrite replaces what the guest left at path, unconfirmed changes
+	// included, discarding the observations of them.
+	Overwrite     bool `protobuf:"varint,11,opt,name=overwrite,proto3" json:"overwrite,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ProjectionMutation) Reset() {
@@ -427,6 +430,13 @@ func (x *ProjectionMutation) GetContent() *ContentReference {
 		return x.Content
 	}
 	return nil
+}
+
+func (x *ProjectionMutation) GetOverwrite() bool {
+	if x != nil {
+		return x.Overwrite
+	}
+	return false
 }
 
 type ProjectionEntry struct {
@@ -723,8 +733,11 @@ type ProjectionReceipt struct {
 	MutationId             string                 `protobuf:"bytes,2,opt,name=mutation_id,json=mutationId,proto3" json:"mutation_id,omitempty"`
 	AppliedWorkspaceCursor uint64                 `protobuf:"varint,3,opt,name=applied_workspace_cursor,json=appliedWorkspaceCursor,proto3" json:"applied_workspace_cursor,omitempty"`
 	HostCursor             uint64                 `protobuf:"varint,4,opt,name=host_cursor,json=hostCursor,proto3" json:"host_cursor,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	// discarded are the host sequences of the observations the apply's
+	// overwrites discarded, in order.
+	Discarded     []uint64 `protobuf:"varint,5,rep,packed,name=discarded,proto3" json:"discarded,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ProjectionReceipt) Reset() {
@@ -785,6 +798,13 @@ func (x *ProjectionReceipt) GetHostCursor() uint64 {
 	return 0
 }
 
+func (x *ProjectionReceipt) GetDiscarded() []uint64 {
+	if x != nil {
+		return x.Discarded
+	}
+	return nil
+}
+
 type Observation struct {
 	state                      protoimpl.MessageState `protogen:"open.v1"`
 	Fence                      *Fence                 `protobuf:"bytes,1,opt,name=fence,proto3" json:"fence,omitempty"`
@@ -801,7 +821,10 @@ type Observation struct {
 	OriginProjectionMutationId string                 `protobuf:"bytes,12,opt,name=origin_projection_mutation_id,json=originProjectionMutationId,proto3" json:"origin_projection_mutation_id,omitempty"`
 	// process_tag is the tag of the started process the change's writer
 	// descends from, empty when the host cannot say.
-	ProcessTag    string `protobuf:"bytes,13,opt,name=process_tag,json=processTag,proto3" json:"process_tag,omitempty"`
+	ProcessTag string `protobuf:"bytes,13,opt,name=process_tag,json=processTag,proto3" json:"process_tag,omitempty"`
+	// discarded_by is the journal cursor of the overwrite that discarded the
+	// change, or zero.
+	DiscardedBy   uint64 `protobuf:"varint,14,opt,name=discarded_by,json=discardedBy,proto3" json:"discarded_by,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -925,6 +948,13 @@ func (x *Observation) GetProcessTag() string {
 		return x.ProcessTag
 	}
 	return ""
+}
+
+func (x *Observation) GetDiscardedBy() uint64 {
+	if x != nil {
+		return x.DiscardedBy
+	}
+	return 0
 }
 
 type ObserveRequest struct {
@@ -1305,7 +1335,7 @@ const file_execenv_v1_journal_proto_rawDesc = "" +
 	"\x05chunk\x18\x02 \x01(\fH\x00R\x05chunkB\x06\n" +
 	"\x04part\"\"\n" +
 	"\fContentChunk\x12\x12\n" +
-	"\x04data\x18\x01 \x01(\fR\x04data\"\xe3\x03\n" +
+	"\x04data\x18\x01 \x01(\fR\x04data\"\x81\x04\n" +
 	"\x12ProjectionMutation\x12%\n" +
 	"\x0ejournal_cursor\x18\x01 \x01(\x04R\rjournalCursor\x12\x19\n" +
 	"\bentry_id\x18\x02 \x01(\tR\aentryId\x12=\n" +
@@ -1317,7 +1347,8 @@ const file_execenv_v1_journal_proto_rawDesc = "" +
 	"\x19resulting_content_version\x18\b \x01(\tR\x17resultingContentVersion\x12!\n" +
 	"\trecursive\x18\t \x01(\bH\x00R\trecursive\x88\x01\x01\x126\n" +
 	"\acontent\x18\n" +
-	" \x01(\v2\x1c.execenv.v1.ContentReferenceR\acontentB\f\n" +
+	" \x01(\v2\x1c.execenv.v1.ContentReferenceR\acontent\x12\x1c\n" +
+	"\toverwrite\x18\v \x01(\bR\toverwriteB\f\n" +
 	"\n" +
 	"_recursive\"\xd1\x01\n" +
 	"\x0fProjectionEntry\x12\x19\n" +
@@ -1343,14 +1374,15 @@ const file_execenv_v1_journal_proto_rawDesc = "" +
 	"\x15from_workspace_cursor\x18\x03 \x01(\x04R\x13fromWorkspaceCursor\x128\n" +
 	"\x18through_workspace_cursor\x18\x04 \x01(\x04R\x16throughWorkspaceCursor\x120\n" +
 	"\x14expected_host_cursor\x18\x05 \x01(\x04R\x12expectedHostCursor\x12<\n" +
-	"\tmutations\x18\x06 \x03(\v2\x1e.execenv.v1.ProjectionMutationR\tmutations\"\xb8\x01\n" +
+	"\tmutations\x18\x06 \x03(\v2\x1e.execenv.v1.ProjectionMutationR\tmutations\"\xd6\x01\n" +
 	"\x11ProjectionReceipt\x12'\n" +
 	"\x05fence\x18\x01 \x01(\v2\x11.execenv.v1.FenceR\x05fence\x12\x1f\n" +
 	"\vmutation_id\x18\x02 \x01(\tR\n" +
 	"mutationId\x128\n" +
 	"\x18applied_workspace_cursor\x18\x03 \x01(\x04R\x16appliedWorkspaceCursor\x12\x1f\n" +
 	"\vhost_cursor\x18\x04 \x01(\x04R\n" +
-	"hostCursor\"\xf1\x04\n" +
+	"hostCursor\x12\x1c\n" +
+	"\tdiscarded\x18\x05 \x03(\x04R\tdiscarded\"\x94\x05\n" +
 	"\vObservation\x12'\n" +
 	"\x05fence\x18\x01 \x01(\v2\x11.execenv.v1.FenceR\x05fence\x12#\n" +
 	"\rhost_sequence\x18\x02 \x01(\x04R\fhostSequence\x129\n" +
@@ -1366,7 +1398,8 @@ const file_execenv_v1_journal_proto_rawDesc = "" +
 	"\acontent\x18\v \x01(\v2\x1c.execenv.v1.ContentReferenceR\acontent\x12A\n" +
 	"\x1dorigin_projection_mutation_id\x18\f \x01(\tR\x1aoriginProjectionMutationId\x12\x1f\n" +
 	"\vprocess_tag\x18\r \x01(\tR\n" +
-	"processTagB\f\n" +
+	"processTag\x12!\n" +
+	"\fdiscarded_by\x18\x0e \x01(\x04R\vdiscardedByB\f\n" +
 	"\n" +
 	"_recursive\"\x94\x01\n" +
 	"\x0eObserveRequest\x12'\n" +

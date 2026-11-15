@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -38,7 +39,7 @@ func TestNativeJournalWireStreamsContentAndRetainsGuestEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	replay, err := client.InitializeProjection(ctx, initial)
-	if err != nil || receipt != replay {
+	if err != nil || !reflect.DeepEqual(receipt, replay) {
 		t.Fatalf("initialization replay: %+v %v", replay, err)
 	}
 	if err := os.WriteFile(filepath.Join(home, "guest"), bytes.Repeat([]byte("captured\n"), 20000), 0600); err != nil {
@@ -154,7 +155,7 @@ func TestNativeJournalWireInitializesLargeSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	replay, err := client.InitializeProjection(t.Context(), request)
-	if err != nil || replay != receipt {
+	if err != nil || !reflect.DeepEqual(replay, receipt) {
 		t.Fatalf("large initialization replay: %v", err)
 	}
 	if receipt.AppliedWorkspaceCursor != 0 {

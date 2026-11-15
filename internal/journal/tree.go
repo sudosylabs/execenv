@@ -48,7 +48,7 @@ func applyDisk(store *content.Store, home string, mut tree.Mutation) (undo func(
 		// The snapshot proves nothing observed is here, so anything present
 		// is an ignored guest path. A projected directory adopts an ignored
 		// directory; a file replaces what was there, as a checkout does.
-		if info, err := os.Lstat(full); err == nil && info.IsDir() && mut.Kind == tree.KindDirectory {
+		if info, err := os.Lstat(full); err == nil && info.IsDir() && mut.Kind == tree.KindDirectory && !mut.Overwrite {
 			return nop, "", nil
 		}
 		prev, side, err := stash(full)

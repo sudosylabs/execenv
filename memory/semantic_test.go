@@ -107,3 +107,61 @@ func TestObservationsPreserveOriginalContentAndSubtreeIdentity(t *testing.T) {
 		t.Fatalf("descendant deletion identity: %+v %v", page, err)
 	}
 }
+
+// An overwrite puts the journal's body in place of the guest's unconfirmed
+// one, and the discarded observation's body is gone: reading it is stale.
+// An overwriting directory create replaces an ignored directory instead of
+// adopting it.
+func TestOverwriteMakesTheJournalWinInPlace(t *testing.T) {
+	host, env, fence := running(t)
+	base, err := env.UploadProjectionContent(t.Context(), fence, bytes.NewBufferString("base"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := execenv.ProjectionInitialization{Fence: fence, MutationID: "init", Entries: []execenv.ProjectionEntry{
+		{EntryID: "file", Kind: execenv.ProjectionFile, Path: "file", ContentVersion: "v1", Content: &base},
+	}, Ignore: &execenv.IgnoreRules{File: "rules", Fallback: []string{"cache/"}}}
+	if _, err := env.InitializeProjection(t.Context(), initial); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.WriteGuest(t.Context(), env.ID(), "file", []byte("guest")); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.MkdirGuest(t.Context(), env.ID(), "cache"); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.WriteGuest(t.Context(), env.ID(), "cache/blob", []byte("ignored")); err != nil {
+		t.Fatal(err)
+	}
+	page, err := env.Observe(t.Context(), execenv.ObserveRequest{Fence: fence, Limit: 16})
+	if err != nil || len(page.Observations) != 1 {
+		t.Fatalf("Observe() = %+v, %v", page, err)
+	}
+	guest := page.Observations[0]
+	body, err := env.UploadProjectionContent(t.Context(), fence, bytes.NewBufferString("journal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	apply := execenv.ProjectionApply{Fence: fence, MutationID: "win", FromWorkspaceCursor: 0, ThroughWorkspaceCursor: 2, ExpectedHostCursor: page.HostCursor, Mutations: []execenv.ProjectionMutation{
+		{JournalCursor: 1, EntryID: "file", Operation: execenv.ProjectionWrite, Kind: execenv.ProjectionFile, Path: "file", ExpectedContentVersion: "v1", ResultingContentVersion: "v2", Content: &body, Overwrite: true},
+		{JournalCursor: 2, EntryID: "cache", Operation: execenv.ProjectionCreate, Kind: execenv.ProjectionDirectory, Path: "cache", Overwrite: true},
+	}}
+	receipt, err := env.ApplyProjection(t.Context(), apply)
+	if err != nil || len(receipt.Discarded) != 1 || receipt.Discarded[0] != guest.HostSequence {
+		t.Fatalf("ApplyProjection(overwrite) = %+v, %v", receipt, err)
+	}
+	if got, err := host.ReadGuest(t.Context(), env.ID(), "file"); err != nil || string(got) != "journal" {
+		t.Fatalf("guest file = %q, %v; want the journal's body", got, err)
+	}
+	if _, err := host.ReadGuest(t.Context(), env.ID(), "cache/blob"); !errors.Is(err, execenv.ErrNotFound) {
+		t.Fatalf("an overwriting directory create adopted the ignored directory: %v", err)
+	}
+	reader, err := env.OpenObservationContent(t.Context(), fence, *guest.Content)
+	if err == nil {
+		_, err = io.ReadAll(reader)
+		_ = reader.Close()
+	}
+	if !errors.Is(err, execenv.ErrStale) {
+		t.Fatalf("reading a discarded observation's body = %v, want ErrStale", err)
+	}
+}

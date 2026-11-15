@@ -39,6 +39,9 @@ func (w journalWorkspace) Observe(ctx context.Context, request execenv.ObserveRe
 		return w.j.Observe(ctx, request.Fence, request.After, request.Limit)
 	})
 }
+func (w journalWorkspace) ConfirmObservationProjection(_ context.Context, binding execenv.ObservationProjection) error {
+	return w.j.Confirm(binding)
+}
 func (w journalWorkspace) AcknowledgeObservations(_ context.Context, fence execenv.ProjectionFence, through uint64) error {
 	return w.j.Acknowledge(fence, through)
 }

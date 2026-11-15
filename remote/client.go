@@ -385,7 +385,7 @@ func (e *remoteEnv) ApplyProjection(ctx context.Context, request execenv.Project
 }
 
 func (e *remoteEnv) receipt(r execenv.ProjectionReceipt, fence execenv.ProjectionFence, mutation string) (execenv.ProjectionReceipt, error) {
-	if r.Fence != fence || r.MutationID != mutation {
+	if r.Fence != fence || r.MutationID != mutation || !wire.ValidDiscarded(r) {
 		return execenv.ProjectionReceipt{}, execenv.ErrUnavailable
 	}
 	return r, nil

@@ -53,6 +53,11 @@ const (
 // capture names the last of them. It is empty when the host cannot say:
 // the change was made by nothing a caller started, the host could not
 // trace it, or the host cannot attribute changes at all.
+//
+// DiscardedBy is the journal cursor of an Overwrite mutation that replaced
+// this change before the caller confirmed it, or zero. A discarded change
+// is gone from the environment: the caller acknowledges it without
+// recording it, it cannot be confirmed, and its content reads as ErrStale.
 type ExecutionObservation struct {
 	Fence                      ProjectionFence      `json:"fence"`
 	HostSequence               uint64               `json:"host_sequence"`
@@ -67,6 +72,7 @@ type ExecutionObservation struct {
 	Content                    *ContentReference    `json:"content,omitempty"`
 	OriginProjectionMutationID string               `json:"origin_projection_mutation_id,omitempty"`
 	ProcessTag                 string               `json:"process_tag,omitempty"`
+	DiscardedBy                uint64               `json:"discarded_by,omitempty"`
 }
 
 type ObservationPage struct {
@@ -81,7 +87,7 @@ type ObservationPage struct {
 // advance the projection baseline.
 
 func ValidateExecutionObservation(event ExecutionObservation) error {
-	if ValidateProjectionFence(event.Fence) != nil || event.HostSequence == 0 || event.HostSequence > MaxProjectionCursor || event.BasedOnWorkspaceCursor > MaxProjectionCursor || validateName(event.NodeIdentity) != nil || ValidatePath(event.Path) != nil {
+	if ValidateProjectionFence(event.Fence) != nil || event.HostSequence == 0 || event.HostSequence > MaxProjectionCursor || event.BasedOnWorkspaceCursor > MaxProjectionCursor || event.DiscardedBy > MaxProjectionCursor || validateName(event.NodeIdentity) != nil || ValidatePath(event.Path) != nil {
 		return ErrInvalid
 	}
 	if event.Kind != ProjectionFile && event.Kind != ProjectionDirectory {
@@ -154,7 +160,7 @@ type ObservationProjection struct {
 }
 
 func ValidateObservationProjection(binding ObservationProjection) error {
-	if ValidateProjectionFence(binding.Fence) != nil || binding.HostSequence == 0 || binding.HostSequence > MaxProjectionCursor || binding.Mutation.JournalCursor == 0 || binding.Mutation.JournalCursor > MaxProjectionCursor {
+	if ValidateProjectionFence(binding.Fence) != nil || binding.HostSequence == 0 || binding.HostSequence > MaxProjectionCursor || binding.Mutation.JournalCursor == 0 || binding.Mutation.JournalCursor > MaxProjectionCursor || binding.Mutation.Overwrite {
 		return ErrInvalid
 	}
 	return validateProjectionMutation(binding.Mutation)

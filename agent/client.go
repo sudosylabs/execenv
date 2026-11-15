@@ -246,7 +246,7 @@ func (c *Client) ApplyProjection(ctx context.Context, request execenv.Projection
 }
 
 func checkReceipt(r execenv.ProjectionReceipt, fence execenv.ProjectionFence, id string, cursor, hostCursor uint64) (execenv.ProjectionReceipt, error) {
-	if r.Fence != fence || r.MutationID != id || r.AppliedWorkspaceCursor != cursor || r.HostCursor != hostCursor {
+	if r.Fence != fence || r.MutationID != id || r.AppliedWorkspaceCursor != cursor || r.HostCursor != hostCursor || !wire.ValidDiscarded(r) {
 		return execenv.ProjectionReceipt{}, execenv.ErrUnavailable
 	}
 	return r, nil

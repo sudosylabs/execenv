@@ -2,6 +2,7 @@ package projection
 
 import (
 	"maps"
+	"path"
 	"strings"
 
 	"github.com/sudosylabs/execenv"
@@ -13,11 +14,47 @@ type step struct {
 	before, after map[string]Node
 	mutation      tree.Mutation
 	echo          bool
+	// cursor is the mutation's journal cursor.
+	cursor uint64
 }
 
 // Plan validates actual guest identities and bytes for every non-echo mutation
 // against its position in the consecutive journal, before any disk write.
-type Plan struct{ steps []step }
+// An overwriting mutation instead replaces what the guest left on its path.
+type Plan struct {
+	steps  []step
+	result *planResult
+}
+
+// planResult is what the commit reports back for the receipt.
+type planResult struct{ discarded []uint64 }
+
+// Overwrite is one overwriting mutation: the journal cursor it has and the
+// path whose subtree it replaces.
+type Overwrite struct {
+	JournalCursor uint64
+	Path          string
+}
+
+// Overwrites lists the plan's overwriting mutations in journal order.
+func (p Plan) Overwrites() []Overwrite {
+	var out []Overwrite
+	for _, step := range p.steps {
+		if step.mutation.Overwrite && !step.echo {
+			out = append(out, Overwrite{JournalCursor: step.cursor, Path: step.mutation.Path})
+		}
+	}
+	return out
+}
+
+// Discard records, in order, the retained observations the commit
+// discarded; the receipt lists them.
+func (p Plan) Discard(sequences []uint64) {
+	if p.result != nil {
+		p.result.discarded = sequences
+	}
+}
+
 type Prepared struct {
 	Tree  tree.Snapshot
 	Guest *guesttree.Snapshot
@@ -34,7 +71,14 @@ func (p Plan) Prepare(actual *guesttree.Snapshot) (Prepared, error) {
 		if step.echo {
 			continue
 		}
-		if err := checkActual(current, step.before, step.mutation); err != nil {
+		if step.mutation.Overwrite {
+			if err := checkOverwrite(current, step.before, step.mutation); err != nil {
+				return Prepared{}, err
+			}
+			// What the guest left in the subtree is replaced: plan as if the
+			// projection's own subtree were there.
+			current = withBaseline(current, step.before, step.mutation.Path)
+		} else if err := checkActual(current, step.before, step.mutation); err != nil {
 			return Prepared{}, err
 		}
 		before := physicalTree(current, step.before)
@@ -93,6 +137,58 @@ func physicalTree(nodes map[string]guesttree.Node, baseline map[string]Node) tre
 func sameActual(actual guesttree.Node, expected Node) bool {
 	return actual.Identity == expected.Identity && actual.Kind == expected.Kind && actual.Content == expected.Content
 }
+func under(name, root string) bool { return name == root || strings.HasPrefix(name, root+"/") }
+
+// checkOverwrite refuses an overwrite the guest's changes are not confined
+// to: its parent is gone or no longer a directory, a projected path moved
+// out from under it, or a projected path from elsewhere moved into it.
+func checkOverwrite(actual map[string]guesttree.Node, baseline map[string]Node, m tree.Mutation) error {
+	if parent := path.Dir(m.Path); parent != "." {
+		node, ok := actual[parent]
+		if !ok || node.Kind != execenv.ProjectionDirectory {
+			return execenv.ErrConflict
+		}
+	}
+	outside := make(map[string]bool)
+	for name, node := range actual {
+		if !under(name, m.Path) {
+			outside[node.Identity] = true
+		}
+	}
+	projectedOutside := make(map[string]bool)
+	for name, node := range baseline {
+		if under(name, m.Path) {
+			if outside[node.Identity] {
+				return execenv.ErrConflict
+			}
+		} else {
+			projectedOutside[node.Identity] = true
+		}
+	}
+	for name, node := range actual {
+		if under(name, m.Path) && projectedOutside[node.Identity] {
+			return execenv.ErrConflict
+		}
+	}
+	return nil
+}
+
+// withBaseline is actual with root's subtree replaced by the projection's.
+func withBaseline(actual map[string]guesttree.Node, baseline map[string]Node, root string) map[string]guesttree.Node {
+	out := make(map[string]guesttree.Node, len(actual))
+	for name, node := range actual {
+		if !under(name, root) {
+			out[name] = node
+		}
+	}
+	for name, node := range baseline {
+		if under(name, root) {
+			out[name] = guesttree.Node{Identity: node.Identity, Kind: node.Kind, Content: node.Content}
+		}
+	}
+	return out
+}
+
 func checkActual(actual map[string]guesttree.Node, baseline map[string]Node, m tree.Mutation) error {
 	affected := func(name string) bool {
 		for _, root := range []string{m.Path, m.From} {

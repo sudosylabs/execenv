@@ -34,9 +34,12 @@ const (
 	// FeatureObservationTag is a host that names, on each observation, the
 	// started process the change's writer descends from, where it can.
 	FeatureObservationTag = "observation_tag"
+	// FeatureOverwrite is a host whose projection can overwrite the
+	// guest's unconfirmed changes and discard their observations.
+	FeatureOverwrite = "projection_overwrite"
 )
 
-var features = []string{FeatureControl, FeatureJournal, FeatureProcess, FeatureProcessLog, FeatureSeed, FeatureFiles, FeatureScreen, FeatureGrants, FeatureObserveWait, FeatureObservationTag}
+var features = []string{FeatureControl, FeatureJournal, FeatureProcess, FeatureProcessLog, FeatureSeed, FeatureFiles, FeatureScreen, FeatureGrants, FeatureObserveWait, FeatureObservationTag, FeatureOverwrite}
 
 // Window sizes for HTTP/2 flow control. The host receives uploads and
 // keystrokes; uploads need the large window.

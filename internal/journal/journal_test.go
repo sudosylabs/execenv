@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/sudosylabs/execenv"
@@ -89,7 +90,7 @@ func TestDiskJournalPreservesUnrelatedGuestWriteAndExactReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	replay, err := j.Apply(t.Context(), request)
-	if err != nil || receipt != replay {
+	if err != nil || !reflect.DeepEqual(receipt, replay) {
 		t.Fatalf("exact retry: %+v %v", replay, err)
 	}
 	events, err := j.Observe(t.Context(), fence, 0, 128)

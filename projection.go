@@ -52,6 +52,22 @@ const (
 
 // ProjectionMutation is one consecutive mutation in the caller's durable
 // journal. Versions and entry identities are opaque to the host.
+//
+// Overwrite makes a create, write or delete replace whatever the guest left
+// at Path and under it, including changes the caller has not confirmed,
+// instead of failing with ErrConflict: the caller's journal wins in place.
+// The mutation is still checked against the projection as the caller
+// built it (its entry, kind and expected version), and the Apply still
+// names the current host cursor, so the caller has seen every change it
+// replaces. Every retained observation whose paths all lie at Path or
+// under it is discarded: the receipt lists it in Discarded and later pages
+// carry its DiscardedBy. An overwriting directory create replaces what is
+// there, ignored contents included, rather than adopting it. It is still
+// ErrConflict when the guest moved a path across Path's boundary (a
+// projected path out from under it, or one into it from elsewhere), when a
+// retained observation names a path inside and one outside, or when Path's
+// parent is no longer a directory in the environment. A move or rename
+// cannot overwrite.
 type ProjectionMutation struct {
 	JournalCursor           uint64              `json:"journal_cursor"`
 	EntryID                 string              `json:"entry_id"`
@@ -63,6 +79,7 @@ type ProjectionMutation struct {
 	ResultingContentVersion Version             `json:"resulting_content_version,omitempty"`
 	Recursive               *bool               `json:"recursive,omitempty"`
 	Content                 *ContentReference   `json:"content,omitempty"`
+	Overwrite               bool                `json:"overwrite,omitempty"`
 }
 
 type ProjectionApply struct {
@@ -74,11 +91,15 @@ type ProjectionApply struct {
 	Mutations              []ProjectionMutation `json:"mutations"`
 }
 
+// ProjectionReceipt is an applied projection. Discarded lists, in order,
+// the host sequences of the retained observations the Apply's Overwrite
+// mutations discarded; an exact retry returns the same list.
 type ProjectionReceipt struct {
 	Fence                  ProjectionFence `json:"fence"`
 	MutationID             string          `json:"mutation_id"`
 	AppliedWorkspaceCursor uint64          `json:"applied_workspace_cursor"`
 	HostCursor             uint64          `json:"host_cursor"`
+	Discarded              []uint64        `json:"discarded,omitempty"`
 }
 
 // ProjectionEntry initializes one caller-owned entry. Parent directories must
@@ -123,7 +144,7 @@ type ProjectionInitialization struct {
 // paths stay present in the environment; nothing is deleted for being
 // ignored. A caller projection onto an ignored path replaces the ignored
 // file there, as a checkout does, and a projected directory adopts an
-// ignored directory already at its path.
+// ignored directory already at its path unless it is an Overwrite.
 //
 // Fallback applies while File is missing, is not a regular file, exceeds
 // MaxIgnoreFileBytes, or does not parse (NUL bytes, invalid UTF-8, an empty
@@ -300,6 +321,12 @@ func validateProjectionMutation(m ProjectionMutation) error {
 	if m.Content != nil {
 		if err := ValidateContentReference(*m.Content); err != nil {
 			return err
+		}
+	}
+	switch m.Operation {
+	case ProjectionMove, ProjectionRename:
+		if m.Overwrite {
+			return ErrInvalid
 		}
 	}
 	switch m.Operation {

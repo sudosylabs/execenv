@@ -19,6 +19,7 @@ type Workspace interface {
 	InitializeProjection(ctx context.Context, request execenv.ProjectionInitialization) (execenv.ProjectionReceipt, error)
 	ApplyProjection(ctx context.Context, request execenv.ProjectionApply) (execenv.ProjectionReceipt, error)
 	Observe(ctx context.Context, request execenv.ObserveRequest) (execenv.ObservationPage, error)
+	ConfirmObservationProjection(ctx context.Context, binding execenv.ObservationProjection) error
 	AcknowledgeObservations(ctx context.Context, fence execenv.ProjectionFence, through uint64) error
 }
 
@@ -180,12 +181,16 @@ type watcher struct {
 	versions   map[string]string
 	entries    map[string]string
 	generation int
+	// seen and applied serve the observation subtests: what drain read,
+	// and which apply ids were committed.
+	seen    map[string]execenv.ExecutionObservation
+	applied map[string]bool
 }
 
 func start(t *testing.T, factory ObservedFactory, seeds []seed, rules *execenv.IgnoreRules) *watcher {
 	t.Helper()
 	o := factory(t)
-	w := &watcher{t: t, o: o, workspace: 10, versions: map[string]string{}, entries: map[string]string{}}
+	w := &watcher{t: t, o: o, workspace: 10, versions: map[string]string{}, entries: map[string]string{}, applied: map[string]bool{}}
 	request := execenv.ProjectionInitialization{Fence: o.Fence, MutationID: "init", WorkspaceCursor: w.workspace, Ignore: rules}
 	for i, s := range seeds {
 		entry := execenv.ProjectionEntry{EntryID: fmt.Sprintf("entry-%d", i), Path: s.path, Kind: execenv.ProjectionDirectory}

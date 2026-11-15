@@ -2,6 +2,7 @@ package projection
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/sudosylabs/execenv"
@@ -50,7 +51,7 @@ func TestApplyValidatesWholeBatchBeforeCommitAndPreservesReceipts(t *testing.T) 
 		t.Fatalf("commit: %+v %v", receipt, err)
 	}
 	replay, err := s.Apply(request, commit)
-	if err != nil || replay != receipt || commits != 1 {
+	if err != nil || !reflect.DeepEqual(replay, receipt) || commits != 1 {
 		t.Fatalf("retry repeated effect: %+v %v", replay, err)
 	}
 	request.Mutations[1].ResultingContentVersion = "different"

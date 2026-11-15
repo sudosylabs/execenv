@@ -493,6 +493,41 @@ that would overwrite a guest change on an affected path, fails with
 `ErrConflict` before any path changes. Observe first, decide, then apply.
 Freeze and thaw preserve the projection; neither requires a new snapshot.
 
+To make your journal win over a guest change you will not accept, set
+`Overwrite` on a create, write or delete. It replaces whatever the guest
+left at that path and under it, unconfirmed changes included, and still
+checks the mutation against your journal (entry, kind, expected version);
+the Apply still names the current host cursor, so you have seen every
+change it replaces. Every retained observation whose paths all lie in the
+replaced subtree is discarded: the receipt's `Discarded` lists their host
+sequences in order (an exact retry returns the same list), and later pages
+carry each one's `DiscardedBy`, the journal cursor of the overwrite.
+Acknowledge them without recording them; they cannot be confirmed, and
+their content reads as `ErrStale`. An overwriting directory create replaces
+an ignored directory at its path instead of adopting it. Overwrite is still
+`ErrConflict` when the guest moved something across the path's boundary (a
+projected path out from under it, or one into it), when a retained
+observation names a path inside and one outside, or when the path's parent
+is no longer a directory; resolve those first. Moves and renames cannot
+overwrite.
+
+```go
+receipt, err := env.ApplyProjection(ctx, execenv.ProjectionApply{
+	Fence: fence, MutationID: "restore-43",
+	FromWorkspaceCursor: 42, ThroughWorkspaceCursor: 43,
+	ExpectedHostCursor: page.HostCursor,
+	Mutations: []execenv.ProjectionMutation{{
+		JournalCursor: 43, EntryID: "e-main", Operation: execenv.ProjectionWrite,
+		Kind: execenv.ProjectionFile, Path: "src/main.py",
+		ExpectedContentVersion: "v2", ResultingContentVersion: "v3",
+		Content: &body, Overwrite: true,
+	}},
+})
+for _, sequence := range receipt.Discarded {
+	recordDiscarded(sequence) // then acknowledge as usual
+}
+```
+
 File contents travel separately as immutable, scoped SHA-256 references. A
 body streams to the grant's workspace disk as it arrives and is never held in
 memory, so no size limit applies to it but the disk itself: a body or a tree
@@ -626,7 +661,7 @@ re-included.
 - Ignored paths stay in the environment; nothing is deleted for being
   ignored. A projected file or move onto an ignored path replaces what the
   guest left there, as a checkout does, and a projected directory adopts an
-  ignored directory already at its path.
+  ignored directory already at its path unless it is an `Overwrite`.
 
 The rules last for the epoch: initialization happens once, and an exact retry
 is a replay.

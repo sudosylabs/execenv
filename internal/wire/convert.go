@@ -352,6 +352,7 @@ func MutationTo(m execenv.ProjectionMutation) *execenvv1.ProjectionMutation {
 		ResultingContentVersion: string(m.ResultingContentVersion),
 		Recursive:               m.Recursive,
 		Content:                 ContentTo(m.Content),
+		Overwrite:               m.Overwrite,
 	}
 }
 
@@ -367,6 +368,7 @@ func MutationFrom(m *execenvv1.ProjectionMutation) execenv.ProjectionMutation {
 		ResultingContentVersion: execenv.Version(m.GetResultingContentVersion()),
 		Recursive:               m.Recursive,
 		Content:                 ContentFrom(m.GetContent()),
+		Overwrite:               m.GetOverwrite(),
 	}
 }
 
@@ -457,7 +459,21 @@ func ProjectionReceiptTo(r execenv.ProjectionReceipt) *execenvv1.ProjectionRecei
 		MutationId:             r.MutationID,
 		AppliedWorkspaceCursor: r.AppliedWorkspaceCursor,
 		HostCursor:             r.HostCursor,
+		Discarded:              r.Discarded,
 	}
+}
+
+// ValidDiscarded reports whether a receipt's discarded observations are in
+// order and among those the host has produced.
+func ValidDiscarded(r execenv.ProjectionReceipt) bool {
+	var last uint64
+	for _, sequence := range r.Discarded {
+		if sequence <= last || sequence > r.HostCursor {
+			return false
+		}
+		last = sequence
+	}
+	return true
 }
 
 func ProjectionReceiptFrom(r *execenvv1.ProjectionReceipt) execenv.ProjectionReceipt {
@@ -466,6 +482,7 @@ func ProjectionReceiptFrom(r *execenvv1.ProjectionReceipt) execenv.ProjectionRec
 		MutationID:             r.GetMutationId(),
 		AppliedWorkspaceCursor: r.GetAppliedWorkspaceCursor(),
 		HostCursor:             r.GetHostCursor(),
+		Discarded:              r.GetDiscarded(),
 	}
 }
 
@@ -503,6 +520,7 @@ func ObservationPageTo(p execenv.ObservationPage) *execenvv1.ObservationPage {
 			Content:                    ContentTo(o.Content),
 			OriginProjectionMutationId: o.OriginProjectionMutationID,
 			ProcessTag:                 o.ProcessTag,
+			DiscardedBy:                o.DiscardedBy,
 		})
 	}
 	return out
@@ -529,6 +547,7 @@ func ObservationPageFrom(p *execenvv1.ObservationPage) execenv.ObservationPage {
 			Content:                    ContentFrom(o.GetContent()),
 			OriginProjectionMutationID: o.GetOriginProjectionMutationId(),
 			ProcessTag:                 o.GetProcessTag(),
+			DiscardedBy:                o.GetDiscardedBy(),
 		})
 	}
 	return out

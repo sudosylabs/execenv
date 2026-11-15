@@ -58,6 +58,9 @@ message ProjectionMutation {
   string resulting_content_version = 8;
   optional bool recursive = 9;
   ContentReference content = 10;
+  // overwrite replaces what the guest left at path, unconfirmed changes
+  // included, discarding the observations of them.
+  bool overwrite = 11;
 }
 
 message ProjectionEntry {
@@ -95,6 +98,9 @@ message ProjectionReceipt {
   string mutation_id = 2;
   uint64 applied_workspace_cursor = 3;
   uint64 host_cursor = 4;
+  // discarded are the host sequences of the observations the apply's
+  // overwrites discarded, in order.
+  repeated uint64 discarded = 5;
 }
 
 enum ObservationOperation {
@@ -122,6 +128,9 @@ message Observation {
   // process_tag is the tag of the started process the change's writer
   // descends from, empty when the host cannot say.
   string process_tag = 13;
+  // discarded_by is the journal cursor of the overwrite that discarded the
+  // change, or zero.
+  uint64 discarded_by = 14;
 }
 
 message ObserveRequest {

@@ -55,6 +55,9 @@ const (
 type Mutation struct {
 	// Recursive is required to delete a nonempty directory.
 	Recursive bool
+	// Overwrite replaces whatever the workspace holds at Path; a directory
+	// create then never adopts a directory already there.
+	Overwrite bool
 	Op        Op
 	Path      string
 	From      string
