@@ -33,6 +33,10 @@ type shell struct {
 	closed bool
 	log    *processLog
 	pid    int
+	// command is set when the shell stands for one command a Start ran:
+	// the log has that command as the shell's own start, so running it
+	// logs nothing more.
+	command bool
 	// terminal echoes input and ends lines with CRLF, as a PTY does; a
 	// command does neither.
 	terminal bool
@@ -42,10 +46,16 @@ type shell struct {
 	signal int
 }
 
-func newShell(win execenv.Window, log *processLog, terminal bool) *shell {
-	s := &shell{vars: make(map[string]string), win: win, log: log, terminal: terminal}
+// newShell starts a fake shell under tag. With argv it stands for that one
+// command, which the log records as the tagged process, as a guest's does.
+func newShell(win execenv.Window, log *processLog, terminal bool, tag string, argv []string) *shell {
+	s := &shell{vars: make(map[string]string), win: win, log: log, terminal: terminal, command: len(argv) > 0}
 	s.cond = sync.NewCond(&s.mu)
-	s.pid = log.start(1, []string{"/bin/sh", "-l"})
+	started := []string{"/bin/sh", "-l"}
+	if len(argv) > 0 {
+		started = argv
+	}
+	s.pid = log.start(1, started, tag)
 	return s
 }
 
@@ -145,7 +155,13 @@ func (s *shell) run(line string) {
 	for _, word := range words {
 		argv = append(argv, s.expand(word))
 	}
-	pid := s.log.start(s.pid, argv)
+	pid := 0
+	if s.command {
+		// The command is the shell's own process: it is logged already.
+		s.command = false
+	} else {
+		pid = s.log.start(s.pid, argv, "")
+	}
 	code := 0
 	switch path.Base(words[0]) {
 	case "true":
@@ -163,7 +179,9 @@ func (s *shell) run(line string) {
 		s.print("sh: " + words[0] + ": not found")
 		code = 127
 	}
-	s.log.exit(pid, code)
+	if pid != 0 {
+		s.log.exit(pid, code)
+	}
 	s.code = code
 }
 

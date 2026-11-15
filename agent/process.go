@@ -134,6 +134,17 @@ type tracker struct {
 	agent  int
 	roots  []string
 	member map[int]*member
+	// launched finds a process Start created, by its pid. Only the helper's
+	// own children are looked up.
+	launched func(pid int) (launch, bool)
+}
+
+// launch is what the helper knows of a process Start created: its tag,
+// and the command and directory it ran it with.
+type launch struct {
+	tag  string
+	argv []string
+	dir  string
 }
 
 type member struct {
@@ -220,9 +231,24 @@ func (t *tracker) handle(event kernelEvent) (execenv.ProcessEvent, bool) {
 
 func (t *tracker) started(pid, parent int, at time.Time) execenv.ProcessEvent {
 	event := execenv.ProcessEvent{Kind: execenv.ProcessStarted, PID: pid, ParentPID: parent, At: at}
+	var known launch
+	var ok bool
+	if parent == t.agent && t.launched != nil {
+		if known, ok = t.launched(pid); ok {
+			event.Tag = known.tag
+		}
+	}
 	raw, err := t.proc.cmdline(pid)
 	// A zombie has an empty command line: it ended before it was read.
 	if err != nil || len(raw) == 0 {
+		if ok && len(known.argv) > 0 {
+			// The helper ran this command itself, so it knows it.
+			event.Argv, event.Truncated = processes.Argv(known.argv)
+			if t.under(known.dir) && len(known.dir) <= execenv.MaxProcessDirBytes {
+				event.Dir = known.dir
+			}
+			return event
+		}
 		event.Unread = true
 		return event
 	}

@@ -34,6 +34,8 @@ message ProcessEvent {
   optional int32 exit_code = 10;
   int32 signal = 11;
   uint64 dropped = 12;
+  // The tag of a process Start created (started); its descendants have none.
+  string tag = 13;
 }
 
 message ObserveProcessesRequest {

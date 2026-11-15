@@ -626,6 +626,7 @@ for _, event := range page.Events {
 	switch event.Kind {
 	case execenv.ProcessStarted:
 		_ = event.Argv // bounded; Truncated says it was cut, Unread that it ended unread
+		_ = event.Tag  // the Start tag for a process Start created, else ""
 	case execenv.ProcessExited:
 		_ = event.ExitCode // nil when event.Signal ended it
 	case execenv.ProcessDropped:
@@ -651,6 +652,11 @@ acknowledged = page.Next
 - `Dir` is the working directory when it is inside `/workspace` or the scratch
   home, else empty. A process that ended before its command line could be
   read is reported `Unread`.
+- A process `Start` created reports its start with its `Tag`; the processes
+  it starts in turn have none, so a shell's commands are told apart from the
+  shell. The helper records the tag before the process runs its program, so
+  the start is never seen untagged, and since it ran that command itself,
+  such a start is never `Unread` either.
 - A full log never evicts and never blocks the workload. It counts what it
   cannot keep, and one `ProcessDropped` event carrying the count takes the
   next sequence once acknowledgement frees space. If the guest kernel's own

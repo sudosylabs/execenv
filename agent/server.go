@@ -175,7 +175,7 @@ func New(cfg Config) (*Agent, error) {
 	source := cfg.Processes
 	if group != nil {
 		source = nil
-		if kernel, err := openKernelProcesses(group.Path(), cfg.Home, scratch); err == nil {
+		if kernel, err := openKernelProcesses(group.Path(), cfg.Home, scratch, s.launchOf); err == nil {
 			source = kernel
 		}
 	}
@@ -255,6 +255,9 @@ func (s *server) serveLink(ctx context.Context, conn net.Conn, handler guestv1co
 }
 
 type server struct {
+	// launches is each running process Start created, pid to launch, for
+	// the process log.
+	launches    sync.Map
 	home        string
 	scratch     string
 	workload    *workload.Group

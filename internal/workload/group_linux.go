@@ -153,6 +153,10 @@ func (g *Group) Close() error {
 	return err
 }
 
+// ReleaseFD is the descriptor a workload process waits on before Exec runs
+// its command: the helper's ExtraFiles[0].
+const ReleaseFD = 3
+
 // Exec is called only by the internal workload bootstrap command, after
 // Configure dropped all identities. It pins this thread through exec so
 // inherited no_new_privs also prevents set-ID and file-capability privilege
@@ -171,6 +175,15 @@ func Exec(argv []string) error {
 	// The helper's raised priority is not the workload's.
 	if err := unix.Setpriority(unix.PRIO_PROCESS, 0, 0); err != nil {
 		return err
+	}
+	// Wait for the helper to have recorded this process: it releases it
+	// with one byte on ReleaseFD, so its exec cannot be logged untagged.
+	release := os.NewFile(ReleaseFD, "release")
+	var go1 [1]byte
+	n, _ := release.Read(go1[:])
+	_ = release.Close()
+	if n != 1 {
+		return execenv.ErrUnavailable
 	}
 	path, err := exec.LookPath(argv[0])
 	if err != nil {

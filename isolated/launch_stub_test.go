@@ -363,12 +363,22 @@ func (p *stubProcesses) Close() error {
 }
 
 func (p *stubProcesses) Run(ctx context.Context, argv []string) error {
+	return p.report(ctx, "", argv)
+}
+
+// Start reports a process the helper started under tag, as its kernel
+// process tracker would.
+func (p *stubProcesses) Start(ctx context.Context, tag string, argv []string) error {
+	return p.report(ctx, tag, argv)
+}
+
+func (p *stubProcesses) report(ctx context.Context, tag string, argv []string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.pid++
 	code := 0
 	for _, event := range []execenv.ProcessEvent{
-		{Kind: execenv.ProcessStarted, PID: p.pid, ParentPID: 100, Argv: argv, At: time.Now()},
+		{Kind: execenv.ProcessStarted, PID: p.pid, ParentPID: 100, Argv: argv, Tag: tag, At: time.Now()},
 		{Kind: execenv.ProcessExited, PID: p.pid, ExitCode: &code, At: time.Now()},
 	} {
 		select {

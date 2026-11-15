@@ -32,7 +32,7 @@ func (e *environment) startProcess(_ context.Context, spec execenv.ProcessSpec) 
 	if spec.PTY != nil {
 		win = *spec.PTY
 	}
-	sh := newShell(win, e.processes, spec.PTY != nil)
+	sh := newShell(win, e.processes, spec.PTY != nil, spec.Tag, spec.Argv)
 	p := &shellProc{sh: sh, stderr: strings.NewReader(""), done: make(chan struct{})}
 	go func() {
 		sh.mu.Lock()

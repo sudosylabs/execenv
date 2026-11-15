@@ -5,7 +5,7 @@ package agent
 import "github.com/sudosylabs/execenv"
 
 // openKernelProcesses needs the Linux process events connector.
-func openKernelProcesses(string, string, string) (ProcessSource, error) {
+func openKernelProcesses(string, string, string, func(int) (launch, bool)) (ProcessSource, error) {
 	return nil, execenv.ErrUnavailable
 }
 

@@ -75,19 +75,21 @@ func (ProcessKind) EnumDescriptor() ([]byte, []int) {
 }
 
 type ProcessEvent struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Sequence      uint64                 `protobuf:"varint,1,opt,name=sequence,proto3" json:"sequence,omitempty"`
-	Kind          ProcessKind            `protobuf:"varint,2,opt,name=kind,proto3,enum=execenv.v1.ProcessKind" json:"kind,omitempty"`
-	Pid           int32                  `protobuf:"varint,3,opt,name=pid,proto3" json:"pid,omitempty"`
-	ParentPid     int32                  `protobuf:"varint,4,opt,name=parent_pid,json=parentPid,proto3" json:"parent_pid,omitempty"`
-	Argv          []string               `protobuf:"bytes,5,rep,name=argv,proto3" json:"argv,omitempty"`
-	Truncated     bool                   `protobuf:"varint,6,opt,name=truncated,proto3" json:"truncated,omitempty"`
-	Unread        bool                   `protobuf:"varint,7,opt,name=unread,proto3" json:"unread,omitempty"`
-	Dir           string                 `protobuf:"bytes,8,opt,name=dir,proto3" json:"dir,omitempty"`
-	At            *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=at,proto3" json:"at,omitempty"`
-	ExitCode      *int32                 `protobuf:"varint,10,opt,name=exit_code,json=exitCode,proto3,oneof" json:"exit_code,omitempty"`
-	Signal        int32                  `protobuf:"varint,11,opt,name=signal,proto3" json:"signal,omitempty"`
-	Dropped       uint64                 `protobuf:"varint,12,opt,name=dropped,proto3" json:"dropped,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Sequence  uint64                 `protobuf:"varint,1,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	Kind      ProcessKind            `protobuf:"varint,2,opt,name=kind,proto3,enum=execenv.v1.ProcessKind" json:"kind,omitempty"`
+	Pid       int32                  `protobuf:"varint,3,opt,name=pid,proto3" json:"pid,omitempty"`
+	ParentPid int32                  `protobuf:"varint,4,opt,name=parent_pid,json=parentPid,proto3" json:"parent_pid,omitempty"`
+	Argv      []string               `protobuf:"bytes,5,rep,name=argv,proto3" json:"argv,omitempty"`
+	Truncated bool                   `protobuf:"varint,6,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	Unread    bool                   `protobuf:"varint,7,opt,name=unread,proto3" json:"unread,omitempty"`
+	Dir       string                 `protobuf:"bytes,8,opt,name=dir,proto3" json:"dir,omitempty"`
+	At        *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=at,proto3" json:"at,omitempty"`
+	ExitCode  *int32                 `protobuf:"varint,10,opt,name=exit_code,json=exitCode,proto3,oneof" json:"exit_code,omitempty"`
+	Signal    int32                  `protobuf:"varint,11,opt,name=signal,proto3" json:"signal,omitempty"`
+	Dropped   uint64                 `protobuf:"varint,12,opt,name=dropped,proto3" json:"dropped,omitempty"`
+	// The tag of a process Start created (started); its descendants have none.
+	Tag           string `protobuf:"bytes,13,opt,name=tag,proto3" json:"tag,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -204,6 +206,13 @@ func (x *ProcessEvent) GetDropped() uint64 {
 		return x.Dropped
 	}
 	return 0
+}
+
+func (x *ProcessEvent) GetTag() string {
+	if x != nil {
+		return x.Tag
+	}
+	return ""
 }
 
 type ObserveProcessesRequest struct {
@@ -411,7 +420,7 @@ var File_execenv_v1_process_log_proto protoreflect.FileDescriptor
 const file_execenv_v1_process_log_proto_rawDesc = "" +
 	"\n" +
 	"\x1cexecenv/v1/process_log.proto\x12\n" +
-	"execenv.v1\x1a\x17execenv/v1/common.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf2\x02\n" +
+	"execenv.v1\x1a\x17execenv/v1/common.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x84\x03\n" +
 	"\fProcessEvent\x12\x1a\n" +
 	"\bsequence\x18\x01 \x01(\x04R\bsequence\x12+\n" +
 	"\x04kind\x18\x02 \x01(\x0e2\x17.execenv.v1.ProcessKindR\x04kind\x12\x10\n" +
@@ -426,7 +435,8 @@ const file_execenv_v1_process_log_proto_rawDesc = "" +
 	"\texit_code\x18\n" +
 	" \x01(\x05H\x00R\bexitCode\x88\x01\x01\x12\x16\n" +
 	"\x06signal\x18\v \x01(\x05R\x06signal\x12\x18\n" +
-	"\adropped\x18\f \x01(\x04R\adroppedB\f\n" +
+	"\adropped\x18\f \x01(\x04R\adropped\x12\x10\n" +
+	"\x03tag\x18\r \x01(\tR\x03tagB\f\n" +
 	"\n" +
 	"_exit_code\"n\n" +
 	"\x17ObserveProcessesRequest\x12'\n" +

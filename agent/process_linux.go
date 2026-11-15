@@ -40,7 +40,7 @@ const (
 // filters them to the workload hierarchy at group. It fails when the kernel
 // lacks the connector or its process events, so the helper can refuse to
 // advertise a process log it cannot keep.
-func openKernelProcesses(group, home, scratch string) (ProcessSource, error) {
+func openKernelProcesses(group, home, scratch string, launched func(int) (launch, bool)) (ProcessSource, error) {
 	if group == "" {
 		return nil, execenv.ErrUnavailable
 	}
@@ -48,7 +48,9 @@ func openKernelProcesses(group, home, scratch string) (ProcessSource, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &kernelProcesses{reader: reader, tracker: newTracker(procfs{}, group, os.Getpid(), home, scratch)}, nil
+	tracker := newTracker(procfs{}, group, os.Getpid(), home, scratch)
+	tracker.launched = launched
+	return &kernelProcesses{reader: reader, tracker: tracker}, nil
 }
 
 type connector struct {

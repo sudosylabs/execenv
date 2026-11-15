@@ -73,6 +73,9 @@ type ProcessEvent struct {
 	// Dir is the working directory when it was readable and inside the
 	// workspace or the scratch home, else "" (started).
 	Dir string `json:"dir,omitempty"`
+	// Tag is the tag of a process Start created (started). Processes it
+	// starts in turn have none.
+	Tag string `json:"tag,omitempty"`
 	// At is the guest clock when the event was observed. For a dropped
 	// event it is when the loss was reported.
 	At time.Time `json:"at"`
@@ -126,8 +129,11 @@ func ValidateProcessEvent(event ProcessEvent) error {
 		if event.Dir != "" && (len(event.Dir) > MaxProcessDirBytes || !utf8.ValidString(event.Dir) || !path.IsAbs(event.Dir) || path.Clean(event.Dir) != event.Dir) {
 			return ErrInvalid
 		}
+		if event.Tag != "" && (len(event.Tag) > MaxTagBytes || validateName(event.Tag) != nil) {
+			return ErrInvalid
+		}
 	case ProcessExited:
-		if !validPID(event.PID) || event.ParentPID != 0 || len(event.Argv) != 0 || event.Truncated || event.Unread || event.Dir != "" || event.Dropped != 0 {
+		if !validPID(event.PID) || event.ParentPID != 0 || len(event.Argv) != 0 || event.Truncated || event.Unread || event.Dir != "" || event.Tag != "" || event.Dropped != 0 {
 			return ErrInvalid
 		}
 		if (event.ExitCode == nil) == (event.Signal == 0) {
@@ -140,7 +146,7 @@ func ValidateProcessEvent(event ProcessEvent) error {
 			return ErrInvalid
 		}
 	case ProcessDropped:
-		if event.Dropped == 0 || event.PID != 0 || event.ParentPID != 0 || len(event.Argv) != 0 || event.Truncated || event.Unread || event.Dir != "" || event.ExitCode != nil || event.Signal != 0 {
+		if event.Dropped == 0 || event.PID != 0 || event.ParentPID != 0 || len(event.Argv) != 0 || event.Truncated || event.Unread || event.Dir != "" || event.Tag != "" || event.ExitCode != nil || event.Signal != 0 {
 			return ErrInvalid
 		}
 	default:

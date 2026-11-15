@@ -36,6 +36,8 @@ const (
 )
 
 type guestProc struct {
+	// untag forgets its pid's tag once the process is gone.
+	untag   func()
 	spec    execenv.ProcessSpec
 	cmd     *exec.Cmd
 	started time.Time
@@ -104,6 +106,17 @@ func (s *server) spawn(spec execenv.ProcessSpec) (*guestProc, error) {
 		argv = []string{"/bin/sh", "-l"}
 	}
 	var cmd *exec.Cmd
+	// release lets a workload process run its command once the helper has
+	// recorded it and its tag.
+	var release, held *os.File
+	defer func() {
+		if held != nil {
+			_ = held.Close()
+		}
+		if release != nil {
+			_ = release.Close()
+		}
+	}()
 	if s.workload != nil {
 		self, err := os.Executable()
 		if err != nil {
@@ -113,6 +126,11 @@ func (s *server) spawn(spec execenv.ProcessSpec) (*guestProc, error) {
 		if err := s.workload.Configure(cmd); err != nil {
 			return nil, err
 		}
+		held, release, err = os.Pipe()
+		if err != nil {
+			return nil, err
+		}
+		cmd.ExtraFiles = []*os.File{held}
 	} else {
 		path, err := exec.LookPath(argv[0])
 		if err != nil {
@@ -143,8 +161,26 @@ func (s *server) spawn(spec execenv.ProcessSpec) (*guestProc, error) {
 	} else if err := p.startPiped(); err != nil {
 		return nil, err
 	}
+	pid := cmd.Process.Pid
+	l := &launch{tag: spec.Tag, argv: argv, dir: cmd.Dir}
+	s.launches.Store(pid, l)
+	p.untag = func() { s.launches.CompareAndDelete(pid, l) }
+	if release != nil {
+		_ = held.Close()
+		held = nil
+		_, _ = release.Write([]byte{1})
+	}
 	go p.wait()
 	return p, nil
+}
+
+// launchOf is the process Start created with pid.
+func (s *server) launchOf(pid int) (launch, bool) {
+	v, ok := s.launches.Load(pid)
+	if !ok {
+		return launch{}, false
+	}
+	return *v.(*launch), true
 }
 
 // environment is the workload's base environment with the spec's added.
@@ -274,6 +310,10 @@ func (p *guestProc) wait() {
 	p.cond.Broadcast()
 	p.mu.Unlock()
 	time.Sleep(outputDrain)
+	if p.untag != nil {
+		// Long after the process log read its start.
+		p.untag()
+	}
 	p.mu.Lock()
 	p.closing = true
 	p.cond.Broadcast()
