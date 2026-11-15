@@ -134,9 +134,12 @@ func TestRestartAdoptsAFrozenGrant(t *testing.T) {
 	}
 	fence := runningFence(t, env)
 	sh := execenvtest.StartShell(t, env, fence, "sh")
-	if err := sh.Type("kept=frozen"); err != nil {
+	// Wait for the shell to have run it: one that has not started reading
+	// yet may discard what was typed ahead.
+	if err := sh.Type(`kept=frozen; echo set""-done`); err != nil {
 		t.Fatal(err)
 	}
+	sh.Expect("set-done")
 	frozen := fence
 	frozen.FenceRevision++
 	if _, err := env.Control(t.Context(), execenv.ControlRequest{Fence: frozen, State: execenv.ControlFrozen}); err != nil {

@@ -22,9 +22,10 @@ func TestIdleSuspendReleasesAndResumes(t *testing.T) {
 	}
 	fence := runningFence(t, env)
 	sh := execenvtest.StartShell(t, env, fence, "sh")
-	if err := sh.Type("kept=asleep"); err != nil {
+	if err := sh.Type(`kept=asleep; echo set""-done`); err != nil {
 		t.Fatal(err)
 	}
+	sh.Expect("set-done")
 	_ = sh.Attachment().Close()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
