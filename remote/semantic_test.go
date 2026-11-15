@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -41,7 +42,7 @@ func TestRemoteSemanticReplayAndImmutableStreamingContent(t *testing.T) {
 	if err := inner.WriteGuest(t.Context(), env.ID(), "file", captured); err != nil {
 		t.Fatal(err)
 	}
-	page, err := one.Observe(t.Context(), fence, 0, 128)
+	page, err := one.Observe(t.Context(), execenv.ObserveRequest{Fence: fence, After: 0, Limit: 128})
 	if err != nil || len(page.Observations) != 1 {
 		t.Fatalf("observe: %+v %v", page, err)
 	}
@@ -57,7 +58,7 @@ func TestRemoteSemanticReplayAndImmutableStreamingContent(t *testing.T) {
 	if err := inner.WriteGuest(t.Context(), env.ID(), "file", []byte("later content")); err != nil {
 		t.Fatal(err)
 	}
-	replay, err := two.Observe(t.Context(), fence, 0, 1)
+	replay, err := two.Observe(t.Context(), execenv.ObserveRequest{Fence: fence, After: 0, Limit: 1})
 	if err != nil || len(replay.Observations) != 1 || *replay.Observations[0].Content != *page.Observations[0].Content {
 		t.Fatalf("reconnect replay: %+v %v", replay, err)
 	}
@@ -89,10 +90,10 @@ func TestRemoteSemanticReplayAndImmutableStreamingContent(t *testing.T) {
 	if _, err := one.OpenObservationContent(t.Context(), fence, *page.Observations[0].Content); !errors.Is(err, execenv.ErrConflict) {
 		t.Fatalf("acknowledged content accessible: %v", err)
 	}
-	if _, err := one.Observe(t.Context(), fence, 0, 128); !errors.Is(err, execenv.ErrLagged) {
+	if _, err := one.Observe(t.Context(), execenv.ObserveRequest{Fence: fence, After: 0, Limit: 128}); !errors.Is(err, execenv.ErrLagged) {
 		t.Fatalf("retired prefix silently skipped: %v", err)
 	}
-	page, err = one.Observe(t.Context(), fence, 1, 128)
+	page, err = one.Observe(t.Context(), execenv.ObserveRequest{Fence: fence, After: 1, Limit: 128})
 	if err != nil || len(page.Observations) != 1 || page.Observations[0].HostSequence != 2 {
 		t.Fatalf("remaining event: %+v %v", page, err)
 	}
@@ -143,7 +144,7 @@ func TestRemoteInitialProjectionRetainsLargeSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	replay, err := projection.InitializeProjection(t.Context(), request)
-	if err != nil || replay != receipt {
+	if err != nil || !reflect.DeepEqual(replay, receipt) {
 		t.Fatalf("large initial replay: %v", err)
 	}
 	if receipt.AppliedWorkspaceCursor != 0 {

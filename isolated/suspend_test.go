@@ -146,3 +146,52 @@ func TestTemplatePick(t *testing.T) {
 		}
 	}
 }
+
+// A grant its caller froze is saved once idle like a running one, keeping
+// the caller's frozen receipt; the caller's thaw restores the machine.
+func TestIdleSuspendOfAFrozenGrant(t *testing.T) {
+	launch := &recordingLauncher{}
+	h := testHost(t, func() error { return nil }, launch)
+	spec := execenv.Spec{ID: "parked", Image: "default", IdleTimeout: 150 * time.Millisecond, IdleAction: execenv.IdleSuspend}
+	env, err := h.Ensure(t.Context(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence := runningFence(t, env)
+	sh := execenvtest.StartShell(t, env, fence, "sh")
+	if err := sh.Type(`kept=frozen; echo set""-done`); err != nil {
+		t.Fatal(err)
+	}
+	sh.Expect("set-done")
+	_ = sh.Attachment().Close()
+	frozen := fence
+	frozen.FenceRevision++
+	if _, err := env.Control(t.Context(), execenv.ControlRequest{Fence: frozen, State: execenv.ControlFrozen}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		states, _, _ := loadStates(h.cfg.WorkDir)
+		report, _ := h.Ready(t.Context())
+		if states["parked"].Suspended && states["parked"].Receipt.Fence == frozen && report.MemoryBytes.Reserved == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("frozen grant not suspended: %+v %+v", states["parked"], report.MemoryBytes)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	thawed := frozen
+	thawed.FenceRevision++
+	if _, err := env.Control(t.Context(), execenv.ControlRequest{Fence: thawed, State: execenv.ControlRunning}); err != nil {
+		t.Fatalf("thaw of a suspended frozen grant: %v", err)
+	}
+	if launch.restores != 1 || launch.starts != 1 {
+		t.Fatalf("resume: restores %d, starts %d", launch.restores, launch.starts)
+	}
+	info, err := env.Process(t.Context(), "sh")
+	if err != nil || !info.Running {
+		t.Fatalf("Process() after resume = %+v, %v", info, err)
+	}
+	typeAndExpect(t, env, thawed, "sh", info, "echo $kept-y", "frozen-y")
+}

@@ -29,9 +29,17 @@ const (
 	FeatureControl    = "control"
 	FeatureJournal    = "journal"
 	FeatureProcessLog = "process_log"
+	// FeatureObserveWait is a host whose Observe waits for a change.
+	FeatureObserveWait = "observe_wait"
+	// FeatureObservationTag is a host that names, on each observation, the
+	// started process the change's writer descends from, where it can.
+	FeatureObservationTag = "observation_tag"
+	// FeatureOverwrite is a host whose projection can overwrite the
+	// guest's unconfirmed changes and discard their observations.
+	FeatureOverwrite = "projection_overwrite"
 )
 
-var features = []string{FeatureControl, FeatureJournal, FeatureProcess, FeatureProcessLog, FeatureSeed, FeatureFiles, FeatureScreen, FeatureGrants}
+var features = []string{FeatureControl, FeatureJournal, FeatureProcess, FeatureProcessLog, FeatureSeed, FeatureFiles, FeatureScreen, FeatureGrants, FeatureObserveWait, FeatureObservationTag, FeatureOverwrite}
 
 // Window sizes for HTTP/2 flow control. The host receives uploads and
 // keystrokes; uploads need the large window.
@@ -145,7 +153,12 @@ type timeoutInterceptor struct{ limit time.Duration }
 
 func (t timeoutInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		ctx, cancel := context.WithTimeout(ctx, t.limit)
+		limit := t.limit
+		// An observation wait is not the operation: it is added to the cap.
+		if observe, ok := req.Any().(*execenvv1.ObserveRequest); ok && observe.GetWait() != nil {
+			limit += min(max(observe.GetWait().AsDuration(), 0), execenv.MaxObserveWait)
+		}
+		ctx, cancel := context.WithTimeout(ctx, limit)
 		defer cancel()
 		return next(ctx, req)
 	}
@@ -347,7 +360,9 @@ func (h *server) Observe(ctx context.Context, req *connect.Request[execenvv1.Obs
 	if err != nil {
 		return nil, wire.Error(err)
 	}
-	page, err := env.Observe(ctx, fence, req.Msg.GetAfter(), int(req.Msg.GetLimit()))
+	request := wire.ObserveRequestFrom(req.Msg)
+	request.Fence = fence
+	page, err := env.Observe(ctx, request)
 	if err != nil {
 		return nil, wire.Error(err)
 	}

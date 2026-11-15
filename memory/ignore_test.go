@@ -52,6 +52,21 @@ func TestIgnoreConformance(t *testing.T) {
 	})
 }
 
+func TestObservationConformance(t *testing.T) {
+	execenvtest.RunObservations(t, func(t *testing.T) execenvtest.Observed {
+		host, env, fence := running(t)
+		return execenvtest.Observed{Workspace: env, Fence: fence, Guest: memoryGuest{host: host, id: env.ID()}, Processes: env}
+	})
+}
+
+// The suite's file API guest, which live hosts use, writes as no process.
+func TestObservationConformanceThroughFiles(t *testing.T) {
+	execenvtest.RunObservations(t, func(t *testing.T) execenvtest.Observed {
+		_, env, fence := running(t)
+		return execenvtest.Observed{Workspace: env, Fence: fence, Guest: execenvtest.FilesGuest(env, fence), Processes: env}
+	})
+}
+
 func TestIgnoredPathsStayInTheGuest(t *testing.T) {
 	host, env, fence := running(t)
 	request := execenv.ProjectionInitialization{Fence: fence, MutationID: "init", Entries: []execenv.ProjectionEntry{{EntryID: "dir", Kind: execenv.ProjectionDirectory, Path: "dir"}}, Ignore: &execenv.IgnoreRules{File: "rules", Fallback: []string{"*.o"}}}
@@ -70,7 +85,7 @@ func TestIgnoredPathsStayInTheGuest(t *testing.T) {
 	if err != nil || string(body) != "object" {
 		t.Fatalf("ignored file lost: %q %v", body, err)
 	}
-	page, err := env.Observe(t.Context(), fence, 0, 16)
+	page, err := env.Observe(t.Context(), execenv.ObserveRequest{Fence: fence, After: 0, Limit: 16})
 	if err != nil || len(page.Observations) != 0 {
 		t.Fatalf("ignored file observed: %+v %v", page, err)
 	}

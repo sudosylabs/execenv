@@ -197,7 +197,7 @@ func (s *State) Apply(request execenv.ProjectionApply, commit func(Plan) error) 
 		return execenv.ProjectionReceipt{}, execenv.ErrConflict
 	}
 	next := maps.Clone(s.nodes)
-	plan := Plan{}
+	plan := Plan{result: &planResult{}}
 	refs := make([]*execenv.ContentReference, 0, len(request.Mutations))
 	for _, mutation := range request.Mutations {
 		before := maps.Clone(next)
@@ -219,7 +219,7 @@ func (s *State) Apply(request execenv.ProjectionApply, commit func(Plan) error) 
 			next[mutation.Path] = node
 		}
 		refs = append(refs, mutation.Content)
-		converted := tree.Mutation{Path: mutation.Path, Kind: nodeKind(mutation.Kind), Expected: mutation.ExpectedContentVersion, Version: mutation.ResultingContentVersion}
+		converted := tree.Mutation{Path: mutation.Path, Kind: nodeKind(mutation.Kind), Expected: mutation.ExpectedContentVersion, Version: mutation.ResultingContentVersion, Overwrite: mutation.Overwrite}
 		if mutation.Recursive != nil {
 			converted.Recursive = *mutation.Recursive
 		}
@@ -237,14 +237,14 @@ func (s *State) Apply(request execenv.ProjectionApply, commit func(Plan) error) 
 		case execenv.ProjectionDelete:
 			converted.Op = tree.OpDelete
 		}
-		plan.steps = append(plan.steps, step{before: before, after: maps.Clone(next), mutation: converted, echo: echo})
+		plan.steps = append(plan.steps, step{before: before, after: maps.Clone(next), mutation: converted, echo: echo, cursor: mutation.JournalCursor})
 	}
 	if err := commit(plan); err != nil {
 		return execenv.ProjectionReceipt{}, err
 	}
 	s.nodes = next
 	s.cursor = request.ThroughWorkspaceCursor
-	value := execenv.ProjectionReceipt{Fence: request.Fence, MutationID: request.MutationID, AppliedWorkspaceCursor: s.cursor, HostCursor: s.hostCursor}
+	value := execenv.ProjectionReceipt{Fence: request.Fence, MutationID: request.MutationID, AppliedWorkspaceCursor: s.cursor, HostCursor: s.hostCursor, Discarded: plan.result.discarded}
 	s.consume(refs)
 	s.remember(request.MutationID, digest, value)
 	return value, nil

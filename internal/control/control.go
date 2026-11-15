@@ -182,6 +182,23 @@ func (s *State) Idle(ctx context.Context, effect func(done execenv.ControlReceip
 	return true, err
 }
 
+// Suspend saves a confirmed frozen epoch on the host's own initiative, for
+// its idle timeout. The receipt does not change: the epoch stays frozen
+// under the caller's fence, which thaws it with its next revision as
+// before, and a suspend that fails leaves it frozen. effect is given that
+// receipt. It reports false, and runs nothing, unless the epoch is
+// confirmed frozen.
+func (s *State) Suspend(ctx context.Context, effect func(done execenv.ControlReceipt) error) (bool, error) {
+	if err := s.acquire(ctx); err != nil {
+		return false, err
+	}
+	defer s.release()
+	if s.lost || s.receipt.State != execenv.ControlFrozen || !s.receipt.Confirmed {
+		return false, nil
+	}
+	return true, effect(s.receipt)
+}
+
 // Run holds the same serialization boundary as control effects. A matching
 // request may use only a confirmed running epoch; a rejected fence performs no I/O.
 func (s *State) Run(ctx context.Context, fence execenv.ProjectionFence, effect func() error) error {

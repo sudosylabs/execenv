@@ -7,6 +7,7 @@ package observations
 import (
 	"crypto/rand"
 	"encoding/json"
+	"strings"
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/internal/content"
@@ -112,10 +113,80 @@ func (l *Log) Content(reference execenv.ContentReference) (string, content.Blob,
 	}
 	for _, item := range l.events {
 		if item.event.Content != nil && *item.event.Content == reference {
+			if item.event.DiscardedBy != 0 {
+				// An overwrite replaced the body.
+				return "", content.Blob{}, execenv.ErrStale
+			}
 			return item.event.Path, item.blob, nil
 		}
 	}
 	return "", content.Blob{}, execenv.ErrConflict
+}
+
+// Replaced is a subtree an overwriting projection replaced: the journal
+// cursor of the mutation and the path at its root.
+type Replaced struct {
+	JournalCursor uint64
+	Path          string
+}
+
+// Discard is one retained observation an overwrite discards.
+type Discard struct {
+	Sequence uint64
+	By       uint64
+}
+
+func inside(name string, roots []Replaced) (uint64, bool) {
+	var by uint64
+	found := false
+	for _, root := range roots {
+		if name == root.Path || strings.HasPrefix(name, root.Path+"/") {
+			by, found = max(by, root.JournalCursor), true
+		}
+	}
+	return by, found
+}
+
+// Discardable lists, in order, the retained observations not yet discarded
+// whose every path lies in one of roots, each with the latest mutation
+// that replaced one of them. An observation that names a path inside and a
+// path outside is ErrConflict: an overwrite cannot discard half a move.
+func (l *Log) Discardable(roots []Replaced) ([]Discard, error) {
+	if len(roots) == 0 {
+		return nil, nil
+	}
+	var out []Discard
+	for _, item := range l.events {
+		event := item.event
+		if event.DiscardedBy != 0 {
+			continue
+		}
+		by, in := inside(event.Path, roots)
+		if event.DestinationPath != "" {
+			to, toIn := inside(event.DestinationPath, roots)
+			if in != toIn {
+				return nil, execenv.ErrConflict
+			}
+			by = max(by, to)
+		}
+		if in {
+			out = append(out, Discard{Sequence: event.HostSequence, By: by})
+		}
+	}
+	return out, nil
+}
+
+// Discard marks the observations Discardable listed.
+func (l *Log) Discard(discards []Discard) {
+	by := make(map[uint64]uint64, len(discards))
+	for _, d := range discards {
+		by[d.Sequence] = d.By
+	}
+	for i := range l.events {
+		if cursor, ok := by[l.events[i].event.HostSequence]; ok {
+			l.events[i].event.DiscardedBy = cursor
+		}
+	}
 }
 
 func (l *Log) Acknowledge(through uint64) error {

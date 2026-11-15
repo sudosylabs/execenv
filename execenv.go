@@ -134,7 +134,8 @@ type Spec struct {
 	// IdleTimeout and IdleAction, set together, freeze, suspend or revoke
 	// the grant once it has been idle that long. A grant is busy while
 	// anything is attached to one of its processes and for a moment after
-	// any call on it.
+	// any call on it, except Observe and ObserveProcesses: reading what the
+	// grant did is not activity.
 	IdleTimeout time.Duration
 	IdleAction  IdleAction
 	// Labels are the caller's, for its own bookkeeping. The host never
@@ -179,9 +180,9 @@ type Host interface {
 // journal: upload immutable content, initialize once, then apply
 // consecutive journal mutations. Observe reports what the isolated
 // environment wrote, with its captured content, until the caller
-// acknowledges it. ObserveProcesses reports, in order, every program the
-// contained workload started and how each process ended, until the caller
-// acknowledges it. Every projection, observation and process log call
+// acknowledges it, and can wait for the next one. ObserveProcesses
+// reports, in order, every program the contained workload started and how
+// each process ended, until the caller acknowledges it. Every projection, observation and process log call
 // names the current fence, and a stale fence performs no I/O.
 type Env interface {
 	ID() ID
@@ -193,7 +194,10 @@ type Env interface {
 	UploadProjectionContent(ctx context.Context, fence ProjectionFence, body io.Reader) (ContentReference, error)
 	InitializeProjection(ctx context.Context, request ProjectionInitialization) (ProjectionReceipt, error)
 	ApplyProjection(ctx context.Context, request ProjectionApply) (ProjectionReceipt, error)
-	Observe(ctx context.Context, fence ProjectionFence, after uint64, limit int) (ObservationPage, error)
+	// Observe returns up to request.Limit observations after request.After.
+	// With a Wait it holds the call until there is one or the wait has
+	// passed; an empty page after the wait is not an error.
+	Observe(ctx context.Context, request ObserveRequest) (ObservationPage, error)
 	OpenObservationContent(ctx context.Context, fence ProjectionFence, content ContentReference) (io.ReadCloser, error)
 	ConfirmObservationProjection(ctx context.Context, binding ObservationProjection) error
 	AcknowledgeObservations(ctx context.Context, fence ProjectionFence, through uint64) error

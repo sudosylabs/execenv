@@ -3,6 +3,7 @@ package execenvtest
 import (
 	"bytes"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/sudosylabs/execenv"
@@ -31,7 +32,7 @@ func runProjection(t *testing.T, factory Factory) {
 			t.Fatal(err)
 		}
 		replay, err := projected.InitializeProjection(t.Context(), initial)
-		if err != nil || receipt != replay {
+		if err != nil || !reflect.DeepEqual(receipt, replay) {
 			t.Fatalf("initialization retry: %+v %v", replay, err)
 		}
 		sh := StartShell(t, env, fence, "sh")
@@ -49,7 +50,7 @@ func runProjection(t *testing.T, factory Factory) {
 			t.Fatalf("apply: %+v %v", receipt, err)
 		}
 		replay, err = projected.ApplyProjection(t.Context(), apply)
-		if err != nil || receipt != replay {
+		if err != nil || !reflect.DeepEqual(receipt, replay) {
 			t.Fatalf("apply retry: %+v %v", replay, err)
 		}
 		if err := sh.Type("echo same shell"); err != nil {

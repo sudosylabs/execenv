@@ -59,7 +59,7 @@ func TestCertifyRemoteHarvestsGuestFile(t *testing.T) {
 
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
-		page, err := env.Observe(t.Context(), fence, 0, 128)
+		page, err := env.Observe(t.Context(), execenv.ObserveRequest{Fence: fence, After: 0, Limit: 128})
 		if err != nil {
 			t.Fatal(err)
 		}

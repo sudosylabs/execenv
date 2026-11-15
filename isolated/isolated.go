@@ -402,7 +402,12 @@ func (h *Host) expire(env *environment, r lifetime.Reason) {
 		return
 	}
 	if r == lifetime.Idle && env.spec.IdleAction == execenv.IdleSuspend {
-		_, _ = env.control.Idle(ctx, func(done execenv.ControlReceipt) error { return env.suspend(ctx, done) })
+		suspend := func(done execenv.ControlReceipt) error { return env.suspend(ctx, done) }
+		// A running grant is frozen and saved; one the caller froze is
+		// saved as it is.
+		if ran, _ := env.control.Idle(ctx, suspend); !ran {
+			_, _ = env.control.Suspend(ctx, suspend)
+		}
 		env.persist()
 		return
 	}

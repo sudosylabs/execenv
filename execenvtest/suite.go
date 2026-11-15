@@ -2,8 +2,9 @@
 //
 // Run covers occupancy, processes and their screens, fenced control,
 // resources, the journal projection, seeds, files and the grant watches. Guest-originated observations need a real or simulated guest:
-// RunIgnore covers IgnoreRules given a Guest that acts inside the
-// workspace, and the rest is covered by each adapter's own tests. The
+// RunIgnore covers IgnoreRules and RunObservations the observation stream
+// (waiting for a change) given a Guest that acts inside the workspace, and
+// the rest is covered by each adapter's own tests. The
 // process log needs a workload: RunProcesses covers it given a Workload,
 // and ShellWorkload types commands into a shell in the environment. A lost
 // environment needs a way to end one without a revoke: RunLoss covers it
@@ -11,7 +12,8 @@
 //
 // Process subtests drive shells and commands with a small POSIX subset every
 // adapter supports: NAME=value, echo with $NAME and quotes, seq, true,
-// false, and exit.
+// false, exit, and one "> path" or ">> path" redirection to a workspace
+// file.
 package execenvtest
 
 import (

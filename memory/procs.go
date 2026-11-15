@@ -35,7 +35,9 @@ func (e *environment) startProcess(_ context.Context, spec execenv.ProcessSpec) 
 	if spec.PTY != nil {
 		win = *spec.PTY
 	}
-	sh := newShell(win, e.processes, spec.PTY != nil, spec.Tag, spec.Argv)
+	sh := newShell(win, e.processes, spec.PTY != nil, spec.Tag, spec.Argv, func(path string, data []byte, appending bool) error {
+		return e.shellWrite(spec.Tag, path, data, appending)
+	})
 	p := &shellProc{sh: sh, stderr: strings.NewReader(""), done: make(chan struct{})}
 	if spec.PTY != nil {
 		p.screen = screen.New(win)

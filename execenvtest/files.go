@@ -155,7 +155,7 @@ func runFiles(t *testing.T, factory Factory) {
 		if _, err := env.WriteFile(t.Context(), fence, "out.txt", strings.NewReader("result"), execenv.WriteOptions{}); err != nil {
 			t.Fatal(err)
 		}
-		page, err := env.Observe(t.Context(), fence, 0, 128)
+		page, err := env.Observe(t.Context(), execenv.ObserveRequest{Fence: fence, After: 0, Limit: 128})
 		if err != nil || len(page.Observations) != 1 || page.Observations[0].Path != "out.txt" || page.Observations[0].Operation != execenv.ObservationCreateFile {
 			t.Fatalf("Observe() = %+v, %v", page, err)
 		}

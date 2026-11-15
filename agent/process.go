@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -128,7 +129,13 @@ type procInfo interface {
 
 // tracker turns raw kernel events into the workload's process log. It
 // records program starts, not forks, and only for the workload hierarchy.
+// It also knows, for every workload process, the tag of the process Start
+// created that it descends from, for as long as it runs and for a while
+// after it ends, so a change it made can name it.
 type tracker struct {
+	// mu guards member and gone: events arrive on one goroutine, tag
+	// lookups on any.
+	mu     sync.Mutex
 	proc   procInfo
 	group  string
 	agent  int
@@ -137,7 +144,14 @@ type tracker struct {
 	// launched finds a process Start created, by its pid. Only the helper's
 	// own children are looked up.
 	launched func(pid int) (launch, bool)
+	// gone keeps the tags of the most recently ended processes, oldest
+	// first in ended, for changes read after their writer ended.
+	gone  map[int]string
+	ended []int
 }
+
+// keptEnded is how many ended processes' tags the tracker keeps.
+const keptEnded = 4096
 
 // launch is what the helper knows of a process Start created: its tag,
 // and the command and directory it ran it with.
@@ -149,6 +163,9 @@ type launch struct {
 
 type member struct {
 	parent int
+	// tag is the tag of the process Start created that this one descends
+	// from, once known.
+	tag string
 	// launch marks the helper's own child: its first program is the
 	// helper's workload bootstrap, which replaces itself with the shell.
 	launch  bool
@@ -162,7 +179,58 @@ func newTracker(proc procInfo, group string, agent int, roots ...string) *tracke
 			clean = append(clean, filepath.Clean(root))
 		}
 	}
-	return &tracker{proc: proc, group: group, agent: agent, roots: clean, member: make(map[int]*member)}
+	return &tracker{proc: proc, group: group, agent: agent, roots: clean, member: make(map[int]*member), gone: make(map[int]string)}
+}
+
+// tagOf is the tag of the process Start created that pid descends from, ""
+// when it descends from none or the tracker does not know it.
+func (t *tracker) tagOf(pid int) string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.tagLocked(pid)
+}
+
+func (t *tracker) tagLocked(pid int) string {
+	// A lineage deeper than this is not walked.
+	for range 256 {
+		m := t.member[pid]
+		if m == nil {
+			return t.gone[pid]
+		}
+		if m.tag != "" {
+			return m.tag
+		}
+		if m.parent == t.agent {
+			if t.launched != nil {
+				if known, ok := t.launched(pid); ok {
+					m.tag = known.tag
+				}
+			}
+			return m.tag
+		}
+		pid = m.parent
+	}
+	return ""
+}
+
+// end forgets a running process, keeping its tag among the ended.
+func (t *tracker) end(tgid int) {
+	if t.member[tgid] == nil {
+		return
+	}
+	tag := t.tagLocked(tgid)
+	delete(t.member, tgid)
+	if tag == "" {
+		return
+	}
+	if _, kept := t.gone[tgid]; !kept {
+		t.ended = append(t.ended, tgid)
+	}
+	t.gone[tgid] = tag
+	for len(t.ended) > keptEnded {
+		delete(t.gone, t.ended[0])
+		t.ended = t.ended[1:]
+	}
 }
 
 func (t *tracker) inWorkload(pid int) bool {
@@ -188,6 +256,8 @@ func (t *tracker) admit(tgid, parent int) *member {
 }
 
 func (t *tracker) handle(event kernelEvent) (execenv.ProcessEvent, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	switch event.Kind {
 	case kernelLost:
 		return execenv.ProcessEvent{Kind: execenv.ProcessDropped, Dropped: 1, At: event.At}, true
@@ -197,8 +267,10 @@ func (t *tracker) handle(event kernelEvent) (execenv.ProcessEvent, bool) {
 			return execenv.ProcessEvent{}, false
 		}
 		delete(t.member, event.TGID)
-		if t.member[event.Parent] != nil {
-			t.member[event.TGID] = &member{parent: event.Parent}
+		// A reused pid is a new process: an ended one's tag is not its.
+		delete(t.gone, event.TGID)
+		if parent := t.member[event.Parent]; parent != nil {
+			t.member[event.TGID] = &member{parent: event.Parent, tag: t.tagLocked(event.Parent)}
 		} else {
 			t.admit(event.TGID, event.Parent)
 		}
@@ -220,7 +292,7 @@ func (t *tracker) handle(event kernelEvent) (execenv.ProcessEvent, bool) {
 			return execenv.ProcessEvent{}, false
 		}
 		m := t.member[event.TGID]
-		delete(t.member, event.TGID)
+		t.end(event.TGID)
 		if m == nil || !m.started {
 			return execenv.ProcessEvent{}, false
 		}
@@ -236,6 +308,9 @@ func (t *tracker) started(pid, parent int, at time.Time) execenv.ProcessEvent {
 	if parent == t.agent && t.launched != nil {
 		if known, ok = t.launched(pid); ok {
 			event.Tag = known.tag
+			if m := t.member[pid]; m != nil {
+				m.tag = known.tag
+			}
 		}
 	}
 	raw, err := t.proc.cmdline(pid)

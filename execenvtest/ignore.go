@@ -18,7 +18,9 @@ type Workspace interface {
 	UploadProjectionContent(ctx context.Context, fence execenv.ProjectionFence, body io.Reader) (execenv.ContentReference, error)
 	InitializeProjection(ctx context.Context, request execenv.ProjectionInitialization) (execenv.ProjectionReceipt, error)
 	ApplyProjection(ctx context.Context, request execenv.ProjectionApply) (execenv.ProjectionReceipt, error)
-	Observe(ctx context.Context, fence execenv.ProjectionFence, after uint64, limit int) (execenv.ObservationPage, error)
+	Observe(ctx context.Context, request execenv.ObserveRequest) (execenv.ObservationPage, error)
+	ConfirmObservationProjection(ctx context.Context, binding execenv.ObservationProjection) error
+	AcknowledgeObservations(ctx context.Context, fence execenv.ProjectionFence, through uint64) error
 }
 
 // Guest acts inside one environment's workspace as its own processes would.
@@ -32,10 +34,13 @@ type Guest interface {
 
 // Observed is one running environment whose projection is not yet
 // initialized, the fence that drives it, and a guest acting inside it.
+// Processes, when set, runs processes in the same environment, and the host
+// names on each observation the started process its writer descends from.
 type Observed struct {
 	Workspace Workspace
 	Fence     execenv.ProjectionFence
 	Guest     Guest
+	Processes execenv.Processes
 }
 
 // ObservedFactory returns a fresh Observed for one subtest.
@@ -176,12 +181,16 @@ type watcher struct {
 	versions   map[string]string
 	entries    map[string]string
 	generation int
+	// seen and applied serve the observation subtests: what drain read,
+	// and which apply ids were committed.
+	seen    map[string]execenv.ExecutionObservation
+	applied map[string]bool
 }
 
 func start(t *testing.T, factory ObservedFactory, seeds []seed, rules *execenv.IgnoreRules) *watcher {
 	t.Helper()
 	o := factory(t)
-	w := &watcher{t: t, o: o, workspace: 10, versions: map[string]string{}, entries: map[string]string{}}
+	w := &watcher{t: t, o: o, workspace: 10, versions: map[string]string{}, entries: map[string]string{}, applied: map[string]bool{}}
 	request := execenv.ProjectionInitialization{Fence: o.Fence, MutationID: "init", WorkspaceCursor: w.workspace, Ignore: rules}
 	for i, s := range seeds {
 		entry := execenv.ProjectionEntry{EntryID: fmt.Sprintf("entry-%d", i), Path: s.path, Kind: execenv.ProjectionDirectory}
@@ -246,7 +255,7 @@ func (w *watcher) expect(want ...string) {
 	w.t.Helper()
 	var got []string
 	for {
-		page, err := w.o.Workspace.Observe(w.t.Context(), w.o.Fence, w.host, execenv.MaxProjectionMutations)
+		page, err := w.o.Workspace.Observe(w.t.Context(), execenv.ObserveRequest{Fence: w.o.Fence, After: w.host, Limit: execenv.MaxProjectionMutations})
 		if err != nil {
 			if errors.Is(err, execenv.ErrLagged) {
 				w.t.Fatalf("observation lagged: %v", err)

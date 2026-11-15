@@ -220,7 +220,7 @@ func TestObservationsReplayAcrossRemoteReconnect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	page, err := secondEnv.Observe(t.Context(), fence, 0, 128)
+	page, err := secondEnv.Observe(t.Context(), execenv.ObserveRequest{Fence: fence, After: 0, Limit: 128})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,7 +341,47 @@ type blockingEnv struct {
 	once    *sync.Once
 }
 
+// An observation wait longer than either side's operation timeout is not
+// cut short by it: the wait is added to the cap on both sides.
+func TestObserveWaitOutlastsTheOperationTimeout(t *testing.T) {
+	inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Capacity: execenv.DefaultGrant.Times(1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	const limit = 100 * time.Millisecond
+	go func() {
+		_ = remote.Serve(ctx, ln, inner, remote.ServerConfig{Security: remote.SecurityInsecureLocal, Token: []byte("secret"), OperationTimeout: limit})
+	}()
+	client, err := remote.New(remote.Config{Address: ln.Addr().String(), Security: remote.SecurityInsecureLocal, Token: []byte("secret"), OperationTimeout: limit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	env, err := client.Ensure(t.Context(), execenv.Spec{ID: "waiting", Image: "default"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence := execenv.ProjectionFence{ExecutionGrantID: env.ID(), EnvironmentEpoch: env.Epoch(), FenceRevision: 1}
+	if _, err := env.Control(t.Context(), execenv.ControlRequest{Fence: fence, State: execenv.ControlRunning}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.InitializeProjection(t.Context(), execenv.ProjectionInitialization{Fence: fence, MutationID: "init"}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := env.Observe(t.Context(), execenv.ObserveRequest{Fence: fence, Limit: 16, Wait: 4 * limit})
+	if err != nil || len(page.Observations) != 0 {
+		t.Fatalf("Observe(wait past the cap) = %+v, %v", page, err)
+	}
+}
+
 func (e blockingEnv) ControlStatus(ctx context.Context) (execenv.ControlReceipt, error) {
+
 	e.once.Do(func() { close(e.started) })
 	select {
 	case <-ctx.Done():

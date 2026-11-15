@@ -30,6 +30,14 @@ func TestProjectionMutationFieldApplicability(t *testing.T) {
 		{"delete with content", func(m *ProjectionMutation) { m.Operation = ProjectionDelete; m.ExpectedContentVersion = "v1" }},
 		{"unconfined path", func(m *ProjectionMutation) { m.Path = "../file" }},
 		{"arbitrary content URL", func(m *ProjectionMutation) { m.Content.TransferID = "https://host/body" }},
+		{"overwriting move", func(m *ProjectionMutation) {
+			m.Operation = ProjectionMove
+			m.DestinationPath = "other"
+			m.Content = nil
+			m.ResultingContentVersion = ""
+			m.ExpectedContentVersion = "v1"
+			m.Overwrite = true
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			request := validProjectionApply()
@@ -41,6 +49,16 @@ func TestProjectionMutationFieldApplicability(t *testing.T) {
 	}
 	if err := ValidateProjectionApply(validProjectionApply()); err != nil {
 		t.Fatal(err)
+	}
+	overwrite := validProjectionApply()
+	overwrite.Mutations[0].Overwrite = true
+	if err := ValidateProjectionApply(overwrite); err != nil {
+		t.Fatalf("an overwriting create refused: %v", err)
+	}
+	// A confirmation is the guest's own change, never an overwrite.
+	binding := ObservationProjection{Fence: overwrite.Fence, HostSequence: 1, Mutation: overwrite.Mutations[0]}
+	if err := ValidateObservationProjection(binding); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("an overwriting confirmation = %v, want ErrInvalid", err)
 	}
 }
 func TestProjectionConsecutiveAndBoundedMetadata(t *testing.T) {

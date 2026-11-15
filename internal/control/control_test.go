@@ -112,3 +112,26 @@ func TestRevokedEpochIsNotLost(t *testing.T) {
 		t.Fatal("Lose() after Revoke reported a loss")
 	}
 }
+
+// Suspend runs only on a confirmed frozen epoch and leaves its receipt as
+// the caller's freeze made it, even when the effect fails.
+func TestSuspendKeepsTheCallersFrozenReceipt(t *testing.T) {
+	s := New("grant")
+	fence := execenv.ProjectionFence{ExecutionGrantID: "grant", EnvironmentEpoch: s.Epoch(), FenceRevision: 3}
+	if ran, err := s.Suspend(t.Context(), func(execenv.ControlReceipt) error { t.Fatal("suspended a running epoch"); return nil }); ran || err != nil {
+		t.Fatalf("Suspend(running) = %v, %v", ran, err)
+	}
+	frozen, err := s.Execute(t.Context(), execenv.ControlRequest{Fence: fence, State: execenv.ControlFrozen}, func() error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := errors.New("save failed")
+	var given execenv.ControlReceipt
+	ran, err := s.Suspend(t.Context(), func(done execenv.ControlReceipt) error { given = done; return failed })
+	if !ran || !errors.Is(err, failed) || given != frozen {
+		t.Fatalf("Suspend(frozen) = %v, %v, given %+v", ran, err, given)
+	}
+	if receipt, err := s.Status(t.Context()); err != nil || receipt != frozen {
+		t.Fatalf("Status() after a failed suspend = %+v, %v; want %+v", receipt, err, frozen)
+	}
+}

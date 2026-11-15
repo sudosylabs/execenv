@@ -45,7 +45,7 @@ func TestCertifyRemoteJournalPreservesLiveWork(t *testing.T) {
 	term := execenvtest.OpenShell(t, env, fence, "sh")
 	shell := newCertifiedShell(t, term)
 	before := shell.state(t, "kept=survives")
-	page, err := journal.Observe(t.Context(), fence, 0, 128)
+	page, err := journal.Observe(t.Context(), execenv.ObserveRequest{Fence: fence, After: 0, Limit: 128})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestCertifyRemoteJournalPreservesLiveWork(t *testing.T) {
 	if _, err := journal.ApplyProjection(t.Context(), save); !errors.Is(err, execenv.ErrConflict) {
 		t.Fatalf("save absorbed unseen guest change: %v", err)
 	}
-	page, err = journal.Observe(t.Context(), fence, cursor, 128)
+	page, err = journal.Observe(t.Context(), execenv.ObserveRequest{Fence: fence, After: cursor, Limit: 128})
 	if err != nil || len(page.Observations) != 1 || page.Observations[0].Operation != execenv.ObservationCreateFile || page.Observations[0].Path != "guest" {
 		t.Fatalf("guest change not retained exactly once: %+v %v", page, err)
 	}
@@ -101,7 +101,7 @@ func TestCertifyRemoteJournalPreservesLiveWork(t *testing.T) {
 	if err := journal.AcknowledgeObservations(t.Context(), fence, guest.HostSequence); err != nil {
 		t.Fatal(err)
 	}
-	page, err = journal.Observe(t.Context(), fence, guest.HostSequence, 128)
+	page, err = journal.Observe(t.Context(), execenv.ObserveRequest{Fence: fence, After: guest.HostSequence, Limit: 128})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestCertifyRemoteJournalPreservesLiveWork(t *testing.T) {
 	shell.run(t, `test "$(cat guest)" = guest-later`)
 	cursor = page.HostCursor
 	shell.run(t, `mv dir moved && test "$(cat moved/file)" = saved`)
-	page, err = journal.Observe(t.Context(), fence, cursor, 128)
+	page, err = journal.Observe(t.Context(), execenv.ObserveRequest{Fence: fence, After: cursor, Limit: 128})
 	if err != nil || len(page.Observations) != 1 || page.Observations[0].Operation != execenv.ObservationMove || page.Observations[0].Kind != execenv.ProjectionDirectory || page.Observations[0].Path != "dir" || page.Observations[0].DestinationPath != "moved" {
 		t.Fatalf("directory move not semantic: %+v %v", page, err)
 	}

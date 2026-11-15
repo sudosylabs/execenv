@@ -28,22 +28,31 @@ func (g innerGuest) Remove(ctx context.Context, path string) error {
 	return g.host.RemoveGuest(ctx, g.id, path)
 }
 
+// observedInner serves a fresh memory host and occupies one running grant
+// on it through the wire.
+func observedInner(t *testing.T) execenvtest.Observed {
+	t.Helper()
+	inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Capacity: execenv.DefaultGrant.Times(1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := serveInner(t, inner).Ensure(t.Context(), execenv.Spec{ID: "ignore", Image: "default"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence := execenv.ProjectionFence{ExecutionGrantID: env.ID(), EnvironmentEpoch: env.Epoch(), FenceRevision: 1}
+	if _, err := env.Control(t.Context(), execenv.ControlRequest{Fence: fence, State: execenv.ControlRunning}); err != nil {
+		t.Fatal(err)
+	}
+	return execenvtest.Observed{Workspace: env, Fence: fence, Guest: innerGuest{host: inner, id: env.ID()}, Processes: env}
+}
+
 // The remote wire carries IgnoreRules through InitializeProjection.
 func TestIgnoreConformance(t *testing.T) {
-	execenvtest.RunIgnore(t, func(t *testing.T) execenvtest.Observed {
-		t.Helper()
-		inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Capacity: execenv.DefaultGrant.Times(1)})
-		if err != nil {
-			t.Fatal(err)
-		}
-		env, err := serveInner(t, inner).Ensure(t.Context(), execenv.Spec{ID: "ignore", Image: "default"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		fence := execenv.ProjectionFence{ExecutionGrantID: env.ID(), EnvironmentEpoch: env.Epoch(), FenceRevision: 1}
-		if _, err := env.Control(t.Context(), execenv.ControlRequest{Fence: fence, State: execenv.ControlRunning}); err != nil {
-			t.Fatal(err)
-		}
-		return execenvtest.Observed{Workspace: env, Fence: fence, Guest: innerGuest{host: inner, id: env.ID()}}
-	})
+	execenvtest.RunIgnore(t, observedInner)
+}
+
+// The remote wire carries an observation wait.
+func TestObservationConformance(t *testing.T) {
+	execenvtest.RunObservations(t, observedInner)
 }

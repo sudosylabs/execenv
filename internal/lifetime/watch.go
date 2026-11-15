@@ -9,7 +9,10 @@ import (
 )
 
 // Watch wraps env so every call on it is activity, and every attachment to
-// a process keeps it busy until it is closed or ends.
+// a process keeps it busy until it is closed or ends. Reading what the grant
+// did is not activity: Observe and ObserveProcesses pass straight through,
+// so a caller that keeps an observation wait open does not keep the grant
+// awake.
 func Watch(env execenv.Env, t *Timer) execenv.Env {
 	if t == nil {
 		return env
@@ -61,11 +64,6 @@ func (w *watched) ApplyProjection(ctx context.Context, r execenv.ProjectionApply
 	return w.Env.ApplyProjection(ctx, r)
 }
 
-func (w *watched) Observe(ctx context.Context, f execenv.ProjectionFence, after uint64, limit int) (execenv.ObservationPage, error) {
-	w.t.Touch()
-	return w.Env.Observe(ctx, f, after, limit)
-}
-
 func (w *watched) OpenObservationContent(ctx context.Context, f execenv.ProjectionFence, c execenv.ContentReference) (io.ReadCloser, error) {
 	w.t.Touch()
 	return w.Env.OpenObservationContent(ctx, f, c)
@@ -79,11 +77,6 @@ func (w *watched) ConfirmObservationProjection(ctx context.Context, b execenv.Ob
 func (w *watched) AcknowledgeObservations(ctx context.Context, f execenv.ProjectionFence, through uint64) error {
 	w.t.Touch()
 	return w.Env.AcknowledgeObservations(ctx, f, through)
-}
-
-func (w *watched) ObserveProcesses(ctx context.Context, f execenv.ProjectionFence, after uint64, limit int) (execenv.ProcessPage, error) {
-	w.t.Touch()
-	return w.Env.ObserveProcesses(ctx, f, after, limit)
 }
 
 func (w *watched) AcknowledgeProcesses(ctx context.Context, f execenv.ProjectionFence, through uint64) error {

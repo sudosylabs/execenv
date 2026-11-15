@@ -108,7 +108,7 @@ func runSeeds(t *testing.T, factory Factory) {
 		if _, err := env.InitializeProjection(t.Context(), right); err != nil {
 			t.Fatalf("InitializeProjection() against the seed = %v", err)
 		}
-		page, err := env.Observe(t.Context(), fence, 0, 128)
+		page, err := env.Observe(t.Context(), execenv.ObserveRequest{Fence: fence, After: 0, Limit: 128})
 		if err != nil || len(page.Observations) != 0 {
 			t.Fatalf("Observe() after a seeded initialization = %+v, %v; the workspace should match it exactly", page, err)
 		}

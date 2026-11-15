@@ -3,6 +3,7 @@ syntax = "proto3";
 package execenv.v1;
 
 import "execenv/v1/common.proto";
+import "google/protobuf/duration.proto";
 
 option go_package = "github.com/sudosylabs/execenv/internal/gen/execenv/v1;execenvv1";
 
@@ -57,6 +58,9 @@ message ProjectionMutation {
   string resulting_content_version = 8;
   optional bool recursive = 9;
   ContentReference content = 10;
+  // overwrite replaces what the guest left at path, unconfirmed changes
+  // included, discarding the observations of them.
+  bool overwrite = 11;
 }
 
 message ProjectionEntry {
@@ -94,6 +98,9 @@ message ProjectionReceipt {
   string mutation_id = 2;
   uint64 applied_workspace_cursor = 3;
   uint64 host_cursor = 4;
+  // discarded are the host sequences of the observations the apply's
+  // overwrites discarded, in order.
+  repeated uint64 discarded = 5;
 }
 
 enum ObservationOperation {
@@ -118,12 +125,22 @@ message Observation {
   optional bool recursive = 10;
   ContentReference content = 11;
   string origin_projection_mutation_id = 12;
+  // process_tag is the tag of the started process the change's writer
+  // descends from, empty when the host cannot say.
+  string process_tag = 13;
+  // discarded_by is the journal cursor of the overwrite that discarded the
+  // change, or zero.
+  uint64 discarded_by = 14;
 }
 
 message ObserveRequest {
   Fence fence = 1;
   uint64 after = 2;
   int32 limit = 3;
+  // wait holds the call until there is an observation after after, or the
+  // wait has passed. The guest link never waits: its host looks again
+  // itself, so a freeze never queues behind a waiting call.
+  google.protobuf.Duration wait = 4;
 }
 
 message ObservationPage {

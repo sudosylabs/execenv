@@ -64,6 +64,14 @@ type Config struct {
 	Processes ProcessSource
 }
 
+// watched is the workspace watcher as the journal takes it.
+type watched struct{ w *workspace.Watcher }
+
+func (w watched) Take() journal.Changes {
+	paths, all := w.w.Take()
+	return journal.Changes{Paths: paths, All: all, Writers: w.w.Writers()}
+}
+
 // WriteBarrier stops every writer under Home while fn runs. An error from
 // fn means the disk state is uncertain; the barrier stays closed after it.
 type WriteBarrier = journal.Barrier
@@ -155,11 +163,23 @@ func New(cfg Config) (*Agent, error) {
 	if err != nil {
 		return nil, execenv.Error("agent", err)
 	}
+	// The process log must be recording before any workload process can
+	// start. Without the kernel's process events the helper says so in
+	// its handshake and the host refuses it.
+	source := cfg.Processes
+	var tagOf func(int) string
+	if group != nil {
+		source = nil
+		if kernel, tags, err := openKernelProcesses(group.Path(), cfg.Home, scratch, s.launchOf); err == nil {
+			source, tagOf = kernel, tags
+		}
+	}
 	if group != nil {
 		fs.Own = group.OwnHome
-		// A real guest watches its workspace, so an idle one is not walked.
-		if w, err := workspace.New(cfg.Home); err == nil && s.journal != nil {
-			s.journal.Watch(w)
+		// A real guest watches its workspace, so an idle one is not walked,
+		// and names the started process each change's writer descends from.
+		if w, err := workspace.New(cfg.Home, tagOf); err == nil && s.journal != nil {
+			s.journal.Watch(watched{w})
 			a.closers = append(a.closers, func() { _ = w.Close() })
 		}
 	}
@@ -169,16 +189,6 @@ func New(cfg Config) (*Agent, error) {
 	}
 	// Processes stop before anything they write to closes.
 	a.closers = append(a.closers, s.stopAll)
-	// The process log must be recording before any workload process can
-	// start. Without the kernel's process events the helper says so in
-	// its handshake and the host refuses it.
-	source := cfg.Processes
-	if group != nil {
-		source = nil
-		if kernel, err := openKernelProcesses(group.Path(), cfg.Home, scratch, s.launchOf); err == nil {
-			source = kernel
-		}
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
 	if source != nil {
@@ -422,6 +432,11 @@ func (s *server) Observe(ctx context.Context, req *connect.Request[execenvv1.Obs
 	fence, err := s.bound(req.Msg.GetFence())
 	if err != nil {
 		return nil, wire.Error(err)
+	}
+	// The host looks again itself, so a freeze never queues behind a call
+	// waiting on the guest link.
+	if req.Msg.GetWait() != nil {
+		return nil, wire.Error(execenv.ErrInvalid)
 	}
 	page, err := s.journal.Observe(ctx, fence, req.Msg.GetAfter(), int(req.Msg.GetLimit()))
 	if err != nil {

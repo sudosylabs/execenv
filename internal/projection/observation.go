@@ -53,6 +53,10 @@ func (s *State) RegisterObservation(binding execenv.ObservationProjection, looku
 	if event.Fence.ExecutionGrantID != binding.Fence.ExecutionGrantID || event.Fence.EnvironmentEpoch != binding.Fence.EnvironmentEpoch {
 		return execenv.ErrConflict
 	}
+	// An overwrite replaced it: there is nothing left to confirm.
+	if event.DiscardedBy != 0 {
+		return execenv.ErrConflict
+	}
 	m := binding.Mutation
 	if event.Kind != m.Kind || event.Path != m.Path || event.DestinationPath != m.DestinationPath {
 		return execenv.ErrConflict

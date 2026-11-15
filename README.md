@@ -258,16 +258,21 @@ to exactly that; `MemoryBytes` is its memory; `DiskBytes` is its workspace
 disk, shared by the projected tree and the shell's scratch home.
 
 A grant is busy while anything is attached to one of its processes and
-after any call on it. Once idle for `IdleTimeout` the host applies
+after any call on it other than `Observe` and `ObserveProcesses`: reading
+what the grant did does not keep it awake. Once idle for `IdleTimeout` the host applies
 `IdleAction`: `IdleRevoke` revokes it; `IdleFreeze` freezes it as a fenced
 freeze would, keeping the caller's fence revision, so `ControlStatus` shows
 `frozen` and the caller thaws it with its next revision. `IdleSuspend`
 freezes it the same way, then saves its running machine to the host's disk
 and stops it: only its disk stays reserved, so its CPU and memory go to
-other grants. The caller's thaw restores the machine where it stopped,
-processes running and output resuming at the same offsets; while the host
-has no room for it the thaw fails with `ErrCapacity` and the grant stays
-suspended. The in-memory host freezes instead. `WallTimeout` revokes the grant that long
+other grants. A grant you froze yourself is suspended the same way once it
+has been idle for `IdleTimeout` (your freeze counts as its last call), and
+`ControlStatus` still shows your own frozen receipt. The caller's thaw
+restores the machine where it stopped, processes running and output
+resuming at the same offsets; while the host has no room for it the thaw
+fails with `ErrCapacity` and the grant stays suspended. The in-memory host
+models a suspend: the grant stays frozen with its processes, reports
+`suspended`, and reserves only its disk until a thaw finds room again. `WallTimeout` revokes the grant that long
 after it started, busy or not. Labels are the caller's, up to 16 pairs and
 512 bytes; the host never reads them.
 
@@ -492,6 +497,41 @@ that would overwrite a guest change on an affected path, fails with
 `ErrConflict` before any path changes. Observe first, decide, then apply.
 Freeze and thaw preserve the projection; neither requires a new snapshot.
 
+To make your journal win over a guest change you will not accept, set
+`Overwrite` on a create, write or delete. It replaces whatever the guest
+left at that path and under it, unconfirmed changes included, and still
+checks the mutation against your journal (entry, kind, expected version);
+the Apply still names the current host cursor, so you have seen every
+change it replaces. Every retained observation whose paths all lie in the
+replaced subtree is discarded: the receipt's `Discarded` lists their host
+sequences in order (an exact retry returns the same list), and later pages
+carry each one's `DiscardedBy`, the journal cursor of the overwrite.
+Acknowledge them without recording them; they cannot be confirmed, and
+their content reads as `ErrStale`. An overwriting directory create replaces
+an ignored directory at its path instead of adopting it. Overwrite is still
+`ErrConflict` when the guest moved something across the path's boundary (a
+projected path out from under it, or one into it), when a retained
+observation names a path inside and one outside, or when the path's parent
+is no longer a directory; resolve those first. Moves and renames cannot
+overwrite.
+
+```go
+receipt, err := env.ApplyProjection(ctx, execenv.ProjectionApply{
+	Fence: fence, MutationID: "restore-43",
+	FromWorkspaceCursor: 42, ThroughWorkspaceCursor: 43,
+	ExpectedHostCursor: page.HostCursor,
+	Mutations: []execenv.ProjectionMutation{{
+		JournalCursor: 43, EntryID: "e-main", Operation: execenv.ProjectionWrite,
+		Kind: execenv.ProjectionFile, Path: "src/main.py",
+		ExpectedContentVersion: "v2", ResultingContentVersion: "v3",
+		Content: &body, Overwrite: true,
+	}},
+})
+for _, sequence := range receipt.Discarded {
+	recordDiscarded(sequence) // then acknowledge as usual
+}
+```
+
 File contents travel separately as immutable, scoped SHA-256 references. A
 body streams to the grant's workspace disk as it arrives and is never held in
 memory, so no size limit applies to it but the disk itself: a body or a tree
@@ -508,8 +548,22 @@ Paths are POSIX-relative: no leading `/`, no `..`, no NUL, UTF-8.
 `Observe` is how the guest reports files **it** created, wrote, moved, or
 deleted. Your own projection calls do not appear here.
 
+With a `Wait`, `Observe` holds the call until the guest has produced an
+observation after `After`, or the wait has passed, whichever comes first;
+an empty page after the wait is not an error, so a caller keeps one call
+open and never polls. Zero returns at once, and the wait is at most
+`MaxObserveWait` (one minute). The host looks again in short passes, each
+under the grant's control serializer, so a freeze, projection or revoke
+never queues behind a wait; a freeze, revoke or loss during it ends it with
+that error. Over the wire the wait is added to both sides' operation
+timeout. Reading observations or the process log is not activity: a wait
+kept open does not keep an idle grant awake.
+
 ```go
-page, err := env.Observe(ctx, fence, acknowledged, 128)
+page, err := env.Observe(ctx, execenv.ObserveRequest{
+	Fence: fence, After: acknowledged, Limit: 128, Wait: 30 * time.Second,
+})
+
 if err != nil {
 	return err // ErrLagged: resynchronize from your journal
 }
@@ -544,7 +598,17 @@ hostCursor = page.HostCursor
 
 Each ordered event binds its original projected cursor and version, an
 epoch-stable node identity, and the size and SHA-256 of a created or written
-file as it was observed. The body is not copied: `OpenObservationContent`
+file as it was observed. `ProcessTag` names the process you started with
+`Start` that the program which made the change descends from (the started
+process itself, or anything it ran); a path several programs changed before
+one capture names the last of them. It is empty when the host cannot say:
+nothing you started made the change (the file API, for one), or the host
+did not see who did. A guest learns the writer from the filesystem event
+that reported the change and the guest kernel's process events, so a change
+only the periodic walk found (a write through `mmap`, or after the event
+queue overflowed) has none, and so may one whose writer ended long before
+the capture. The in-memory host names the started process for what its
+shell's redirections (`> path`, `>> path`) write. The body is not copied: `OpenObservationContent`
 reads the file from the workspace as it is now, as one stream of 64-KiB
 messages, hashing it as it goes. A file changed since then ends the stream
 with `ErrStale` instead of its end, and a file gone or replaced fails with
@@ -601,7 +665,7 @@ re-included.
 - Ignored paths stay in the environment; nothing is deleted for being
   ignored. A projected file or move onto an ignored path replaces what the
   guest left there, as a checkout does, and a projected directory adopts an
-  ignored directory already at its path.
+  ignored directory already at its path unless it is an `Overwrite`.
 
 The rules last for the epoch: initialization happens once, and an exact retry
 is a replay.

@@ -36,7 +36,7 @@ func (h *Host) grantSnapshot() ([]execenv.GrantInfo, execenv.HostCapacity) {
 func (e *environment) info() (execenv.GrantInfo, bool) {
 	receipt, lost := e.control.Peek()
 	e.mu.Lock()
-	revoked := e.revoked
+	revoked, suspended := e.revoked, e.suspended
 	e.mu.Unlock()
 	info := execenv.GrantInfo{
 		ID: e.id, Epoch: e.control.Epoch(), Image: e.spec.Image, Network: e.spec.Network,
@@ -47,6 +47,8 @@ func (e *environment) info() (execenv.GrantInfo, bool) {
 		info.State = execenv.GrantLost
 	case revoked || receipt.State == execenv.ControlRevoked:
 		return execenv.GrantInfo{}, false
+	case suspended:
+		info.State = execenv.GrantSuspended
 	case receipt.State == execenv.ControlFrozen:
 		info.State = execenv.GrantFrozen
 	default:

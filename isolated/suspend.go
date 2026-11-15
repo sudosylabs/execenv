@@ -17,13 +17,22 @@ func (e *environment) suspendDir() string {
 	return filepath.Join(e.host.cfg.WorkDir, "grants", string(e.id), suspendedName)
 }
 
-// suspend freezes the grant, saves its machine to disk and stops it,
-// releasing its CPU and memory; its disk stays reserved. Its processes
-// stay in the saved machine. A launcher that cannot save leaves the grant
-// frozen. done is the control receipt the suspend ends with: the grant's
-// state file records it, suspended, before the machine is stopped, so a
-// host that dies in between finds the saved machine to resume.
+// suspend freezes the grant, or keeps it frozen, saves its machine to disk
+// and stops it, releasing its CPU and memory; its disk stays reserved. Its
+// processes stay in the saved machine. A launcher that cannot save leaves
+// the grant frozen, and a grant already suspended stays as it is. done is
+// the control receipt the suspend ends with: the grant's state file
+// records it, suspended, before the machine is stopped, so a host that
+// dies in between finds the saved machine to resume.
 func (e *environment) suspend(ctx context.Context, done execenv.ControlReceipt) error {
+	e.mu.Lock()
+	suspended := e.suspended
+	e.mu.Unlock()
+	if suspended {
+		return nil
+	}
+	// Freezing a frozen grant gates nothing new: its guest was quiesced
+	// and its machine paused when it froze.
 	if err := e.freeze(ctx); err != nil {
 		return err
 	}

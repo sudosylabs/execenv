@@ -205,6 +205,16 @@ func (j *Journal) Apply(ctx context.Context, request execenv.ProjectionApply) (e
 			if err != nil {
 				return err
 			}
+			// Overwrites discard the guest changes they replace; one they
+			// would only half replace refuses the Apply before any write.
+			var replaced []observations.Replaced
+			for _, o := range plan.Overwrites() {
+				replaced = append(replaced, observations.Replaced{JournalCursor: o.JournalCursor, Path: o.Path})
+			}
+			discards, err := j.log.Discardable(replaced)
+			if err != nil {
+				return err
+			}
 			disk = prepared.Batch
 			if len(disk.Mutations) == 0 {
 				return nil
@@ -212,6 +222,14 @@ func (j *Journal) Apply(ctx context.Context, request execenv.ProjectionApply) (e
 			touched = true
 			if err := applyHome(j.store, j.home, disk); err != nil {
 				return err
+			}
+			j.log.Discard(discards)
+			if len(discards) > 0 {
+				sequences := make([]uint64, 0, len(discards))
+				for _, d := range discards {
+					sequences = append(sequences, d.Sequence)
+				}
+				plan.Discard(sequences)
 			}
 			roots := make([]string, 0, len(disk.Mutations))
 			for _, m := range disk.Mutations {
@@ -266,22 +284,32 @@ func (j *Journal) Observe(ctx context.Context, fence execenv.ProjectionFence, af
 // watcher names, or the whole workspace when it cannot say.
 func (j *Journal) catchUp() error {
 	whole := j.unsettled || j.watcher == nil || time.Since(j.walked) >= WalkInterval
-	var dirty []string
+	var taken Changes
 	if j.watcher != nil {
-		var all bool
-		dirty, all = j.watcher.Take()
-		whole = whole || all || j.ignoreChanged(dirty)
+		taken = j.watcher.Take()
+		whole = whole || taken.All || j.ignoreChanged(taken.Paths)
 	}
-	if !whole && len(dirty) == 0 {
+	if !whole && len(taken.Paths) == 0 {
 		return nil
 	}
-	if err := j.observeCaptured(dirty, whole); err != nil {
+	if err := j.observeCaptured(taken.Paths, whole, taken.Writers); err != nil {
 		return err
 	}
 	if whole {
 		j.walked = time.Now()
 	}
 	return nil
+}
+
+// writerOf is the tag a change's last writer descends from. A move's is the
+// renamer's, which the watcher saw at the new name and the old.
+func writerOf(writers map[string]string, change guesttree.Change) string {
+	if change.Destination != "" {
+		if tag, ok := writers[change.Destination]; ok {
+			return tag
+		}
+	}
+	return writers[change.Path]
 }
 
 // ignoreChanged reports whether paths include the ignore file, whose
@@ -300,10 +328,20 @@ func (j *Journal) ignoreChanged(paths []string) bool {
 }
 
 // Watcher names the paths under the workspace that changed since it was
-// last asked, relative to it. all is set when it cannot say which, as after
-// its queue overflowed.
+// last asked.
 type Watcher interface {
-	Take() (paths []string, all bool)
+	Take() Changes
+}
+
+// Changes is what a Watcher took. Paths are relative to the workspace. All
+// is set when it cannot say which changed, as after its queue overflowed;
+// Paths is then empty. Writers maps a changed path to the tag of the
+// started process its last writer descends from, where the watcher knows
+// one; it may name paths whatever All says.
+type Changes struct {
+	Paths   []string
+	All     bool
+	Writers map[string]string
 }
 
 // WalkInterval is the longest an Observe trusts the watcher without walking
@@ -316,7 +354,7 @@ func (j *Journal) Watch(w Watcher) { j.watcher = w }
 
 // observeCaptured captures the workspace, walking it whole or reading only
 // the dirty paths, and logs what changed since the last capture.
-func (j *Journal) observeCaptured(dirty []string, whole bool) error {
+func (j *Journal) observeCaptured(dirty []string, whole bool, writers map[string]string) error {
 	var next *guesttree.Snapshot
 	var err error
 	if whole {
@@ -340,7 +378,7 @@ func (j *Journal) observeCaptured(dirty []string, whole bool) error {
 	}
 	captured := make([]observations.Captured, 0, len(changes))
 	for _, change := range changes {
-		event := execenv.ExecutionObservation{Fence: j.fence, BasedOnWorkspaceCursor: j.state.Cursor(), Operation: execenv.ObservationOperation(change.Operation), NodeIdentity: change.Identity, Kind: change.Kind, Path: change.Path, DestinationPath: change.Destination, ExpectedContentVersion: versions[change.Identity]}
+		event := execenv.ExecutionObservation{Fence: j.fence, BasedOnWorkspaceCursor: j.state.Cursor(), Operation: execenv.ObservationOperation(change.Operation), NodeIdentity: change.Identity, Kind: change.Kind, Path: change.Path, DestinationPath: change.Destination, ExpectedContentVersion: versions[change.Identity], ProcessTag: writerOf(writers, change)}
 		if change.Operation == guesttree.CreateFile || change.Operation == guesttree.CreateDirectory {
 			event.ExpectedContentVersion = ""
 		}
