@@ -368,8 +368,12 @@ type WriteFileHeader struct {
 	Path           string                 `protobuf:"bytes,2,opt,name=path,proto3" json:"path,omitempty"`
 	ExpectedSha256 string                 `protobuf:"bytes,3,opt,name=expected_sha256,json=expectedSha256,proto3" json:"expected_sha256,omitempty"`
 	Executable     bool                   `protobuf:"varint,4,opt,name=executable,proto3" json:"executable,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// transfer_id makes the write resumable; offset is where this body
+	// starts within it, as GetTransfer reports.
+	TransferId    string `protobuf:"bytes,5,opt,name=transfer_id,json=transferId,proto3" json:"transfer_id,omitempty"`
+	Offset        int64  `protobuf:"varint,6,opt,name=offset,proto3" json:"offset,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WriteFileHeader) Reset() {
@@ -430,6 +434,125 @@ func (x *WriteFileHeader) GetExecutable() bool {
 	return false
 }
 
+func (x *WriteFileHeader) GetTransferId() string {
+	if x != nil {
+		return x.TransferId
+	}
+	return ""
+}
+
+func (x *WriteFileHeader) GetOffset() int64 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+type GetTransferRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	GrantId       string                 `protobuf:"bytes,1,opt,name=grant_id,json=grantId,proto3" json:"grant_id,omitempty"`
+	Epoch         string                 `protobuf:"bytes,2,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	TransferId    string                 `protobuf:"bytes,3,opt,name=transfer_id,json=transferId,proto3" json:"transfer_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetTransferRequest) Reset() {
+	*x = GetTransferRequest{}
+	mi := &file_execenv_v1_file_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetTransferRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetTransferRequest) ProtoMessage() {}
+
+func (x *GetTransferRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_execenv_v1_file_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetTransferRequest.ProtoReflect.Descriptor instead.
+func (*GetTransferRequest) Descriptor() ([]byte, []int) {
+	return file_execenv_v1_file_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *GetTransferRequest) GetGrantId() string {
+	if x != nil {
+		return x.GrantId
+	}
+	return ""
+}
+
+func (x *GetTransferRequest) GetEpoch() string {
+	if x != nil {
+		return x.Epoch
+	}
+	return ""
+}
+
+func (x *GetTransferRequest) GetTransferId() string {
+	if x != nil {
+		return x.TransferId
+	}
+	return ""
+}
+
+// Transfer is how much of a resumable write the host holds.
+type Transfer struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Offset        int64                  `protobuf:"varint,1,opt,name=offset,proto3" json:"offset,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Transfer) Reset() {
+	*x = Transfer{}
+	mi := &file_execenv_v1_file_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Transfer) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Transfer) ProtoMessage() {}
+
+func (x *Transfer) ProtoReflect() protoreflect.Message {
+	mi := &file_execenv_v1_file_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Transfer.ProtoReflect.Descriptor instead.
+func (*Transfer) Descriptor() ([]byte, []int) {
+	return file_execenv_v1_file_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *Transfer) GetOffset() int64 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
 type WriteFileRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Part:
@@ -443,7 +566,7 @@ type WriteFileRequest struct {
 
 func (x *WriteFileRequest) Reset() {
 	*x = WriteFileRequest{}
-	mi := &file_execenv_v1_file_proto_msgTypes[6]
+	mi := &file_execenv_v1_file_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -455,7 +578,7 @@ func (x *WriteFileRequest) String() string {
 func (*WriteFileRequest) ProtoMessage() {}
 
 func (x *WriteFileRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_v1_file_proto_msgTypes[6]
+	mi := &file_execenv_v1_file_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -468,7 +591,7 @@ func (x *WriteFileRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteFileRequest.ProtoReflect.Descriptor instead.
 func (*WriteFileRequest) Descriptor() ([]byte, []int) {
-	return file_execenv_v1_file_proto_rawDescGZIP(), []int{6}
+	return file_execenv_v1_file_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *WriteFileRequest) GetPart() isWriteFileRequest_Part {
@@ -523,7 +646,7 @@ type MakeDirectoryRequest struct {
 
 func (x *MakeDirectoryRequest) Reset() {
 	*x = MakeDirectoryRequest{}
-	mi := &file_execenv_v1_file_proto_msgTypes[7]
+	mi := &file_execenv_v1_file_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -535,7 +658,7 @@ func (x *MakeDirectoryRequest) String() string {
 func (*MakeDirectoryRequest) ProtoMessage() {}
 
 func (x *MakeDirectoryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_v1_file_proto_msgTypes[7]
+	mi := &file_execenv_v1_file_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -548,7 +671,7 @@ func (x *MakeDirectoryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MakeDirectoryRequest.ProtoReflect.Descriptor instead.
 func (*MakeDirectoryRequest) Descriptor() ([]byte, []int) {
-	return file_execenv_v1_file_proto_rawDescGZIP(), []int{7}
+	return file_execenv_v1_file_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *MakeDirectoryRequest) GetFence() *Fence {
@@ -580,7 +703,7 @@ type MakeDirectoryResponse struct {
 
 func (x *MakeDirectoryResponse) Reset() {
 	*x = MakeDirectoryResponse{}
-	mi := &file_execenv_v1_file_proto_msgTypes[8]
+	mi := &file_execenv_v1_file_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -592,7 +715,7 @@ func (x *MakeDirectoryResponse) String() string {
 func (*MakeDirectoryResponse) ProtoMessage() {}
 
 func (x *MakeDirectoryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_v1_file_proto_msgTypes[8]
+	mi := &file_execenv_v1_file_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -605,7 +728,7 @@ func (x *MakeDirectoryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MakeDirectoryResponse.ProtoReflect.Descriptor instead.
 func (*MakeDirectoryResponse) Descriptor() ([]byte, []int) {
-	return file_execenv_v1_file_proto_rawDescGZIP(), []int{8}
+	return file_execenv_v1_file_proto_rawDescGZIP(), []int{10}
 }
 
 type MoveRequest struct {
@@ -619,7 +742,7 @@ type MoveRequest struct {
 
 func (x *MoveRequest) Reset() {
 	*x = MoveRequest{}
-	mi := &file_execenv_v1_file_proto_msgTypes[9]
+	mi := &file_execenv_v1_file_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -631,7 +754,7 @@ func (x *MoveRequest) String() string {
 func (*MoveRequest) ProtoMessage() {}
 
 func (x *MoveRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_v1_file_proto_msgTypes[9]
+	mi := &file_execenv_v1_file_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -644,7 +767,7 @@ func (x *MoveRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MoveRequest.ProtoReflect.Descriptor instead.
 func (*MoveRequest) Descriptor() ([]byte, []int) {
-	return file_execenv_v1_file_proto_rawDescGZIP(), []int{9}
+	return file_execenv_v1_file_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *MoveRequest) GetFence() *Fence {
@@ -676,7 +799,7 @@ type MoveResponse struct {
 
 func (x *MoveResponse) Reset() {
 	*x = MoveResponse{}
-	mi := &file_execenv_v1_file_proto_msgTypes[10]
+	mi := &file_execenv_v1_file_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -688,7 +811,7 @@ func (x *MoveResponse) String() string {
 func (*MoveResponse) ProtoMessage() {}
 
 func (x *MoveResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_v1_file_proto_msgTypes[10]
+	mi := &file_execenv_v1_file_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -701,7 +824,7 @@ func (x *MoveResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MoveResponse.ProtoReflect.Descriptor instead.
 func (*MoveResponse) Descriptor() ([]byte, []int) {
-	return file_execenv_v1_file_proto_rawDescGZIP(), []int{10}
+	return file_execenv_v1_file_proto_rawDescGZIP(), []int{12}
 }
 
 type RemoveRequest struct {
@@ -715,7 +838,7 @@ type RemoveRequest struct {
 
 func (x *RemoveRequest) Reset() {
 	*x = RemoveRequest{}
-	mi := &file_execenv_v1_file_proto_msgTypes[11]
+	mi := &file_execenv_v1_file_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -727,7 +850,7 @@ func (x *RemoveRequest) String() string {
 func (*RemoveRequest) ProtoMessage() {}
 
 func (x *RemoveRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_v1_file_proto_msgTypes[11]
+	mi := &file_execenv_v1_file_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -740,7 +863,7 @@ func (x *RemoveRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveRequest.ProtoReflect.Descriptor instead.
 func (*RemoveRequest) Descriptor() ([]byte, []int) {
-	return file_execenv_v1_file_proto_rawDescGZIP(), []int{11}
+	return file_execenv_v1_file_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *RemoveRequest) GetFence() *Fence {
@@ -772,7 +895,7 @@ type RemoveResponse struct {
 
 func (x *RemoveResponse) Reset() {
 	*x = RemoveResponse{}
-	mi := &file_execenv_v1_file_proto_msgTypes[12]
+	mi := &file_execenv_v1_file_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -784,7 +907,7 @@ func (x *RemoveResponse) String() string {
 func (*RemoveResponse) ProtoMessage() {}
 
 func (x *RemoveResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_v1_file_proto_msgTypes[12]
+	mi := &file_execenv_v1_file_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -797,7 +920,7 @@ func (x *RemoveResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveResponse.ProtoReflect.Descriptor instead.
 func (*RemoveResponse) Descriptor() ([]byte, []int) {
-	return file_execenv_v1_file_proto_rawDescGZIP(), []int{12}
+	return file_execenv_v1_file_proto_rawDescGZIP(), []int{14}
 }
 
 type ImportHeader struct {
@@ -810,7 +933,7 @@ type ImportHeader struct {
 
 func (x *ImportHeader) Reset() {
 	*x = ImportHeader{}
-	mi := &file_execenv_v1_file_proto_msgTypes[13]
+	mi := &file_execenv_v1_file_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -822,7 +945,7 @@ func (x *ImportHeader) String() string {
 func (*ImportHeader) ProtoMessage() {}
 
 func (x *ImportHeader) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_v1_file_proto_msgTypes[13]
+	mi := &file_execenv_v1_file_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -835,7 +958,7 @@ func (x *ImportHeader) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImportHeader.ProtoReflect.Descriptor instead.
 func (*ImportHeader) Descriptor() ([]byte, []int) {
-	return file_execenv_v1_file_proto_rawDescGZIP(), []int{13}
+	return file_execenv_v1_file_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ImportHeader) GetFence() *Fence {
@@ -865,7 +988,7 @@ type ImportRequest struct {
 
 func (x *ImportRequest) Reset() {
 	*x = ImportRequest{}
-	mi := &file_execenv_v1_file_proto_msgTypes[14]
+	mi := &file_execenv_v1_file_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -877,7 +1000,7 @@ func (x *ImportRequest) String() string {
 func (*ImportRequest) ProtoMessage() {}
 
 func (x *ImportRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_v1_file_proto_msgTypes[14]
+	mi := &file_execenv_v1_file_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -890,7 +1013,7 @@ func (x *ImportRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImportRequest.ProtoReflect.Descriptor instead.
 func (*ImportRequest) Descriptor() ([]byte, []int) {
-	return file_execenv_v1_file_proto_rawDescGZIP(), []int{14}
+	return file_execenv_v1_file_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ImportRequest) GetPart() isImportRequest_Part {
@@ -942,7 +1065,7 @@ type ImportResponse struct {
 
 func (x *ImportResponse) Reset() {
 	*x = ImportResponse{}
-	mi := &file_execenv_v1_file_proto_msgTypes[15]
+	mi := &file_execenv_v1_file_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -954,7 +1077,7 @@ func (x *ImportResponse) String() string {
 func (*ImportResponse) ProtoMessage() {}
 
 func (x *ImportResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_v1_file_proto_msgTypes[15]
+	mi := &file_execenv_v1_file_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -967,7 +1090,7 @@ func (x *ImportResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImportResponse.ProtoReflect.Descriptor instead.
 func (*ImportResponse) Descriptor() ([]byte, []int) {
-	return file_execenv_v1_file_proto_rawDescGZIP(), []int{15}
+	return file_execenv_v1_file_proto_rawDescGZIP(), []int{17}
 }
 
 type ExportRequest struct {
@@ -982,7 +1105,7 @@ type ExportRequest struct {
 
 func (x *ExportRequest) Reset() {
 	*x = ExportRequest{}
-	mi := &file_execenv_v1_file_proto_msgTypes[16]
+	mi := &file_execenv_v1_file_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -994,7 +1117,7 @@ func (x *ExportRequest) String() string {
 func (*ExportRequest) ProtoMessage() {}
 
 func (x *ExportRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_execenv_v1_file_proto_msgTypes[16]
+	mi := &file_execenv_v1_file_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1007,7 +1130,7 @@ func (x *ExportRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExportRequest.ProtoReflect.Descriptor instead.
 func (*ExportRequest) Descriptor() ([]byte, []int) {
-	return file_execenv_v1_file_proto_rawDescGZIP(), []int{16}
+	return file_execenv_v1_file_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ExportRequest) GetGrantId() string {
@@ -1070,14 +1193,24 @@ const file_execenv_v1_file_proto_rawDesc = "" +
 	"\bgrant_id\x18\x01 \x01(\tR\agrantId\x12\x14\n" +
 	"\x05epoch\x18\x02 \x01(\tR\x05epoch\x12\x12\n" +
 	"\x04path\x18\x03 \x01(\tR\x04path\x12\x16\n" +
-	"\x06offset\x18\x04 \x01(\x03R\x06offset\"\x97\x01\n" +
+	"\x06offset\x18\x04 \x01(\x03R\x06offset\"\xd0\x01\n" +
 	"\x0fWriteFileHeader\x12'\n" +
 	"\x05fence\x18\x01 \x01(\v2\x11.execenv.v1.FenceR\x05fence\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12'\n" +
 	"\x0fexpected_sha256\x18\x03 \x01(\tR\x0eexpectedSha256\x12\x1e\n" +
 	"\n" +
 	"executable\x18\x04 \x01(\bR\n" +
-	"executable\"i\n" +
+	"executable\x12\x1f\n" +
+	"\vtransfer_id\x18\x05 \x01(\tR\n" +
+	"transferId\x12\x16\n" +
+	"\x06offset\x18\x06 \x01(\x03R\x06offset\"f\n" +
+	"\x12GetTransferRequest\x12\x19\n" +
+	"\bgrant_id\x18\x01 \x01(\tR\agrantId\x12\x14\n" +
+	"\x05epoch\x18\x02 \x01(\tR\x05epoch\x12\x1f\n" +
+	"\vtransfer_id\x18\x03 \x01(\tR\n" +
+	"transferId\"\"\n" +
+	"\bTransfer\x12\x16\n" +
+	"\x06offset\x18\x01 \x01(\x03R\x06offset\"i\n" +
 	"\x10WriteFileRequest\x125\n" +
 	"\x06header\x18\x01 \x01(\v2\x1b.execenv.v1.WriteFileHeaderH\x00R\x06header\x12\x16\n" +
 	"\x05chunk\x18\x02 \x01(\fH\x00R\x05chunkB\x06\n" +
@@ -1109,12 +1242,13 @@ const file_execenv_v1_file_proto_rawDesc = "" +
 	"\bgrant_id\x18\x01 \x01(\tR\agrantId\x12\x14\n" +
 	"\x05epoch\x18\x02 \x01(\tR\x05epoch\x12\x14\n" +
 	"\x05paths\x18\x03 \x03(\tR\x05paths\x12\x14\n" +
-	"\x05codec\x18\x04 \x01(\tR\x05codec2\xdd\x04\n" +
+	"\x05codec\x18\x04 \x01(\tR\x05codec2\xa2\x05\n" +
 	"\vFileService\x125\n" +
 	"\x04Stat\x12\x17.execenv.v1.StatRequest\x1a\x14.execenv.v1.FileInfo\x129\n" +
 	"\x04List\x12\x17.execenv.v1.ListRequest\x1a\x18.execenv.v1.ListResponse\x12C\n" +
 	"\bReadFile\x12\x1b.execenv.v1.ReadFileRequest\x1a\x18.execenv.v1.ContentChunk0\x01\x12A\n" +
-	"\tWriteFile\x12\x1c.execenv.v1.WriteFileRequest\x1a\x14.execenv.v1.FileInfo(\x01\x12T\n" +
+	"\tWriteFile\x12\x1c.execenv.v1.WriteFileRequest\x1a\x14.execenv.v1.FileInfo(\x01\x12C\n" +
+	"\vGetTransfer\x12\x1e.execenv.v1.GetTransferRequest\x1a\x14.execenv.v1.Transfer\x12T\n" +
 	"\rMakeDirectory\x12 .execenv.v1.MakeDirectoryRequest\x1a!.execenv.v1.MakeDirectoryResponse\x129\n" +
 	"\x04Move\x12\x17.execenv.v1.MoveRequest\x1a\x18.execenv.v1.MoveResponse\x12?\n" +
 	"\x06Remove\x12\x19.execenv.v1.RemoveRequest\x1a\x1a.execenv.v1.RemoveResponse\x12A\n" +
@@ -1133,7 +1267,7 @@ func file_execenv_v1_file_proto_rawDescGZIP() []byte {
 	return file_execenv_v1_file_proto_rawDescData
 }
 
-var file_execenv_v1_file_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_execenv_v1_file_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_execenv_v1_file_proto_goTypes = []any{
 	(*FileInfo)(nil),              // 0: execenv.v1.FileInfo
 	(*StatRequest)(nil),           // 1: execenv.v1.StatRequest
@@ -1141,51 +1275,55 @@ var file_execenv_v1_file_proto_goTypes = []any{
 	(*ListResponse)(nil),          // 3: execenv.v1.ListResponse
 	(*ReadFileRequest)(nil),       // 4: execenv.v1.ReadFileRequest
 	(*WriteFileHeader)(nil),       // 5: execenv.v1.WriteFileHeader
-	(*WriteFileRequest)(nil),      // 6: execenv.v1.WriteFileRequest
-	(*MakeDirectoryRequest)(nil),  // 7: execenv.v1.MakeDirectoryRequest
-	(*MakeDirectoryResponse)(nil), // 8: execenv.v1.MakeDirectoryResponse
-	(*MoveRequest)(nil),           // 9: execenv.v1.MoveRequest
-	(*MoveResponse)(nil),          // 10: execenv.v1.MoveResponse
-	(*RemoveRequest)(nil),         // 11: execenv.v1.RemoveRequest
-	(*RemoveResponse)(nil),        // 12: execenv.v1.RemoveResponse
-	(*ImportHeader)(nil),          // 13: execenv.v1.ImportHeader
-	(*ImportRequest)(nil),         // 14: execenv.v1.ImportRequest
-	(*ImportResponse)(nil),        // 15: execenv.v1.ImportResponse
-	(*ExportRequest)(nil),         // 16: execenv.v1.ExportRequest
-	(*timestamppb.Timestamp)(nil), // 17: google.protobuf.Timestamp
-	(*Fence)(nil),                 // 18: execenv.v1.Fence
-	(*ContentChunk)(nil),          // 19: execenv.v1.ContentChunk
+	(*GetTransferRequest)(nil),    // 6: execenv.v1.GetTransferRequest
+	(*Transfer)(nil),              // 7: execenv.v1.Transfer
+	(*WriteFileRequest)(nil),      // 8: execenv.v1.WriteFileRequest
+	(*MakeDirectoryRequest)(nil),  // 9: execenv.v1.MakeDirectoryRequest
+	(*MakeDirectoryResponse)(nil), // 10: execenv.v1.MakeDirectoryResponse
+	(*MoveRequest)(nil),           // 11: execenv.v1.MoveRequest
+	(*MoveResponse)(nil),          // 12: execenv.v1.MoveResponse
+	(*RemoveRequest)(nil),         // 13: execenv.v1.RemoveRequest
+	(*RemoveResponse)(nil),        // 14: execenv.v1.RemoveResponse
+	(*ImportHeader)(nil),          // 15: execenv.v1.ImportHeader
+	(*ImportRequest)(nil),         // 16: execenv.v1.ImportRequest
+	(*ImportResponse)(nil),        // 17: execenv.v1.ImportResponse
+	(*ExportRequest)(nil),         // 18: execenv.v1.ExportRequest
+	(*timestamppb.Timestamp)(nil), // 19: google.protobuf.Timestamp
+	(*Fence)(nil),                 // 20: execenv.v1.Fence
+	(*ContentChunk)(nil),          // 21: execenv.v1.ContentChunk
 }
 var file_execenv_v1_file_proto_depIdxs = []int32{
-	17, // 0: execenv.v1.FileInfo.modified:type_name -> google.protobuf.Timestamp
+	19, // 0: execenv.v1.FileInfo.modified:type_name -> google.protobuf.Timestamp
 	0,  // 1: execenv.v1.ListResponse.entries:type_name -> execenv.v1.FileInfo
-	18, // 2: execenv.v1.WriteFileHeader.fence:type_name -> execenv.v1.Fence
+	20, // 2: execenv.v1.WriteFileHeader.fence:type_name -> execenv.v1.Fence
 	5,  // 3: execenv.v1.WriteFileRequest.header:type_name -> execenv.v1.WriteFileHeader
-	18, // 4: execenv.v1.MakeDirectoryRequest.fence:type_name -> execenv.v1.Fence
-	18, // 5: execenv.v1.MoveRequest.fence:type_name -> execenv.v1.Fence
-	18, // 6: execenv.v1.RemoveRequest.fence:type_name -> execenv.v1.Fence
-	18, // 7: execenv.v1.ImportHeader.fence:type_name -> execenv.v1.Fence
-	13, // 8: execenv.v1.ImportRequest.header:type_name -> execenv.v1.ImportHeader
+	20, // 4: execenv.v1.MakeDirectoryRequest.fence:type_name -> execenv.v1.Fence
+	20, // 5: execenv.v1.MoveRequest.fence:type_name -> execenv.v1.Fence
+	20, // 6: execenv.v1.RemoveRequest.fence:type_name -> execenv.v1.Fence
+	20, // 7: execenv.v1.ImportHeader.fence:type_name -> execenv.v1.Fence
+	15, // 8: execenv.v1.ImportRequest.header:type_name -> execenv.v1.ImportHeader
 	1,  // 9: execenv.v1.FileService.Stat:input_type -> execenv.v1.StatRequest
 	2,  // 10: execenv.v1.FileService.List:input_type -> execenv.v1.ListRequest
 	4,  // 11: execenv.v1.FileService.ReadFile:input_type -> execenv.v1.ReadFileRequest
-	6,  // 12: execenv.v1.FileService.WriteFile:input_type -> execenv.v1.WriteFileRequest
-	7,  // 13: execenv.v1.FileService.MakeDirectory:input_type -> execenv.v1.MakeDirectoryRequest
-	9,  // 14: execenv.v1.FileService.Move:input_type -> execenv.v1.MoveRequest
-	11, // 15: execenv.v1.FileService.Remove:input_type -> execenv.v1.RemoveRequest
-	14, // 16: execenv.v1.FileService.Import:input_type -> execenv.v1.ImportRequest
-	16, // 17: execenv.v1.FileService.Export:input_type -> execenv.v1.ExportRequest
-	0,  // 18: execenv.v1.FileService.Stat:output_type -> execenv.v1.FileInfo
-	3,  // 19: execenv.v1.FileService.List:output_type -> execenv.v1.ListResponse
-	19, // 20: execenv.v1.FileService.ReadFile:output_type -> execenv.v1.ContentChunk
-	0,  // 21: execenv.v1.FileService.WriteFile:output_type -> execenv.v1.FileInfo
-	8,  // 22: execenv.v1.FileService.MakeDirectory:output_type -> execenv.v1.MakeDirectoryResponse
-	10, // 23: execenv.v1.FileService.Move:output_type -> execenv.v1.MoveResponse
-	12, // 24: execenv.v1.FileService.Remove:output_type -> execenv.v1.RemoveResponse
-	15, // 25: execenv.v1.FileService.Import:output_type -> execenv.v1.ImportResponse
-	19, // 26: execenv.v1.FileService.Export:output_type -> execenv.v1.ContentChunk
-	18, // [18:27] is the sub-list for method output_type
-	9,  // [9:18] is the sub-list for method input_type
+	8,  // 12: execenv.v1.FileService.WriteFile:input_type -> execenv.v1.WriteFileRequest
+	6,  // 13: execenv.v1.FileService.GetTransfer:input_type -> execenv.v1.GetTransferRequest
+	9,  // 14: execenv.v1.FileService.MakeDirectory:input_type -> execenv.v1.MakeDirectoryRequest
+	11, // 15: execenv.v1.FileService.Move:input_type -> execenv.v1.MoveRequest
+	13, // 16: execenv.v1.FileService.Remove:input_type -> execenv.v1.RemoveRequest
+	16, // 17: execenv.v1.FileService.Import:input_type -> execenv.v1.ImportRequest
+	18, // 18: execenv.v1.FileService.Export:input_type -> execenv.v1.ExportRequest
+	0,  // 19: execenv.v1.FileService.Stat:output_type -> execenv.v1.FileInfo
+	3,  // 20: execenv.v1.FileService.List:output_type -> execenv.v1.ListResponse
+	21, // 21: execenv.v1.FileService.ReadFile:output_type -> execenv.v1.ContentChunk
+	0,  // 22: execenv.v1.FileService.WriteFile:output_type -> execenv.v1.FileInfo
+	7,  // 23: execenv.v1.FileService.GetTransfer:output_type -> execenv.v1.Transfer
+	10, // 24: execenv.v1.FileService.MakeDirectory:output_type -> execenv.v1.MakeDirectoryResponse
+	12, // 25: execenv.v1.FileService.Move:output_type -> execenv.v1.MoveResponse
+	14, // 26: execenv.v1.FileService.Remove:output_type -> execenv.v1.RemoveResponse
+	17, // 27: execenv.v1.FileService.Import:output_type -> execenv.v1.ImportResponse
+	21, // 28: execenv.v1.FileService.Export:output_type -> execenv.v1.ContentChunk
+	19, // [19:29] is the sub-list for method output_type
+	9,  // [9:19] is the sub-list for method input_type
 	9,  // [9:9] is the sub-list for extension type_name
 	9,  // [9:9] is the sub-list for extension extendee
 	0,  // [0:9] is the sub-list for field type_name
@@ -1198,11 +1336,11 @@ func file_execenv_v1_file_proto_init() {
 	}
 	file_execenv_v1_common_proto_init()
 	file_execenv_v1_journal_proto_init()
-	file_execenv_v1_file_proto_msgTypes[6].OneofWrappers = []any{
+	file_execenv_v1_file_proto_msgTypes[8].OneofWrappers = []any{
 		(*WriteFileRequest_Header)(nil),
 		(*WriteFileRequest_Chunk)(nil),
 	}
-	file_execenv_v1_file_proto_msgTypes[14].OneofWrappers = []any{
+	file_execenv_v1_file_proto_msgTypes[16].OneofWrappers = []any{
 		(*ImportRequest_Header)(nil),
 		(*ImportRequest_Chunk)(nil),
 	}
@@ -1212,7 +1350,7 @@ func file_execenv_v1_file_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_execenv_v1_file_proto_rawDesc), len(file_execenv_v1_file_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   17,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

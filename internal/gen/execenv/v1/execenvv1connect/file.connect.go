@@ -41,6 +41,8 @@ const (
 	FileServiceReadFileProcedure = "/execenv.v1.FileService/ReadFile"
 	// FileServiceWriteFileProcedure is the fully-qualified name of the FileService's WriteFile RPC.
 	FileServiceWriteFileProcedure = "/execenv.v1.FileService/WriteFile"
+	// FileServiceGetTransferProcedure is the fully-qualified name of the FileService's GetTransfer RPC.
+	FileServiceGetTransferProcedure = "/execenv.v1.FileService/GetTransfer"
 	// FileServiceMakeDirectoryProcedure is the fully-qualified name of the FileService's MakeDirectory
 	// RPC.
 	FileServiceMakeDirectoryProcedure = "/execenv.v1.FileService/MakeDirectory"
@@ -61,6 +63,8 @@ type FileServiceClient interface {
 	ReadFile(context.Context, *connect.Request[v1.ReadFileRequest]) (*connect.ServerStreamForClient[v1.ContentChunk], error)
 	// WriteFile: the first message is the header, the rest the body.
 	WriteFile(context.Context) *connect.ClientStreamForClient[v1.WriteFileRequest, v1.FileInfo]
+	// GetTransfer reports how much of a resumable write is held.
+	GetTransfer(context.Context, *connect.Request[v1.GetTransferRequest]) (*connect.Response[v1.Transfer], error)
 	MakeDirectory(context.Context, *connect.Request[v1.MakeDirectoryRequest]) (*connect.Response[v1.MakeDirectoryResponse], error)
 	Move(context.Context, *connect.Request[v1.MoveRequest]) (*connect.Response[v1.MoveResponse], error)
 	Remove(context.Context, *connect.Request[v1.RemoveRequest]) (*connect.Response[v1.RemoveResponse], error)
@@ -104,6 +108,12 @@ func NewFileServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(fileServiceMethods.ByName("WriteFile")),
 			connect.WithClientOptions(opts...),
 		),
+		getTransfer: connect.NewClient[v1.GetTransferRequest, v1.Transfer](
+			httpClient,
+			baseURL+FileServiceGetTransferProcedure,
+			connect.WithSchema(fileServiceMethods.ByName("GetTransfer")),
+			connect.WithClientOptions(opts...),
+		),
 		makeDirectory: connect.NewClient[v1.MakeDirectoryRequest, v1.MakeDirectoryResponse](
 			httpClient,
 			baseURL+FileServiceMakeDirectoryProcedure,
@@ -143,6 +153,7 @@ type fileServiceClient struct {
 	list          *connect.Client[v1.ListRequest, v1.ListResponse]
 	readFile      *connect.Client[v1.ReadFileRequest, v1.ContentChunk]
 	writeFile     *connect.Client[v1.WriteFileRequest, v1.FileInfo]
+	getTransfer   *connect.Client[v1.GetTransferRequest, v1.Transfer]
 	makeDirectory *connect.Client[v1.MakeDirectoryRequest, v1.MakeDirectoryResponse]
 	move          *connect.Client[v1.MoveRequest, v1.MoveResponse]
 	remove        *connect.Client[v1.RemoveRequest, v1.RemoveResponse]
@@ -168,6 +179,11 @@ func (c *fileServiceClient) ReadFile(ctx context.Context, req *connect.Request[v
 // WriteFile calls execenv.v1.FileService.WriteFile.
 func (c *fileServiceClient) WriteFile(ctx context.Context) *connect.ClientStreamForClient[v1.WriteFileRequest, v1.FileInfo] {
 	return c.writeFile.CallClientStream(ctx)
+}
+
+// GetTransfer calls execenv.v1.FileService.GetTransfer.
+func (c *fileServiceClient) GetTransfer(ctx context.Context, req *connect.Request[v1.GetTransferRequest]) (*connect.Response[v1.Transfer], error) {
+	return c.getTransfer.CallUnary(ctx, req)
 }
 
 // MakeDirectory calls execenv.v1.FileService.MakeDirectory.
@@ -202,6 +218,8 @@ type FileServiceHandler interface {
 	ReadFile(context.Context, *connect.Request[v1.ReadFileRequest], *connect.ServerStream[v1.ContentChunk]) error
 	// WriteFile: the first message is the header, the rest the body.
 	WriteFile(context.Context, *connect.ClientStream[v1.WriteFileRequest]) (*connect.Response[v1.FileInfo], error)
+	// GetTransfer reports how much of a resumable write is held.
+	GetTransfer(context.Context, *connect.Request[v1.GetTransferRequest]) (*connect.Response[v1.Transfer], error)
 	MakeDirectory(context.Context, *connect.Request[v1.MakeDirectoryRequest]) (*connect.Response[v1.MakeDirectoryResponse], error)
 	Move(context.Context, *connect.Request[v1.MoveRequest]) (*connect.Response[v1.MoveResponse], error)
 	Remove(context.Context, *connect.Request[v1.RemoveRequest]) (*connect.Response[v1.RemoveResponse], error)
@@ -239,6 +257,12 @@ func NewFileServiceHandler(svc FileServiceHandler, opts ...connect.HandlerOption
 		FileServiceWriteFileProcedure,
 		svc.WriteFile,
 		connect.WithSchema(fileServiceMethods.ByName("WriteFile")),
+		connect.WithHandlerOptions(opts...),
+	)
+	fileServiceGetTransferHandler := connect.NewUnaryHandler(
+		FileServiceGetTransferProcedure,
+		svc.GetTransfer,
+		connect.WithSchema(fileServiceMethods.ByName("GetTransfer")),
 		connect.WithHandlerOptions(opts...),
 	)
 	fileServiceMakeDirectoryHandler := connect.NewUnaryHandler(
@@ -281,6 +305,8 @@ func NewFileServiceHandler(svc FileServiceHandler, opts ...connect.HandlerOption
 			fileServiceReadFileHandler.ServeHTTP(w, r)
 		case FileServiceWriteFileProcedure:
 			fileServiceWriteFileHandler.ServeHTTP(w, r)
+		case FileServiceGetTransferProcedure:
+			fileServiceGetTransferHandler.ServeHTTP(w, r)
 		case FileServiceMakeDirectoryProcedure:
 			fileServiceMakeDirectoryHandler.ServeHTTP(w, r)
 		case FileServiceMoveProcedure:
@@ -314,6 +340,10 @@ func (UnimplementedFileServiceHandler) ReadFile(context.Context, *connect.Reques
 
 func (UnimplementedFileServiceHandler) WriteFile(context.Context, *connect.ClientStream[v1.WriteFileRequest]) (*connect.Response[v1.FileInfo], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.v1.FileService.WriteFile is not implemented"))
+}
+
+func (UnimplementedFileServiceHandler) GetTransfer(context.Context, *connect.Request[v1.GetTransferRequest]) (*connect.Response[v1.Transfer], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.v1.FileService.GetTransfer is not implemented"))
 }
 
 func (UnimplementedFileServiceHandler) MakeDirectory(context.Context, *connect.Request[v1.MakeDirectoryRequest]) (*connect.Response[v1.MakeDirectoryResponse], error) {

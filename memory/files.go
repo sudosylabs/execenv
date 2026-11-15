@@ -79,6 +79,16 @@ func (e *environment) WriteFile(ctx context.Context, fence execenv.ProjectionFen
 	return info, err
 }
 
+func (e *environment) TransferOffset(ctx context.Context, transferID string) (int64, error) {
+	if err := e.live("transfer_offset"); err != nil {
+		return 0, err
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	return e.files.TransferOffset(transferID)
+}
+
 func (e *environment) MakeDirectory(ctx context.Context, fence execenv.ProjectionFence, path string, parents bool) error {
 	return e.change(ctx, fence, func() error { return e.files.MakeDirectory(path, parents) })
 }

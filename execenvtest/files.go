@@ -2,6 +2,8 @@ package execenvtest
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"strings"
@@ -12,6 +14,50 @@ import (
 )
 
 func runFiles(t *testing.T, factory Factory) {
+
+	t.Run("a broken write resumes from what the host holds", func(t *testing.T) {
+		host := factory(t, Config{})
+		env, fence := occupyRunning(t, host, "resume-write")
+		ctx := t.Context()
+		body := bytes.Repeat([]byte("0123456789abcdef"), 512<<10) // 8 MiB
+		const cut = 3 << 20
+		broken := io.MultiReader(bytes.NewReader(body[:cut]), failingReader{})
+		opts := execenv.WriteOptions{TransferID: "upload-1"}
+		if _, err := env.WriteFile(ctx, fence, "big.bin", broken, opts); err == nil {
+			t.Fatal("a write whose body failed succeeded")
+		}
+		if _, err := env.Stat(ctx, "big.bin", false); !errors.Is(err, execenv.ErrNotFound) {
+			t.Fatalf("a broken write left a file: %v", err)
+		}
+		held, err := env.TransferOffset(ctx, "upload-1")
+		if err != nil || held <= 0 || held > cut {
+			t.Fatalf("TransferOffset() = %d, %v; want up to %d", held, err, cut)
+		}
+		wrong := opts
+		wrong.Offset = held + 1
+		if _, err := env.WriteFile(ctx, fence, "big.bin", bytes.NewReader(body[held+1:]), wrong); !errors.Is(err, execenv.ErrConflict) {
+			t.Fatalf("resume at the wrong offset = %v, want ErrConflict", err)
+		}
+		opts.Offset = held
+		info, err := env.WriteFile(ctx, fence, "big.bin", bytes.NewReader(body[held:]), opts)
+		sum := sha256.Sum256(body)
+		if err != nil || info.Size != int64(len(body)) || info.SHA256 != hex.EncodeToString(sum[:]) {
+			t.Fatalf("resumed write = %+v, %v", info, err)
+		}
+		if after, err := env.TransferOffset(ctx, "upload-1"); err != nil || after != 0 {
+			t.Fatalf("TransferOffset() after it landed = %d, %v", after, err)
+		}
+		// Without a transfer id a broken write keeps nothing.
+		if _, err := env.WriteFile(ctx, fence, "other.bin", io.MultiReader(bytes.NewReader(body[:1024]), failingReader{}), execenv.WriteOptions{}); err == nil {
+			t.Fatal("a plain write whose body failed succeeded")
+		}
+		if _, err := env.Stat(ctx, "other.bin", false); !errors.Is(err, execenv.ErrNotFound) {
+			t.Fatalf("a broken plain write left a file: %v", err)
+		}
+		if _, err := env.TransferOffset(ctx, "bad id!"); !errors.Is(err, execenv.ErrInvalid) {
+			t.Fatalf("TransferOffset() of a bad id = %v, want ErrInvalid", err)
+		}
+	})
 	t.Run("the file API writes, reads, lists, moves and removes", func(t *testing.T) {
 		host := factory(t, Config{})
 		env, fence := occupyRunning(t, host, "files")
@@ -114,3 +160,8 @@ func runFiles(t *testing.T, factory Factory) {
 		}
 	})
 }
+
+// failingReader fails every read, as a caller's broken source does.
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) { return 0, errors.New("source broke") }

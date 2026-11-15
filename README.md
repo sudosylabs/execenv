@@ -402,6 +402,25 @@ nothing). `MakeDirectory`, `Move` and `Remove` do what their names say;
 guest changes like any other: once a projection is initialized they appear
 in `Observe`. Bodies travel on the content connection.
 
+A large write can survive a broken connection. Give it a `TransferID` of
+your choosing: the bytes of a stream that breaks are kept under it, and you
+carry on from where the host stopped:
+
+```go
+opts := execenv.WriteOptions{TransferID: "upload-42"}
+_, err := env.WriteFile(ctx, fence, "data.bin", body, opts)
+if err != nil {
+	opts.Offset, err = env.TransferOffset(ctx, "upload-42")
+	_, _ = body.Seek(opts.Offset, io.SeekStart)
+	_, err = env.WriteFile(ctx, fence, "data.bin", body, opts)
+}
+```
+
+A resume whose `Offset` is not what `TransferOffset` reports is
+`ErrConflict`. The file still lands only once the whole body is there, and
+then the transfer is used up. Kept bytes expire an hour after they last
+grew.
+
 ### Project the workspace
 
 Your application owns a journal of the workspace. The grant receives it as

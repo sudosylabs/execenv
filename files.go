@@ -24,6 +24,26 @@ type WriteOptions struct {
 	// the file now has that digest. "absent" requires that no file exists.
 	ExpectedSHA256 string
 	Executable     bool
+	// TransferID, when set, makes the write resumable: the bytes of a
+	// broken stream are kept under it, and a later WriteFile with the same
+	// id and Offset at TransferOffset carries on. The caller picks it, in
+	// the id alphabet. Kept bytes expire an hour after they last grew.
+	TransferID string
+	// Offset is where this body starts within the transfer: what
+	// TransferOffset reports. Anything else is ErrConflict. Without a
+	// TransferID it must be 0.
+	Offset int64
+}
+
+// TransferExpiry is how long a broken transfer's bytes are kept.
+const TransferExpiry = time.Hour
+
+// ValidateTransferID checks a caller's transfer id.
+func ValidateTransferID(id string) error {
+	if len(id) > 64 || validateName(id) != nil {
+		return ErrInvalid
+	}
+	return nil
 }
 
 // ExpectAbsent is the ExpectedSHA256 that requires the path not to exist.
@@ -47,6 +67,9 @@ type Files interface {
 	// WriteFile streams body into place. It replaces the file only once the
 	// whole body has arrived, so a broken stream leaves the file as it was.
 	WriteFile(ctx context.Context, fence ProjectionFence, path string, body io.Reader, opts WriteOptions) (FileInfo, error)
+	// TransferOffset is how many bytes of a resumable write are kept: the
+	// Offset a retry starts from. An unknown or expired transfer is 0.
+	TransferOffset(ctx context.Context, transferID string) (int64, error)
 	MakeDirectory(ctx context.Context, fence ProjectionFence, path string, parents bool) error
 	// Move renames from to to. The destination must not exist.
 	Move(ctx context.Context, fence ProjectionFence, from, to string) error

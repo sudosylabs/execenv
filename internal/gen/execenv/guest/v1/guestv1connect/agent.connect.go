@@ -94,6 +94,9 @@ const (
 	AgentServiceReadFileProcedure = "/execenv.guest.v1.AgentService/ReadFile"
 	// AgentServiceWriteFileProcedure is the fully-qualified name of the AgentService's WriteFile RPC.
 	AgentServiceWriteFileProcedure = "/execenv.guest.v1.AgentService/WriteFile"
+	// AgentServiceGetTransferProcedure is the fully-qualified name of the AgentService's GetTransfer
+	// RPC.
+	AgentServiceGetTransferProcedure = "/execenv.guest.v1.AgentService/GetTransfer"
 	// AgentServiceMakeDirectoryProcedure is the fully-qualified name of the AgentService's
 	// MakeDirectory RPC.
 	AgentServiceMakeDirectoryProcedure = "/execenv.guest.v1.AgentService/MakeDirectory"
@@ -151,6 +154,7 @@ type AgentServiceClient interface {
 	List(context.Context, *connect.Request[v11.ListRequest]) (*connect.Response[v11.ListResponse], error)
 	ReadFile(context.Context, *connect.Request[v11.ReadFileRequest]) (*connect.ServerStreamForClient[v11.ContentChunk], error)
 	WriteFile(context.Context) *connect.ClientStreamForClient[v11.WriteFileRequest, v11.FileInfo]
+	GetTransfer(context.Context, *connect.Request[v11.GetTransferRequest]) (*connect.Response[v11.Transfer], error)
 	MakeDirectory(context.Context, *connect.Request[v11.MakeDirectoryRequest]) (*connect.Response[v11.MakeDirectoryResponse], error)
 	Move(context.Context, *connect.Request[v11.MoveRequest]) (*connect.Response[v11.MoveResponse], error)
 	Remove(context.Context, *connect.Request[v11.RemoveRequest]) (*connect.Response[v11.RemoveResponse], error)
@@ -313,6 +317,12 @@ func NewAgentServiceClient(httpClient connect.HTTPClient, baseURL string, opts .
 			connect.WithSchema(agentServiceMethods.ByName("WriteFile")),
 			connect.WithClientOptions(opts...),
 		),
+		getTransfer: connect.NewClient[v11.GetTransferRequest, v11.Transfer](
+			httpClient,
+			baseURL+AgentServiceGetTransferProcedure,
+			connect.WithSchema(agentServiceMethods.ByName("GetTransfer")),
+			connect.WithClientOptions(opts...),
+		),
 		makeDirectory: connect.NewClient[v11.MakeDirectoryRequest, v11.MakeDirectoryResponse](
 			httpClient,
 			baseURL+AgentServiceMakeDirectoryProcedure,
@@ -372,6 +382,7 @@ type agentServiceClient struct {
 	list                         *connect.Client[v11.ListRequest, v11.ListResponse]
 	readFile                     *connect.Client[v11.ReadFileRequest, v11.ContentChunk]
 	writeFile                    *connect.Client[v11.WriteFileRequest, v11.FileInfo]
+	getTransfer                  *connect.Client[v11.GetTransferRequest, v11.Transfer]
 	makeDirectory                *connect.Client[v11.MakeDirectoryRequest, v11.MakeDirectoryResponse]
 	move                         *connect.Client[v11.MoveRequest, v11.MoveResponse]
 	remove                       *connect.Client[v11.RemoveRequest, v11.RemoveResponse]
@@ -499,6 +510,11 @@ func (c *agentServiceClient) WriteFile(ctx context.Context) *connect.ClientStrea
 	return c.writeFile.CallClientStream(ctx)
 }
 
+// GetTransfer calls execenv.guest.v1.AgentService.GetTransfer.
+func (c *agentServiceClient) GetTransfer(ctx context.Context, req *connect.Request[v11.GetTransferRequest]) (*connect.Response[v11.Transfer], error) {
+	return c.getTransfer.CallUnary(ctx, req)
+}
+
 // MakeDirectory calls execenv.guest.v1.AgentService.MakeDirectory.
 func (c *agentServiceClient) MakeDirectory(ctx context.Context, req *connect.Request[v11.MakeDirectoryRequest]) (*connect.Response[v11.MakeDirectoryResponse], error) {
 	return c.makeDirectory.CallUnary(ctx, req)
@@ -568,6 +584,7 @@ type AgentServiceHandler interface {
 	List(context.Context, *connect.Request[v11.ListRequest]) (*connect.Response[v11.ListResponse], error)
 	ReadFile(context.Context, *connect.Request[v11.ReadFileRequest], *connect.ServerStream[v11.ContentChunk]) error
 	WriteFile(context.Context, *connect.ClientStream[v11.WriteFileRequest]) (*connect.Response[v11.FileInfo], error)
+	GetTransfer(context.Context, *connect.Request[v11.GetTransferRequest]) (*connect.Response[v11.Transfer], error)
 	MakeDirectory(context.Context, *connect.Request[v11.MakeDirectoryRequest]) (*connect.Response[v11.MakeDirectoryResponse], error)
 	Move(context.Context, *connect.Request[v11.MoveRequest]) (*connect.Response[v11.MoveResponse], error)
 	Remove(context.Context, *connect.Request[v11.RemoveRequest]) (*connect.Response[v11.RemoveResponse], error)
@@ -726,6 +743,12 @@ func NewAgentServiceHandler(svc AgentServiceHandler, opts ...connect.HandlerOpti
 		connect.WithSchema(agentServiceMethods.ByName("WriteFile")),
 		connect.WithHandlerOptions(opts...),
 	)
+	agentServiceGetTransferHandler := connect.NewUnaryHandler(
+		AgentServiceGetTransferProcedure,
+		svc.GetTransfer,
+		connect.WithSchema(agentServiceMethods.ByName("GetTransfer")),
+		connect.WithHandlerOptions(opts...),
+	)
 	agentServiceMakeDirectoryHandler := connect.NewUnaryHandler(
 		AgentServiceMakeDirectoryProcedure,
 		svc.MakeDirectory,
@@ -806,6 +829,8 @@ func NewAgentServiceHandler(svc AgentServiceHandler, opts ...connect.HandlerOpti
 			agentServiceReadFileHandler.ServeHTTP(w, r)
 		case AgentServiceWriteFileProcedure:
 			agentServiceWriteFileHandler.ServeHTTP(w, r)
+		case AgentServiceGetTransferProcedure:
+			agentServiceGetTransferHandler.ServeHTTP(w, r)
 		case AgentServiceMakeDirectoryProcedure:
 			agentServiceMakeDirectoryHandler.ServeHTTP(w, r)
 		case AgentServiceMoveProcedure:
@@ -919,6 +944,10 @@ func (UnimplementedAgentServiceHandler) ReadFile(context.Context, *connect.Reque
 
 func (UnimplementedAgentServiceHandler) WriteFile(context.Context, *connect.ClientStream[v11.WriteFileRequest]) (*connect.Response[v11.FileInfo], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.WriteFile is not implemented"))
+}
+
+func (UnimplementedAgentServiceHandler) GetTransfer(context.Context, *connect.Request[v11.GetTransferRequest]) (*connect.Response[v11.Transfer], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.GetTransfer is not implemented"))
 }
 
 func (UnimplementedAgentServiceHandler) MakeDirectory(context.Context, *connect.Request[v11.MakeDirectoryRequest]) (*connect.Response[v11.MakeDirectoryResponse], error) {

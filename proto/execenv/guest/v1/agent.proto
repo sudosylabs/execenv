@@ -63,6 +63,7 @@ service AgentService {
   rpc List(execenv.v1.ListRequest) returns (execenv.v1.ListResponse);
   rpc ReadFile(execenv.v1.ReadFileRequest) returns (stream execenv.v1.ContentChunk);
   rpc WriteFile(stream execenv.v1.WriteFileRequest) returns (execenv.v1.FileInfo);
+  rpc GetTransfer(execenv.v1.GetTransferRequest) returns (execenv.v1.Transfer);
   rpc MakeDirectory(execenv.v1.MakeDirectoryRequest) returns (execenv.v1.MakeDirectoryResponse);
   rpc Move(execenv.v1.MoveRequest) returns (execenv.v1.MoveResponse);
   rpc Remove(execenv.v1.RemoveRequest) returns (execenv.v1.RemoveResponse);

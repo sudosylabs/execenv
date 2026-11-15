@@ -614,6 +614,19 @@ func ScreenFrom(s *execenvv1.Screen) execenv.Screen {
 	}
 }
 
+// WriteHeaderTo is a WriteFile's first message.
+func WriteHeaderTo(fence execenv.ProjectionFence, path string, opts execenv.WriteOptions) *execenvv1.WriteFileHeader {
+	return &execenvv1.WriteFileHeader{
+		Fence: FenceTo(fence), Path: path, ExpectedSha256: opts.ExpectedSHA256, Executable: opts.Executable,
+		TransferId: opts.TransferID, Offset: opts.Offset,
+	}
+}
+
+// WriteOptionsFrom is a WriteFile header's options.
+func WriteOptionsFrom(h *execenvv1.WriteFileHeader) execenv.WriteOptions {
+	return execenv.WriteOptions{ExpectedSHA256: h.GetExpectedSha256(), Executable: h.GetExecutable(), TransferID: h.GetTransferId(), Offset: h.GetOffset()}
+}
+
 func WindowTo(w execenv.Window) *execenvv1.Window {
 	return &execenvv1.Window{Cols: uint32(w.Cols), Rows: uint32(w.Rows)}
 }

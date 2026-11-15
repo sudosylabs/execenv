@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/archive"
@@ -28,6 +30,8 @@ type FS struct {
 	stage string
 	// Own, when set, hands a created path to the workload's user.
 	Own func(string) error
+	// transfers holds a lock per resumable transfer.
+	transfers sync.Map
 }
 
 // New serves home, staging under stage, which must be on the same disk and
@@ -171,17 +175,51 @@ func (f *FS) WriteFile(name string, body io.Reader, opts execenv.WriteOptions) (
 	if st, err := os.Lstat(filepath.Dir(full)); err != nil || !st.IsDir() {
 		return execenv.FileInfo{}, execenv.ErrNotFound
 	}
-	stage, err := os.CreateTemp(f.stage, "write-*")
-	if err != nil {
-		return execenv.FileInfo{}, content.DiskError(err)
+	var stage *os.File
+	if opts.TransferID == "" {
+		if opts.Offset != 0 {
+			return execenv.FileInfo{}, execenv.ErrInvalid
+		}
+		if stage, err = os.CreateTemp(f.stage, "write-*"); err != nil {
+			return execenv.FileInfo{}, content.DiskError(err)
+		}
+	} else {
+		if execenv.ValidateTransferID(opts.TransferID) != nil {
+			return execenv.FileInfo{}, execenv.ErrInvalid
+		}
+		// Held for the whole write: a TransferOffset asked as a broken
+		// stream is still landing waits for its last bytes.
+		unlock := f.lockTransfer(opts.TransferID)
+		defer unlock()
+		f.expire()
+		held, err := f.offset(opts.TransferID)
+		if err != nil {
+			return execenv.FileInfo{}, err
+		}
+		if opts.Offset != held {
+			return execenv.FileInfo{}, execenv.ErrConflict
+		}
+		if stage, err = os.OpenFile(f.transfer(opts.TransferID), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err != nil {
+			return execenv.FileInfo{}, content.DiskError(err)
+		}
 	}
 	staged := stage.Name()
-	defer os.Remove(staged)
-	sum := sha256.New()
-	size, err := io.Copy(io.MultiWriter(stage, sum), body)
+	_, err = io.Copy(stage, body)
 	if cerr := stage.Close(); err == nil {
 		err = cerr
 	}
+	if err != nil {
+		// A broken transfer keeps what arrived for its retry.
+		if opts.TransferID == "" {
+			_ = os.Remove(staged)
+		}
+		return execenv.FileInfo{}, content.DiskError(err)
+	}
+	// The whole body is here: from now on the transfer is used up, whether
+	// the write lands or is refused.
+	defer os.Remove(staged)
+	sum := sha256.New()
+	size, err := hashFile(staged, sum)
 	if err != nil {
 		return execenv.FileInfo{}, content.DiskError(err)
 	}
@@ -207,6 +245,69 @@ func (f *FS) WriteFile(name string, body io.Reader, opts execenv.WriteOptions) (
 		out.Modified = st.ModTime()
 	}
 	return out, nil
+}
+
+// transfer is where a resumable write's bytes are kept.
+func (f *FS) transfer(id string) string { return filepath.Join(f.stage, "transfer-"+id) }
+
+// TransferOffset is how many bytes of transfer id are kept, once no write
+// to it is under way.
+func (f *FS) TransferOffset(id string) (int64, error) {
+	if execenv.ValidateTransferID(id) != nil {
+		return 0, execenv.ErrInvalid
+	}
+	unlock := f.lockTransfer(id)
+	defer unlock()
+	return f.offset(id)
+}
+
+// lockTransfer serializes the writes and reads of one transfer.
+func (f *FS) lockTransfer(id string) func() {
+	v, _ := f.transfers.LoadOrStore(id, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+func (f *FS) offset(id string) (int64, error) {
+	st, err := os.Stat(f.transfer(id))
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, content.DiskError(err)
+	}
+	if time.Since(st.ModTime()) > execenv.TransferExpiry {
+		_ = os.Remove(f.transfer(id))
+		return 0, nil
+	}
+	return st.Size(), nil
+}
+
+// expire drops transfers nothing has added to for TransferExpiry.
+func (f *FS) expire() {
+	entries, err := os.ReadDir(f.stage)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), "transfer-") {
+			continue
+		}
+		if info, err := e.Info(); err == nil && time.Since(info.ModTime()) > execenv.TransferExpiry {
+			_ = os.Remove(filepath.Join(f.stage, e.Name()))
+		}
+	}
+}
+
+// hashFile reads a staged body once to hash it and returns its size.
+func hashFile(path string, sum io.Writer) (int64, error) {
+	r, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer r.Close()
+	return io.Copy(sum, r)
 }
 
 func (f *FS) expect(full, want string) error {

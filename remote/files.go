@@ -85,11 +85,23 @@ func (h *server) WriteFile(ctx context.Context, stream *connect.ClientStream[exe
 		return nil, wire.Error(err)
 	}
 	body := chunks(stream.Receive, stream.Msg, stream.Err)
-	info, err := env.WriteFile(ctx, fence, header.GetPath(), body, execenv.WriteOptions{ExpectedSHA256: header.GetExpectedSha256(), Executable: header.GetExecutable()})
+	info, err := env.WriteFile(ctx, fence, header.GetPath(), body, wire.WriteOptionsFrom(header))
 	if err != nil {
 		return nil, wire.Error(err)
 	}
 	return connect.NewResponse(wire.FileInfoTo(info)), nil
+}
+
+func (h *server) GetTransfer(ctx context.Context, req *connect.Request[execenvv1.GetTransferRequest]) (*connect.Response[execenvv1.Transfer], error) {
+	env, err := h.env(execenv.ID(req.Msg.GetGrantId()), req.Msg.GetEpoch())
+	if err != nil {
+		return nil, wire.Error(err)
+	}
+	offset, err := env.TransferOffset(ctx, req.Msg.GetTransferId())
+	if err != nil {
+		return nil, wire.Error(err)
+	}
+	return connect.NewResponse(&execenvv1.Transfer{Offset: offset}), nil
 }
 
 func (h *server) Import(ctx context.Context, stream *connect.ClientStream[execenvv1.ImportRequest]) (*connect.Response[execenvv1.ImportResponse], error) {
@@ -200,13 +212,22 @@ func (e *remoteEnv) WriteFile(ctx context.Context, fence execenv.ProjectionFence
 	stop := context.AfterFunc(e.client.ctx, cancel)
 	defer stop()
 	stream := e.client.bulkFiles.WriteFile(ctx)
-	err := stream.Send(&execenvv1.WriteFileRequest{Part: &execenvv1.WriteFileRequest_Header{Header: &execenvv1.WriteFileHeader{
-		Fence: wire.FenceTo(fence), Path: path, ExpectedSha256: opts.ExpectedSHA256, Executable: opts.Executable,
-	}}})
+	err := stream.Send(&execenvv1.WriteFileRequest{Part: &execenvv1.WriteFileRequest_Header{Header: wire.WriteHeaderTo(fence, path, opts)}})
+	sent := err != nil
 	if err == nil {
 		err = wire.Pump(body, func(b []byte) error {
-			return stream.Send(&execenvv1.WriteFileRequest{Part: &execenvv1.WriteFileRequest_Chunk{Chunk: b}})
+			if serr := stream.Send(&execenvv1.WriteFileRequest{Part: &execenvv1.WriteFileRequest_Chunk{Chunk: b}}); serr != nil {
+				sent = true
+				return serr
+			}
+			return nil
 		})
+	}
+	if err != nil && !sent {
+		// The body failed: it must not reach the host as a complete one.
+		cancel()
+		_, _ = stream.CloseAndReceive()
+		return execenv.FileInfo{}, execenv.Error("write_file", err)
 	}
 	resp, cerr := stream.CloseAndReceive()
 	if cerr != nil {
@@ -216,6 +237,16 @@ func (e *remoteEnv) WriteFile(ctx context.Context, fence execenv.ProjectionFence
 		return execenv.FileInfo{}, execenv.Error("write_file", err)
 	}
 	return wire.FileInfoFrom(resp.Msg), nil
+}
+
+func (e *remoteEnv) TransferOffset(ctx context.Context, transferID string) (int64, error) {
+	ctx, cancel := e.client.call(ctx)
+	defer cancel()
+	resp, err := e.client.files.GetTransfer(ctx, connect.NewRequest(&execenvv1.GetTransferRequest{GrantId: string(e.id), Epoch: e.epoch, TransferId: transferID}))
+	if err != nil {
+		return 0, wire.HostError("transfer_offset", err)
+	}
+	return resp.Msg.GetOffset(), nil
 }
 
 func (e *remoteEnv) Import(ctx context.Context, fence execenv.ProjectionFence, dir string, archive io.Reader) error {

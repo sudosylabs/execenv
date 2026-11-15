@@ -16,6 +16,8 @@ service FileService {
   rpc ReadFile(ReadFileRequest) returns (stream ContentChunk);
   // WriteFile: the first message is the header, the rest the body.
   rpc WriteFile(stream WriteFileRequest) returns (FileInfo);
+  // GetTransfer reports how much of a resumable write is held.
+  rpc GetTransfer(GetTransferRequest) returns (Transfer);
   rpc MakeDirectory(MakeDirectoryRequest) returns (MakeDirectoryResponse);
   rpc Move(MoveRequest) returns (MoveResponse);
   rpc Remove(RemoveRequest) returns (RemoveResponse);
@@ -64,6 +66,21 @@ message WriteFileHeader {
   string path = 2;
   string expected_sha256 = 3;
   bool executable = 4;
+  // transfer_id makes the write resumable; offset is where this body
+  // starts within it, as GetTransfer reports.
+  string transfer_id = 5;
+  int64 offset = 6;
+}
+
+message GetTransferRequest {
+  string grant_id = 1;
+  string epoch = 2;
+  string transfer_id = 3;
+}
+
+// Transfer is how much of a resumable write the host holds.
+message Transfer {
+  int64 offset = 1;
 }
 
 message WriteFileRequest {

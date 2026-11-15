@@ -64,6 +64,14 @@ func (e *environment) WriteFile(ctx context.Context, fence execenv.ProjectionFen
 	return c.WriteFile(ctx, fence, path, body, opts)
 }
 
+func (e *environment) TransferOffset(ctx context.Context, transferID string) (int64, error) {
+	c, err := e.reader("transfer_offset")
+	if err != nil {
+		return 0, err
+	}
+	return c.TransferOffset(ctx, transferID)
+}
+
 func (e *environment) MakeDirectory(ctx context.Context, fence execenv.ProjectionFence, path string, parents bool) error {
 	c, err := e.writer(ctx, fence)
 	if err != nil {

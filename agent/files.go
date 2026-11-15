@@ -76,11 +76,24 @@ func (s *server) WriteFile(_ context.Context, stream *connect.ClientStream[exece
 	if err := s.fenced(h.GetFence()); err != nil {
 		return nil, wire.Error(err)
 	}
-	info, err := s.files.WriteFile(h.GetPath(), body, execenv.WriteOptions{ExpectedSHA256: h.GetExpectedSha256(), Executable: h.GetExecutable()})
+	info, err := s.files.WriteFile(h.GetPath(), body, wire.WriteOptionsFrom(h))
 	if err != nil {
 		return nil, wire.Error(err)
 	}
 	return connect.NewResponse(wire.FileInfoTo(info)), nil
+}
+
+func (s *server) GetTransfer(_ context.Context, req *connect.Request[execenvv1.GetTransferRequest]) (*connect.Response[execenvv1.Transfer], error) {
+	if s.files == nil {
+		return nil, wire.Error(execenv.ErrUnavailable)
+	}
+	s.mu.Lock()
+	offset, err := s.files.TransferOffset(req.Msg.GetTransferId())
+	s.mu.Unlock()
+	if err != nil {
+		return nil, wire.Error(err)
+	}
+	return connect.NewResponse(&execenvv1.Transfer{Offset: offset}), nil
 }
 
 func (s *server) MakeDirectory(_ context.Context, req *connect.Request[execenvv1.MakeDirectoryRequest]) (*connect.Response[execenvv1.MakeDirectoryResponse], error) {
@@ -239,14 +252,23 @@ func (c *Client) WriteFile(ctx context.Context, fence execenv.ProjectionFence, p
 	stop := context.AfterFunc(c.ctx, cancel)
 	defer stop()
 	stream := c.agent.WriteFile(ctx)
-	header := &execenvv1.WriteFileRequest{Part: &execenvv1.WriteFileRequest_Header{Header: &execenvv1.WriteFileHeader{
-		Fence: wire.FenceTo(fence), Path: path, ExpectedSha256: opts.ExpectedSHA256, Executable: opts.Executable,
-	}}}
+	header := &execenvv1.WriteFileRequest{Part: &execenvv1.WriteFileRequest_Header{Header: wire.WriteHeaderTo(fence, path, opts)}}
 	err := stream.Send(header)
+	sent := err != nil
 	if err == nil {
 		err = wire.Pump(body, func(b []byte) error {
-			return stream.Send(&execenvv1.WriteFileRequest{Part: &execenvv1.WriteFileRequest_Chunk{Chunk: b}})
+			if serr := stream.Send(&execenvv1.WriteFileRequest{Part: &execenvv1.WriteFileRequest_Chunk{Chunk: b}}); serr != nil {
+				sent = true
+				return serr
+			}
+			return nil
 		})
+	}
+	if err != nil && !sent {
+		// The body failed: it must not reach the guest as a complete one.
+		cancel()
+		_, _ = stream.CloseAndReceive()
+		return execenv.FileInfo{}, execenv.Error("write_file", err)
 	}
 	resp, cerr := stream.CloseAndReceive()
 	if cerr != nil {
@@ -256,6 +278,16 @@ func (c *Client) WriteFile(ctx context.Context, fence execenv.ProjectionFence, p
 		return execenv.FileInfo{}, execenv.Error("write_file", err)
 	}
 	return wire.FileInfoFrom(resp.Msg), nil
+}
+
+func (c *Client) TransferOffset(ctx context.Context, transferID string) (int64, error) {
+	ctx, cancel := c.call(ctx)
+	defer cancel()
+	resp, err := c.agent.GetTransfer(ctx, connect.NewRequest(&execenvv1.GetTransferRequest{TransferId: transferID}))
+	if err != nil {
+		return 0, c.failure("transfer_offset", err)
+	}
+	return resp.Msg.GetOffset(), nil
 }
 
 func (c *Client) MakeDirectory(ctx context.Context, fence execenv.ProjectionFence, path string, parents bool) error {
