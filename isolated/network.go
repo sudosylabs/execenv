@@ -41,19 +41,6 @@ func parseDest(raw string) (net.IPNet, error) {
 	return net.IPNet{IP: ip.To4(), Mask: net.CIDRMask(32, 32)}, nil
 }
 
-func containsIP(allow []net.IPNet, ip net.IP) bool {
-	v4 := ip.To4()
-	if v4 == nil {
-		return false
-	}
-	for _, n := range allow {
-		if n.Contains(v4) {
-			return true
-		}
-	}
-	return false
-}
-
 // netAttach is the host-side path for one allowlist grant. Exported
 // isolated types do not mention the device names inside.
 type netAttach struct {

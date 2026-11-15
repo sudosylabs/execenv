@@ -89,7 +89,7 @@ func TestProjectionInitializationAcceptsMaximumEscapedTree(t *testing.T) {
 		path += strings.Repeat("&", MaxSegmentBytes)
 		request.Entries = append(request.Entries, ProjectionEntry{EntryID: fmt.Sprintf("parent-%d", i), Kind: ProjectionDirectory, Path: path})
 	}
-	for i := len(request.Entries); i < MaxTreeEntries; i++ {
+	for i := len(request.Entries); i < 1200; i++ {
 		request.Entries = append(request.Entries, ProjectionEntry{EntryID: fmt.Sprintf("entry-%d", i), Kind: ProjectionDirectory, Path: path + "/" + strings.Repeat("&", MaxSegmentBytes-4) + fmt.Sprintf("%04d", i)})
 	}
 	raw, err := json.Marshal(request)
@@ -111,9 +111,10 @@ func TestProjectionInitializationAcceptsMaximumEscapedTree(t *testing.T) {
 	if err := ValidateProjectionInitialization(request); err != nil {
 		t.Fatalf("maximum tree with maximum fallback rejected: %v", err)
 	}
+	// Only metadata bytes are bounded; the entry count is not.
 	request.Entries = append(request.Entries, ProjectionEntry{EntryID: "excess", Kind: ProjectionDirectory, Path: "excess"})
-	if err := ValidateProjectionInitialization(request); !errors.Is(err, ErrTooLarge) {
-		t.Fatalf("tree entry limit changed: %v", err)
+	if err := ValidateProjectionInitialization(request); err != nil {
+		t.Fatalf("an extra entry was refused: %v", err)
 	}
 }
 

@@ -24,6 +24,9 @@ var drainPoll = time.Second
 // errGrantsLive refuses a restart that would destroy live grants.
 var errGrantsLive = errors.New("grants are live")
 
+// errImageInUse refuses to remove an image live grants were started from.
+var errImageInUse = errors.New("image is in use")
+
 func (o Options) operatorSocket() string { return filepath.Join(o.State, operatorSocketName) }
 
 // socketPath is the operator socket the host config names. Empty means the
@@ -56,8 +59,9 @@ func (o Options) unitActive() bool {
 	return exec.Command("systemctl", "is-active", "--quiet", unitName).Run() == nil
 }
 
-// guardRestart refuses to restart a daemon that holds grants, unless Force
-// is set. A restart destroys every live grant.
+// guardRestart refuses to restart a daemon whose grants would not survive
+// it, while it holds any, unless Force is set. A daemon whose grants are
+// durable adopts them again, so restarting it costs none.
 func (o Options) guardRestart() error {
 	if o.Force {
 		return nil
@@ -77,13 +81,27 @@ func restartVerdict(active bool, reply daemon.OperatorReply, err error) error {
 		}
 		return fmt.Errorf("cannot ask the running daemon whether grants are live (%v); pass --force to restart anyway", err)
 	}
-	if reply.Grants > 0 {
+	if reply.Grants > 0 && !reply.Durable {
 		if reply.State == daemon.DrainServing {
 			return fmt.Errorf("%w: the daemon holds %d; run execenvctl drain first, or pass --force to destroy them", errGrantsLive, reply.Grants)
 		}
 		return fmt.Errorf("%w: the draining daemon still holds %d; wait for execenvctl drain, or pass --force to destroy them", errGrantsLive, reply.Grants)
 	}
 	return nil
+}
+
+// imageInUse says a durable daemon's live grants run from image id. A
+// daemon whose grants end with a restart has its refusal in guardRestart.
+func imageInUse(reply daemon.OperatorReply, id string) bool {
+	if !reply.Durable {
+		return false
+	}
+	for _, used := range reply.Images {
+		if used == id {
+			return true
+		}
+	}
+	return false
 }
 
 // Drain tells the local daemon to stop occupying new grants, then waits

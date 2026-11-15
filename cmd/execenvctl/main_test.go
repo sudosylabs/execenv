@@ -88,7 +88,7 @@ func TestBootstrapCommandDoesNotPrintSecrets(t *testing.T) {
 		"--execenv", execenvBin,
 		"--mkfs", filepath.Join(bindir, "mkfs.ext4"),
 		"--listen", "127.0.0.1:8443",
-		"--slots", "4",
+		"--cpu-millis", "4000",
 		"--no-start",
 		"--no-fetch",
 		"--insecure",

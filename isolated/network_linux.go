@@ -72,6 +72,14 @@ func guardAttach(att netAttach, allow []net.IPNet, cleanup []func()) (*netAttach
 	return &att, nil
 }
 
+// releaseAttach removes an adopted grant's tap, filter and NAT by the names
+// and rules guardAttach made for it.
+func releaseAttach(att *netAttach) {
+	_ = removeFilter(att.Dev, filterChain(att.Dev))
+	_ = removeNAT(fmt.Sprintf("%s/%d", att.HostIP, att.Prefix), att.Allow)
+	_ = runIP("link", "delete", att.Dev)
+}
+
 // cleanStaleLinks removes what a crashed daemon's allowlist grants left on
 // the host: grant taps, per-grant filter chains with their FORWARD and
 // INPUT jumps, and grant MASQUERADE rules. NAT rules are found by listing,
@@ -79,27 +87,33 @@ func guardAttach(att netAttach, allow []net.IPNet, cleanup []func()) (*netAttach
 // allowlist changed across the restart. Only names and rules in exactly the
 // shape this package creates are touched. Failures are ignored: a missing
 // tool or rule leaves nothing to clean.
-func cleanStaleLinks() {
+func cleanStaleLinks(adopted []*netAttach) {
+	keep := map[string]bool{}
+	var keepNets []string
+	for _, att := range adopted {
+		keep[att.Dev] = true
+		keepNets = append(keepNets, strings.TrimSuffix(att.HostIP, ".1")+".")
+	}
 	devs := map[string]bool{}
 	if entries, err := os.ReadDir("/sys/class/net"); err == nil {
 		for _, entry := range entries {
 			name := entry.Name()
 			// tun_flags marks a tun/tap device.
-			if _, err := os.Stat("/sys/class/net/" + name + "/tun_flags"); err == nil && staleGrantDev(name) {
+			if _, err := os.Stat("/sys/class/net/" + name + "/tun_flags"); err == nil && staleGrantDev(name) && !keep[name] {
 				devs[name] = true
 			}
 		}
 	}
 	if out, err := exec.Command("iptables", "-S").Output(); err == nil {
 		for _, line := range strings.Split(string(out), "\n") {
-			if dev, ok := staleGrantChain(line); ok {
+			if dev, ok := staleGrantChain(line); ok && !keep[dev] {
 				_ = removeFilter(dev, filterChain(dev))
 			}
 		}
 	}
 	if out, err := exec.Command("iptables", "-t", "nat", "-S", "POSTROUTING").Output(); err == nil {
 		for _, line := range strings.Split(string(out), "\n") {
-			if args, ok := staleGrantNAT(line); ok {
+			if args, ok := staleGrantNAT(line); ok && !mentionsAny(line, keepNets) {
 				_ = runIPTables(args...)
 			}
 		}
@@ -108,6 +122,15 @@ func cleanStaleLinks() {
 		_ = removeFilter(dev, filterChain(dev))
 		_ = runIP("link", "delete", dev)
 	}
+}
+
+func mentionsAny(line string, prefixes []string) bool {
+	for _, p := range prefixes {
+		if strings.Contains(line, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func installFilter(iface, chain string, allow []net.IPNet) error {

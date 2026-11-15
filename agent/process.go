@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"path/filepath"
+	"runtime"
 	"strings"
-	"sync"
 	"time"
 
+	"connectrpc.com/connect"
+
 	"github.com/sudosylabs/execenv"
-	"github.com/sudosylabs/execenv/internal/mux"
+	execenvv1 "github.com/sudosylabs/execenv/internal/gen/execenv/v1"
 	"github.com/sudosylabs/execenv/internal/processes"
+	"github.com/sudosylabs/execenv/internal/wire"
 )
 
 // ProcessSource reports the processes a workload starts and how they end.
@@ -23,49 +26,27 @@ type ProcessSource interface {
 	Close() error
 }
 
-const (
-	methodProcessEvents = "process_events"
-	// processQueueEvents bounds the events the helper holds while the host
-	// link is slow. Beyond it events are counted, never waited for.
-	processQueueEvents = execenv.MaxProcessEvents
-	processBatchEvents = 128
-)
-
-// pumpProcesses sends every event to the host as soon as it is taken. The
-// source is read on its own goroutine into a bounded queue, so a slow host
-// link costs counted events, never a stalled workload.
-func (s *server) pumpProcesses(ctx context.Context, source ProcessSource) {
-	queue := newProcessQueue()
+// recordProcesses appends every event to the guest's process log as it is
+// taken. The log is bounded: past its bounds it counts what it drops, and
+// the workload is never held back.
+func (s *server) recordProcesses(ctx context.Context, source ProcessSource) {
 	s.processes.Store(true)
 	go func() {
 		<-ctx.Done()
 		_ = source.Close()
-		queue.close()
 	}()
 	go func() {
 		defer s.processes.Store(false)
 		for {
 			event, err := source.Next()
 			if err != nil {
-				queue.close()
 				return
 			}
-			queue.push(boundProcess(event))
-		}
-	}()
-	go func() {
-		for {
-			batch, ok := queue.take()
-			if !ok {
-				return
-			}
-			extra, err := encodeExtra(batch)
-			if err != nil {
+			if event.Kind == execenv.ProcessDropped {
+				s.log.Lost(event.Dropped)
 				continue
 			}
-			if err := s.sess.Send(frame{Kind: mux.KindEvent, Method: methodProcessEvents, Extra: extra}); err != nil {
-				return
-			}
+			s.log.Append(boundProcess(event))
 		}
 	}()
 }
@@ -86,108 +67,25 @@ func boundProcess(event execenv.ProcessEvent) execenv.ProcessEvent {
 	return event
 }
 
-type processQueue struct {
-	mu     sync.Mutex
-	cond   *sync.Cond
-	events []execenv.ProcessEvent
-	lost   uint64
-	closed bool
-}
-
-func newProcessQueue() *processQueue {
-	q := &processQueue{}
-	q.cond = sync.NewCond(&q.mu)
-	return q
-}
-
-func (q *processQueue) push(event execenv.ProcessEvent) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if q.closed {
-		return
-	}
-	defer q.cond.Signal()
-	if event.Kind == execenv.ProcessDropped {
-		q.lost += event.Dropped
-		return
-	}
-	if q.lost > 0 {
-		if len(q.events)+2 > processQueueEvents {
-			q.lost++
-			return
-		}
-		q.events = append(q.events, dropped(q.lost))
-		q.lost = 0
-	}
-	if len(q.events) >= processQueueEvents {
-		q.lost++
-		return
-	}
-	q.events = append(q.events, event)
-}
-
-func (q *processQueue) take() ([]execenv.ProcessEvent, bool) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	for len(q.events) == 0 && q.lost == 0 && !q.closed {
-		q.cond.Wait()
-	}
-	if q.closed {
-		return nil, false
-	}
-	if len(q.events) == 0 {
-		lost := q.lost
-		q.lost = 0
-		return []execenv.ProcessEvent{dropped(lost)}, true
-	}
-	n := min(len(q.events), processBatchEvents)
-	batch := append([]execenv.ProcessEvent(nil), q.events[:n]...)
-	q.events = append(q.events[:0], q.events[n:]...)
-	return batch, true
-}
-
-func (q *processQueue) close() {
-	q.mu.Lock()
-	q.closed = true
-	q.cond.Broadcast()
-	q.mu.Unlock()
-}
-
-func dropped(count uint64) execenv.ProcessEvent {
-	return execenv.ProcessEvent{Kind: execenv.ProcessDropped, Dropped: count, At: time.Now()}
-}
-
-// deliverProcesses retains one batch from the guest. A batch that does not
-// decode counts as one lost event.
-func (c *Client) deliverProcesses(f frame) {
-	if f.Method != methodProcessEvents {
-		return
-	}
-	var batch []execenv.ProcessEvent
-	if decodeExtra(f.Extra, &batch) != nil || len(batch) == 0 {
-		c.processes.Lost(1)
-		return
-	}
-	for _, event := range batch {
-		c.processes.Append(event)
-	}
-}
-
-// ObserveProcesses pages the process log the host retains for this guest.
-// The log outlives the guest link, so a lost link loses no retained event.
+// ObserveProcesses pages the process log the guest retains. It outlives the
+// guest link and the host, so neither losing the link nor restarting the
+// host loses a retained event.
 func (c *Client) ObserveProcesses(ctx context.Context, after uint64, limit int) (execenv.ProcessPage, error) {
-	if err := ctx.Err(); err != nil {
-		return execenv.ProcessPage{}, err
+	ctx, cancel := c.call(ctx)
+	defer cancel()
+	resp, err := c.agent.ObserveProcesses(ctx, connect.NewRequest(&execenvv1.ObserveProcessesRequest{After: after, Limit: int32(limit)}))
+	if err != nil {
+		return execenv.ProcessPage{}, c.failure("process_observe", err)
 	}
-	return c.processes.Page(after, limit)
+	return wire.ProcessPageFrom(resp.Msg), nil
 }
 
 // AcknowledgeProcesses releases retained process events through a sequence.
 func (c *Client) AcknowledgeProcesses(ctx context.Context, through uint64) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return c.processes.Acknowledge(through)
+	ctx, cancel := c.call(ctx)
+	defer cancel()
+	_, err := c.agent.AcknowledgeProcesses(ctx, connect.NewRequest(&execenvv1.AcknowledgeProcessesRequest{Through: through}))
+	return c.failure("process_acknowledge", err)
 }
 
 // kernelKind is one raw kernel process event.
@@ -236,6 +134,17 @@ type tracker struct {
 	agent  int
 	roots  []string
 	member map[int]*member
+	// launched finds a process Start created, by its pid. Only the helper's
+	// own children are looked up.
+	launched func(pid int) (launch, bool)
+}
+
+// launch is what the helper knows of a process Start created: its tag,
+// and the command and directory it ran it with.
+type launch struct {
+	tag  string
+	argv []string
+	dir  string
 }
 
 type member struct {
@@ -322,9 +231,24 @@ func (t *tracker) handle(event kernelEvent) (execenv.ProcessEvent, bool) {
 
 func (t *tracker) started(pid, parent int, at time.Time) execenv.ProcessEvent {
 	event := execenv.ProcessEvent{Kind: execenv.ProcessStarted, PID: pid, ParentPID: parent, At: at}
+	var known launch
+	var ok bool
+	if parent == t.agent && t.launched != nil {
+		if known, ok = t.launched(pid); ok {
+			event.Tag = known.tag
+		}
+	}
 	raw, err := t.proc.cmdline(pid)
 	// A zombie has an empty command line: it ended before it was read.
 	if err != nil || len(raw) == 0 {
+		if ok && len(known.argv) > 0 {
+			// The helper ran this command itself, so it knows it.
+			event.Argv, event.Truncated = processes.Argv(known.argv)
+			if t.under(known.dir) && len(known.dir) <= execenv.MaxProcessDirBytes {
+				event.Dir = known.dir
+			}
+			return event
+		}
 		event.Unread = true
 		return event
 	}
@@ -353,9 +277,18 @@ func (t *tracker) under(dir string) bool {
 type kernelProcesses struct {
 	reader  kernelReader
 	tracker *tracker
+	pinned  bool
 }
 
 func (k *kernelProcesses) Next() (execenv.ProcessEvent, error) {
+	if !k.pinned {
+		// Next is always called from one goroutine. Its thread reads each
+		// process's command line between that process's exec and its exit;
+		// it runs ahead of the workload so a short command cannot end first.
+		k.pinned = true
+		runtime.LockOSThread()
+		runAhead()
+	}
 	for {
 		raw, err := k.reader.next()
 		if err != nil {

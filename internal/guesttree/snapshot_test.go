@@ -58,14 +58,13 @@ func TestDirectoryMoveUsesIdentityAndRetainsCapturedBytes(t *testing.T) {
 		}
 	}
 	write(t, home, "moved/nested/file", "later live bytes")
-	if string(changes[1].Data) != "observed" {
+	if changes[1].Content != blob("observed") {
 		t.Fatal("event reads later live bytes")
 	}
-	if string(first.Nodes["dir/nested/file"].Data) != "original" {
+	if first.Nodes["dir/nested/file"].Content != blob("original") {
 		t.Fatal("capture mutated prior baseline")
 	}
-	changes[1].Data[0] = 'X'
-	if string(second.Nodes["moved/nested/file"].Data) != "observed" {
+	if second.Nodes["moved/nested/file"].Content != blob("observed") {
 		t.Fatal("change bytes alias captured state")
 	}
 }
@@ -111,7 +110,7 @@ func TestSemanticCreateAndDeletes(t *testing.T) {
 }
 
 func TestCaptureRejectsUnsupportedTopology(t *testing.T) {
-	for _, kind := range []string{"symlink", "hardlink", "fifo", "oversized"} {
+	for _, kind := range []string{"symlink", "hardlink", "fifo"} {
 		t.Run(kind, func(t *testing.T) {
 			home := t.TempDir()
 			write(t, home, "file", "original")
@@ -124,8 +123,6 @@ func TestCaptureRejectsUnsupportedTopology(t *testing.T) {
 				err = os.Link(filepath.Join(home, "file"), filepath.Join(home, "other"))
 			case "fifo":
 				err = makeFIFO(filepath.Join(home, "other"))
-			case "oversized":
-				err = os.Truncate(filepath.Join(home, "file"), execenv.MaxFileBytes+1)
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -134,7 +131,7 @@ func TestCaptureRejectsUnsupportedTopology(t *testing.T) {
 			if !errors.Is(err, execenv.ErrLagged) || after != nil {
 				t.Fatalf("unsupported tree became observation: %+v %v", after, err)
 			}
-			if string(before.Nodes["file"].Data) != "original" {
+			if before.Nodes["file"].Content != blob("original") {
 				t.Fatal("failed capture mutated baseline")
 			}
 		})
@@ -156,5 +153,65 @@ func TestEqualContentDoesNotInventMove(t *testing.T) {
 	}
 	if before.Nodes["old"].Identity == after.Nodes["new"].Identity {
 		t.Fatal("deleted inode identity reused")
+	}
+}
+
+// A capture taken while the workload writes, renames and deletes never
+// fails, and once the workload stops the next one is settled and complete.
+func TestCaptureWhileTheWorkloadRuns(t *testing.T) {
+	home := t.TempDir()
+	mkdir(t, home, "a")
+	write(t, home, "a/grow", "")
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			dir := "a"
+			if i%2 == 1 {
+				dir = "b"
+			}
+			if grow, err := os.OpenFile(filepath.Join(home, dir, "grow"), os.O_WRONLY|os.O_APPEND, 0); err == nil {
+				_, _ = grow.Write([]byte("more bytes\n"))
+				_ = grow.Close()
+			}
+			_ = os.WriteFile(filepath.Join(home, "churn"), []byte("x"), 0o600)
+			_ = os.Remove(filepath.Join(home, "churn"))
+			other := "b"
+			if dir == "b" {
+				other = "a"
+			}
+			_ = os.Rename(filepath.Join(home, dir), filepath.Join(home, other))
+		}
+	}()
+	var previous *Snapshot
+	for range 200 {
+		next, err := Capture(home, previous, nil)
+		if err != nil {
+			close(stop)
+			<-done
+			t.Fatalf("capture during writes: %v", err)
+		}
+		previous = next
+	}
+	close(stop)
+	<-done
+	final := capture(t, home, previous)
+	if final.Unsettled {
+		t.Fatal("capture of a quiet tree is unsettled")
+	}
+	dir := "a"
+	if _, ok := final.Nodes["b"]; ok {
+		dir = "b"
+	}
+	grow, ok := final.Nodes[dir+"/grow"]
+	info, err := os.Stat(filepath.Join(home, dir, "grow"))
+	if !ok || err != nil || grow.Content.Size != info.Size() {
+		t.Fatalf("settled capture = %+v, file %v %v", grow, info, err)
 	}
 }

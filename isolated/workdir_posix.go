@@ -9,7 +9,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func prepareWorkDir(workDir string, stale func() error) (*os.File, error) {
+// prepareWorkDir takes the work directory's lock, so one host serves it.
+// The grants a previous host left stay for adoption.
+func prepareWorkDir(workDir string) (*os.File, error) {
 	if err := os.MkdirAll(workDir, 0o700); err != nil {
 		return nil, err
 	}
@@ -21,18 +23,7 @@ func prepareWorkDir(workDir string, stale func() error) (*os.File, error) {
 		_ = lock.Close()
 		return nil, err
 	}
-	if stale != nil {
-		if err := stale(); err != nil {
-			_ = lock.Close()
-			return nil, err
-		}
-	}
-	grants := filepath.Join(workDir, "grants")
-	if err := os.RemoveAll(grants); err != nil {
-		_ = lock.Close()
-		return nil, err
-	}
-	if err := os.MkdirAll(grants, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(workDir, "grants"), 0o700); err != nil {
 		_ = lock.Close()
 		return nil, err
 	}

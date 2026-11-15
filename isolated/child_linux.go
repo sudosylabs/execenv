@@ -7,8 +7,9 @@ import (
 	"syscall"
 )
 
-// configureChild makes a directly-run host fail closed on an abrupt daemon
-// death. The installed systemd unit also keeps descendants in its cgroup.
+// configureChild starts a machine in its own session, with no parent-death
+// signal: a grant's machine outlives the daemon, and the next daemon adopts
+// it from the grant's state file.
 func configureChild(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 }

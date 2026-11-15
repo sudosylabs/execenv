@@ -1,0 +1,157 @@
+syntax = "proto3";
+
+package execenv.v1;
+
+import "execenv/v1/common.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/sudosylabs/execenv/internal/gen/execenv/v1;execenvv1";
+
+// ProcessService runs processes in a grant, by tag. A shell is a process
+// with a terminal. Starting, input and signals carry the fence; reading
+// names the grant and epoch.
+service ProcessService {
+  rpc StartProcess(StartProcessRequest) returns (ProcessInfo);
+  rpc GetProcess(GetProcessRequest) returns (ProcessInfo);
+  rpc ListProcesses(ListProcessesRequest) returns (ListProcessesResponse);
+  // AttachProcess streams output from the given offsets, then the exit.
+  // Its first event is ATTACHED, sent as soon as the host has attached, so
+  // a caller knows the attachment stands before any output. An error ends
+  // it once the grant has ended.
+  rpc AttachProcess(AttachProcessRequest) returns (stream OutputEvent);
+  rpc WriteInput(WriteInputRequest) returns (WriteInputResponse);
+  rpc CloseInput(CloseInputRequest) returns (CloseInputResponse);
+  rpc ResizeProcess(ResizeProcessRequest) returns (ResizeProcessResponse);
+  rpc SignalProcess(SignalProcessRequest) returns (SignalProcessResponse);
+  // Screen is a terminal process's screen now, as of an output offset.
+  rpc GetScreen(GetScreenRequest) returns (Screen);
+}
+
+message ProcessSpec {
+  string tag = 1;
+  repeated string argv = 2;
+  map<string, string> env = 3;
+  string dir = 4;
+  // pty, when set, gives the process a terminal of that size.
+  Window pty = 5;
+  bool stdin = 6;
+  int64 history_bytes = 7;
+  google.protobuf.Duration detach_grace = 8;
+  google.protobuf.Duration timeout = 9;
+}
+
+message ExitStatus {
+  int32 code = 1;
+  int32 signal = 2;
+}
+
+message ProcessInfo {
+  string tag = 1;
+  int32 pid = 2;
+  bool pty = 3;
+  google.protobuf.Timestamp started = 4;
+  bool running = 5;
+  ExitStatus exit = 6;
+  map<string, uint64> output = 7;
+  uint64 input = 8;
+}
+
+message StartProcessRequest {
+  Fence fence = 1;
+  ProcessSpec spec = 2;
+}
+
+message GetProcessRequest {
+  string grant_id = 1;
+  string epoch = 2;
+  string tag = 3;
+}
+
+message ListProcessesRequest {
+  string grant_id = 1;
+  string epoch = 2;
+}
+
+message ListProcessesResponse {
+  repeated ProcessInfo processes = 1;
+}
+
+message AttachProcessRequest {
+  string grant_id = 1;
+  string epoch = 2;
+  string tag = 3;
+  map<string, uint64> from = 4;
+}
+
+enum OutputKind {
+  OUTPUT_KIND_UNSPECIFIED = 0;
+  OUTPUT_KIND_DATA = 1;
+  OUTPUT_KIND_TRUNCATED = 2;
+  OUTPUT_KIND_EXIT = 3;
+  // ATTACHED opens every stream and carries nothing else.
+  OUTPUT_KIND_ATTACHED = 4;
+}
+
+message OutputEvent {
+  OutputKind kind = 1;
+  string stream = 2;
+  uint64 offset = 3;
+  uint64 to = 4;
+  bytes data = 5;
+  ExitStatus exit = 6;
+}
+
+message WriteInputRequest {
+  Fence fence = 1;
+  string tag = 2;
+  uint64 offset = 3;
+  bytes data = 4;
+}
+
+message WriteInputResponse {
+  uint64 offset = 1;
+}
+
+message CloseInputRequest {
+  Fence fence = 1;
+  string tag = 2;
+}
+
+message CloseInputResponse {}
+
+message ResizeProcessRequest {
+  Fence fence = 1;
+  string tag = 2;
+  Window window = 3;
+}
+
+message ResizeProcessResponse {}
+
+message SignalProcessRequest {
+  Fence fence = 1;
+  string tag = 2;
+  string signal = 3;
+}
+
+message SignalProcessResponse {}
+
+message GetScreenRequest {
+  string grant_id = 1;
+  string epoch = 2;
+  string tag = 3;
+}
+
+// Screen is a terminal process's screen as of an output offset. data
+// redraws it on a blank terminal of window's size; attaching from offset
+// continues it.
+message Screen {
+  bytes data = 1;
+  uint64 offset = 2;
+  Window window = 3;
+  bool alt_screen = 4;
+  int32 cursor_row = 5;
+  int32 cursor_col = 6;
+  bool cursor_hidden = 7;
+  repeated string text = 8;
+}

@@ -5,7 +5,6 @@ import (
 	"os"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sudosylabs/execenv"
 )
@@ -107,7 +106,13 @@ func newTestTracker(proc fakeProc) *tracker {
 func TestTrackerRecordsTheShellAndItsCommands(t *testing.T) {
 	proc := fakeProc{}
 	tr := newTestTracker(proc)
-	shell := fakeTask{cgroup: testGroup, parent: testAgent, cmdline: "/usr/local/libexec/execenv-guest\x00workload-shell\x00", cwd: "/workspace"}
+	tr.launched = func(pid int) (launch, bool) {
+		if pid == 10 {
+			return launch{tag: "shell", argv: []string{"/bin/sh", "-l"}, dir: "/workspace"}, true
+		}
+		return launch{tag: "never"}, true
+	}
+	shell := fakeTask{cgroup: testGroup, parent: testAgent, cmdline: "/usr/local/libexec/execenv-guest\x00workload-exec\x00/bin/sh\x00-l\x00", cwd: "/workspace"}
 	events := run(t, tr, proc,
 		set(10, shell, fork(testAgent, 10)),
 		same(execOf(10)),
@@ -124,6 +129,10 @@ func TestTrackerRecordsTheShellAndItsCommands(t *testing.T) {
 	}
 	if events[0].ParentPID != testAgent || events[1].ParentPID != 10 || events[1].Dir != "/workspace/src" || events[1].PID != 11 {
 		t.Fatalf("details: %+v", events)
+	}
+	// The process Start created carries its tag; what it starts does not.
+	if events[0].Tag != "shell" || events[1].Tag != "" {
+		t.Fatalf("tags = %q, %q; want shell and none", events[0].Tag, events[1].Tag)
 	}
 }
 
@@ -167,6 +176,31 @@ func TestTrackerRecordsUnreadProcesses(t *testing.T) {
 	}
 	if events[1].ParentPID != 40 || events[1].Argv != nil || events[1].Dir != "" {
 		t.Fatalf("unread details: %+v", events[1])
+	}
+}
+
+// A process Start created that ends before it is read is still reported
+// with the command the helper ran and its tag; another unread one is not.
+func TestTrackerFillsAnUnreadStartedProcess(t *testing.T) {
+	proc := fakeProc{}
+	tr := newTestTracker(proc)
+	tr.launched = func(pid int) (launch, bool) {
+		if pid == 50 {
+			return launch{tag: "job", argv: []string{"/bin/true", "job"}, dir: "/workspace/src"}, true
+		}
+		return launch{}, false
+	}
+	events := run(t, tr, proc,
+		set(50, fakeTask{cgroup: testGroup, parent: testAgent, cmdline: "/usr/local/libexec/execenv-guest\x00workload-exec\x00/bin/true\x00job\x00"}, fork(testAgent, 50)),
+		same(execOf(50)),
+		gone(50, execOf(50)),
+		same(exitOf(50, 0)),
+	)
+	if got, want := summary(events), []string{"start /bin/true job", "exit 0"}; !slices.Equal(got, want) {
+		t.Fatalf("events = %q, want %q", got, want)
+	}
+	if e := events[0]; e.Unread || e.Tag != "job" || e.Dir != "/workspace/src" {
+		t.Fatalf("filled start = %+v", e)
 	}
 }
 
@@ -215,37 +249,5 @@ func TestKernelProcessesSkipsUnrecordedEvents(t *testing.T) {
 	}
 	if _, err := source.Next(); err == nil {
 		t.Fatal("thread exit recorded")
-	}
-}
-
-// The queue between the source and the host link never blocks the source:
-// beyond its bound it counts, and the count precedes the next event.
-func TestProcessQueueCountsOverflow(t *testing.T) {
-	q := newProcessQueue()
-	start := execenv.ProcessEvent{Kind: execenv.ProcessStarted, PID: 1, At: time.Now()}
-	for range processQueueEvents + 5 {
-		q.push(start)
-	}
-	q.push(execenv.ProcessEvent{Kind: execenv.ProcessDropped, Dropped: 2})
-	total := 0
-	for total < processQueueEvents {
-		batch, ok := q.take()
-		if !ok || len(batch) > processBatchEvents {
-			t.Fatal("bad batch")
-		}
-		total += len(batch)
-	}
-	q.push(start)
-	batch, _ := q.take()
-	if len(batch) != 2 || batch[0].Kind != execenv.ProcessDropped || batch[0].Dropped != 7 || batch[1].Kind != execenv.ProcessStarted {
-		t.Fatalf("overflow: %+v", batch)
-	}
-	q.push(execenv.ProcessEvent{Kind: execenv.ProcessDropped, Dropped: 3})
-	if batch, _ := q.take(); len(batch) != 1 || batch[0].Dropped != 3 {
-		t.Fatalf("loss alone: %+v", batch)
-	}
-	q.close()
-	if _, ok := q.take(); ok {
-		t.Fatal("closed queue delivered")
 	}
 }

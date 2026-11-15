@@ -1,16 +1,17 @@
 // Package execenvtest contains a reusable Host conformance suite.
 //
-// Run covers occupancy, terminal sessions, fenced control, and the journal
-// projection. Guest-originated observations need a real or simulated guest:
+// Run covers occupancy, processes and their screens, fenced control,
+// resources, the journal projection, seeds, files and the grant watches. Guest-originated observations need a real or simulated guest:
 // RunIgnore covers IgnoreRules given a Guest that acts inside the
 // workspace, and the rest is covered by each adapter's own tests. The
 // process log needs a workload: RunProcesses covers it given a Workload,
-// and TerminalWorkload types commands into the environment's shell. A lost
+// and ShellWorkload types commands into a shell in the environment. A lost
 // environment needs a way to end one without a revoke: RunLoss covers it
 // given a Lossy.
 //
-// Terminal subtests drive the shell with a small POSIX subset every adapter
-// supports: NAME=value, echo with $NAME and quotes, seq, and exit.
+// Process subtests drive shells and commands with a small POSIX subset every
+// adapter supports: NAME=value, echo with $NAME and quotes, seq, true,
+// false, and exit.
 package execenvtest
 
 import (
@@ -18,21 +19,19 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sudosylabs/execenv"
 )
 
 // Factory returns a Host isolated enough for one conformance subtest.
-// The host must advertise images "default" and "alt" and accept two grants,
-// and must apply cfg.
+// The host must advertise images "default" and "alt", must apply cfg, and
+// must have room for exactly two grants of its default size: twice its
+// Defaults in every resource, and grant maximums no smaller than Defaults.
 type Factory func(t *testing.T, cfg Config) execenv.Host
 
 // Config is what a subtest needs from the host it asks for.
 type Config struct {
-	// TerminalGrace is the host's terminal grace. Zero is the adapter's
-	// default.
-	TerminalGrace time.Duration
+	// Nothing yet: the host is any host the factory builds.
 }
 
 // Run exercises the portable occupancy and PTY contract.
@@ -40,7 +39,12 @@ func Run(t *testing.T, factory Factory) {
 	t.Helper()
 	runControl(t, factory)
 	runProjection(t, factory)
-	runTerminal(t, factory)
+	runProcessAPI(t, factory)
+	runResources(t, factory)
+	runContent(t, factory)
+	runSeeds(t, factory)
+	runFiles(t, factory)
+	runGrants(t, factory)
 
 	t.Run("ready reports the default image", func(t *testing.T) {
 		host := factory(t, Config{})
@@ -57,8 +61,13 @@ func Run(t *testing.T, factory Factory) {
 		if !hasNetwork(report.Networks, execenv.NetworkNone) {
 			t.Fatalf("Ready() Networks = %v, want NetworkNone", report.Networks)
 		}
-		if report.Slots < 1 {
-			t.Fatalf("Ready() Slots = %d, want at least 1", report.Slots)
+		for _, c := range []execenv.Capacity{report.CPUMillis, report.MemoryBytes, report.DiskBytes} {
+			if c.Total <= 0 || c.Free != c.Total || c.Reserved != 0 {
+				t.Fatalf("Ready() capacity = %+v, want all of it free", c)
+			}
+		}
+		if report.Defaults.CPUMillis <= 0 || report.Defaults.MemoryBytes <= 0 || report.Defaults.DiskBytes <= 0 {
+			t.Fatalf("Ready() Defaults = %+v", report.Defaults)
 		}
 	})
 
@@ -137,7 +146,7 @@ func Run(t *testing.T, factory Factory) {
 		}
 	})
 
-	t.Run("ensure refuses a third grant when only two slots exist", func(t *testing.T) {
+	t.Run("ensure refuses a third grant when only two fit", func(t *testing.T) {
 		host := factory(t, Config{})
 		if _, err := host.Ensure(context.Background(), execenv.Spec{ID: "grant-1", Image: "default"}); err != nil {
 			t.Fatalf("Ensure() error = %v", err)
@@ -149,108 +158,29 @@ func Run(t *testing.T, factory Factory) {
 		if !errors.Is(err, execenv.ErrCapacity) {
 			t.Fatalf("Ensure() error = %v, want ErrCapacity", err)
 		}
-	})
-
-	t.Run("attach accepts pty writes", func(t *testing.T) {
-		host := factory(t, Config{})
-		env, err := host.Ensure(context.Background(), execenv.Spec{ID: "grant-1", Image: "default"})
-		if err != nil {
-			t.Fatalf("Ensure() error = %v", err)
-		}
-		term, err := env.Attach(context.Background(), execenv.AttachRequest{})
-		if err != nil {
-			t.Fatalf("Attach() error = %v", err)
-		}
-		t.Cleanup(func() { _ = term.Close() })
-		// Isolated attach is a guest shell, not an echo. Portable
-		// coverage is that a write is accepted; echo is adapter-local.
-		if _, err := term.Write([]byte("ping")); err != nil {
-			t.Fatalf("Write() error = %v", err)
-		}
-	})
-
-	t.Run("second attach is busy until close", func(t *testing.T) {
-		host := factory(t, Config{})
-		env, err := host.Ensure(context.Background(), execenv.Spec{ID: "grant-1", Image: "default"})
-		if err != nil {
-			t.Fatalf("Ensure() error = %v", err)
-		}
-		first, err := env.Attach(context.Background(), execenv.AttachRequest{})
-		if err != nil {
-			t.Fatalf("Attach() error = %v", err)
-		}
-		_, err = env.Attach(context.Background(), execenv.AttachRequest{})
-		if !errors.Is(err, execenv.ErrBusy) {
-			t.Fatalf("second Attach() error = %v, want ErrBusy", err)
-		}
-		if err := first.Close(); err != nil {
-			t.Fatalf("Close() error = %v", err)
-		}
-		second, err := env.Attach(context.Background(), execenv.AttachRequest{})
-		if err != nil {
-			t.Fatalf("Attach() after Close() error = %v", err)
-		}
-		_ = second.Close()
-	})
-
-	t.Run("fenced freeze blocks pty and thaw restores it", func(t *testing.T) {
-		host := factory(t, Config{})
-		env, err := host.Ensure(context.Background(), execenv.Spec{ID: "grant-1", Image: "default"})
-		if err != nil {
-			t.Fatalf("Ensure() error = %v", err)
-		}
-		term, err := env.Attach(context.Background(), execenv.AttachRequest{})
-		if err != nil {
-			t.Fatalf("Attach() error = %v", err)
-		}
-		t.Cleanup(func() { _ = term.Close() })
-		request := execenv.ControlRequest{Fence: execenv.ProjectionFence{ExecutionGrantID: env.ID(), EnvironmentEpoch: env.Epoch(), FenceRevision: 1}, State: execenv.ControlFrozen}
-		if _, err := env.Control(context.Background(), request); err != nil {
-			t.Fatalf("Control(frozen) error = %v", err)
-		}
-		if _, err := term.Write([]byte("x")); !errors.Is(err, execenv.ErrFrozen) {
-			t.Fatalf("Write() error = %v, want ErrFrozen", err)
-		}
-		if _, err := env.Attach(context.Background(), execenv.AttachRequest{}); !errors.Is(err, execenv.ErrFrozen) {
-			t.Fatalf("Attach() error = %v, want ErrFrozen", err)
-		}
-		request.Fence.FenceRevision++
-		request.State = execenv.ControlRunning
-		if _, err := env.Control(context.Background(), request); err != nil {
-			t.Fatalf("Control(running) error = %v", err)
-		}
-		if _, err := env.Attach(context.Background(), execenv.AttachRequest{}); !errors.Is(err, execenv.ErrBusy) {
-			t.Fatalf("Attach after thaw = %v, want existing PTY busy", err)
-		}
-		if _, err := term.Write([]byte("ok")); err != nil {
-			t.Fatalf("Write() after thaw error = %v", err)
+		var short *execenv.CapacityError
+		if !errors.As(err, &short) || short.Free != 0 || short.Requested <= 0 {
+			t.Fatalf("Ensure() error = %#v, want the short resource with nothing free", err)
 		}
 	})
 
 	t.Run("revoke is idempotent and forbids later use", func(t *testing.T) {
 		host := factory(t, Config{})
-		env, err := host.Ensure(context.Background(), execenv.Spec{ID: "grant-1", Image: "default"})
-		if err != nil {
-			t.Fatalf("Ensure() error = %v", err)
-		}
-		term, err := env.Attach(context.Background(), execenv.AttachRequest{})
-		if err != nil {
-			t.Fatalf("Attach() error = %v", err)
-		}
+		env, fence := occupyRunning(t, host, "grant-1")
+		sh := StartShell(t, env, fence, "sh")
 		if err := env.Revoke(context.Background()); err != nil {
 			t.Fatalf("Revoke() error = %v", err)
 		}
-		if _, err := term.Write([]byte("x")); !errors.Is(err, execenv.ErrRevoked) {
-			t.Fatalf("Write() after Revoke() error = %v, want ErrRevoked", err)
+		if err := sh.Type("x"); !errors.Is(err, execenv.ErrRevoked) {
+			t.Fatalf("WriteInput() after Revoke() error = %v, want ErrRevoked", err)
 		}
 		if err := host.Revoke(context.Background(), "grant-1"); err != nil {
 			t.Fatalf("second Revoke() error = %v", err)
 		}
-		if _, err := env.Attach(context.Background(), execenv.AttachRequest{}); !errors.Is(err, execenv.ErrRevoked) {
-			t.Fatalf("Attach() error = %v, want ErrRevoked", err)
+		if _, err := env.AttachProcess(context.Background(), "sh", nil); !errors.Is(err, execenv.ErrRevoked) {
+			t.Fatalf("AttachProcess() error = %v, want ErrRevoked", err)
 		}
-		_, err = host.Ensure(context.Background(), execenv.Spec{ID: "grant-1", Image: "default"})
-		if err != nil {
+		if _, err := host.Ensure(context.Background(), execenv.Spec{ID: "grant-1", Image: "default"}); err != nil {
 			t.Fatalf("Ensure() after revoke error = %v", err)
 		}
 	})

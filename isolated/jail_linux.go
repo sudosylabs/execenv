@@ -63,17 +63,17 @@ func cgroupV2() bool {
 //
 // It waits (bounded) for them to exit so their taps and jail files are no
 // longer held open when cleanup continues.
-func killJailed(pool *jailUIDs) {
+func killJailed(pool *jailUIDs, keep map[int]bool) {
 	deadline := time.Now().Add(3 * time.Second)
-	for signalJailed(pool) > 0 && time.Now().Before(deadline) {
+	for signalJailed(pool, keep) > 0 && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
 
-// signalJailed SIGKILLs every live process in the jail range and returns
-// how many it found. Zombies are skipped: they hold no resources and are
-// reaped by their parent.
-func signalJailed(pool *jailUIDs) int {
+// signalJailed SIGKILLs every live process in the jail range, except under
+// the identities in keep, and returns how many it found. Zombies are
+// skipped: they hold no resources and are reaped by their parent.
+func signalJailed(pool *jailUIDs, keep map[int]bool) int {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return 0
@@ -85,7 +85,7 @@ func signalJailed(pool *jailUIDs) int {
 			continue
 		}
 		uid, ok := procUID(filepath.Join("/proc", entry.Name(), "status"))
-		if ok && pool.contains(uid) {
+		if ok && pool.contains(uid) && !keep[uid] {
 			found++
 			_ = syscall.Kill(pid, syscall.SIGKILL)
 		}

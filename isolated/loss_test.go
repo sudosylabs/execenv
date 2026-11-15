@@ -69,10 +69,12 @@ func TestLostGuestLinkStopsMachineAndCleansUp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(grantDir); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("grant directory after loss: %v", err)
+	// Only the lost record stays, so a restarted host keeps the id lost.
+	entries, err := os.ReadDir(grantDir)
+	if err != nil || len(entries) != 1 || entries[0].Name() != stateName {
+		t.Fatalf("grant directory after loss: %v %v", entries, err)
 	}
-	if report.Slots != 2 || report.Grants != 0 || report.Lost != 1 {
+	if report.MemoryBytes.Reserved != 0 || report.Grants != 0 || report.Lost != 1 {
 		t.Fatalf("Ready() after loss = %+v", report)
 	}
 }
@@ -121,7 +123,7 @@ func TestFailedLossCleanupKeepsSlotUntilRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Slots != 1 || report.Grants != 0 || report.Lost != 1 {
+	if report.MemoryBytes.Reserved != execenv.DefaultGrant.MemoryBytes || report.Grants != 0 || report.Lost != 1 {
 		t.Fatalf("Ready() with unreleased loss = %+v", report)
 	}
 	if _, err := host.Ensure(t.Context(), execenv.Spec{ID: "grant-1", Image: "default"}); !errors.Is(err, execenv.ErrLost) {
@@ -133,7 +135,7 @@ func TestFailedLossCleanupKeepsSlotUntilRevoke(t *testing.T) {
 	if err := host.Revoke(t.Context(), "grant-1"); err != nil {
 		t.Fatal(err)
 	}
-	if report, err = host.Ready(t.Context()); err != nil || report.Slots != 2 {
+	if report, err = host.Ready(t.Context()); err != nil || report.MemoryBytes.Reserved != 0 {
 		t.Fatalf("Ready() after revoke = %+v %v", report, err)
 	}
 	if _, err := host.Ensure(t.Context(), execenv.Spec{ID: "grant-1", Image: "default"}); err != nil {
@@ -153,7 +155,7 @@ func TestDrainingRefusesNewGrantsAndServesHeldOnes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Usable || report.Reason != execenv.ReasonDraining || report.Grants != 1 || report.Slots != 1 {
+	if report.Usable || report.Reason != execenv.ReasonDraining || report.Grants != 1 || report.MemoryBytes.Reserved != execenv.DefaultGrant.MemoryBytes {
 		t.Fatalf("Ready() while draining = %+v", report)
 	}
 	if _, err := host.Ensure(t.Context(), execenv.Spec{ID: "new", Image: "default"}); !errors.Is(err, execenv.ErrDraining) {

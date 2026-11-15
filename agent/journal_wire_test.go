@@ -16,6 +16,9 @@ import (
 	"testing"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/content"
+	"github.com/sudosylabs/execenv/internal/journal"
+	"github.com/sudosylabs/execenv/internal/processes"
 )
 
 // This exercises the real guest wire and disk engine with quiescent test files.
@@ -45,9 +48,6 @@ func TestNativeJournalWireStreamsContentAndRetainsGuestEvents(t *testing.T) {
 	if err != nil || len(page.Observations) != 1 {
 		t.Fatalf("guest observation: %+v %v", page, err)
 	}
-	if err := os.WriteFile(filepath.Join(home, "guest"), []byte("later"), 0600); err != nil {
-		t.Fatal(err)
-	}
 	reader, err := client.OpenObservationContent(ctx, fence, *page.Observations[0].Content)
 	if err != nil {
 		t.Fatal(err)
@@ -55,7 +55,13 @@ func TestNativeJournalWireStreamsContentAndRetainsGuestEvents(t *testing.T) {
 	body, err := io.ReadAll(reader)
 	_ = reader.Close()
 	if err != nil || !bytes.Equal(body, bytes.Repeat([]byte("captured\n"), 20000)) {
-		t.Fatalf("immutable streamed content: %v", err)
+		t.Fatalf("streamed content: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "guest"), []byte("later"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.OpenObservationContent(ctx, fence, *page.Observations[0].Content); !errors.Is(err, execenv.ErrStale) {
+		t.Fatalf("changed content = %v, want ErrStale", err)
 	}
 	ownRef, err := client.UploadProjectionContent(ctx, fence, bytes.NewReader(body))
 	if err != nil {
@@ -109,14 +115,14 @@ func journalWireFixture(t *testing.T) (*Client, string) {
 	home := t.TempDir()
 	hostConn, guestConn := net.Pipe()
 	ctx, cancel := context.WithCancel(t.Context())
-	server := &server{home: home, sess: newSession(guestConn), journal: newDiskJournal(home, &testWriteBarrier{}, nil)}
+	server := &server{home: home, log: processes.New(), procs: map[string]*guestProc{}, journal: journal.New(home, wireStore(t), openBarrier{}, nil)}
 	server.processes.Store(true)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		defer server.shutdown()
-		defer server.journal.close()
-		_ = server.serveFrames(ctx)
+		defer server.stopAll()
+		defer server.journal.Close()
+		server.serveLink(ctx, guestConn, server)
 	}()
 	client := NewClient(hostConn)
 	t.Cleanup(func() { cancel(); _ = client.Close(); _ = guestConn.Close(); <-done })
@@ -136,7 +142,7 @@ func TestNativeJournalWireInitializesLargeSnapshot(t *testing.T) {
 		path += strings.Repeat("&", execenv.MaxSegmentBytes)
 		request.Entries = append(request.Entries, execenv.ProjectionEntry{EntryID: fmt.Sprintf("parent-%d", i), Kind: execenv.ProjectionDirectory, Path: path})
 	}
-	for i := len(request.Entries); i < execenv.MaxTreeEntries; i++ {
+	for i := len(request.Entries); i < 1200; i++ {
 		request.Entries = append(request.Entries, execenv.ProjectionEntry{EntryID: fmt.Sprintf("entry-%d", i), Kind: execenv.ProjectionDirectory, Path: fmt.Sprintf("%s/%04d", path, i)})
 	}
 	raw, _ := json.Marshal(request)
@@ -157,4 +163,23 @@ func TestNativeJournalWireInitializesLargeSnapshot(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(home, request.Entries[len(request.Entries)-1].Path)); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// openBarrier runs fn at once: these tests' files are quiescent.
+type openBarrier struct{}
+
+func (openBarrier) Stopped(ctx context.Context, fn func() error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return fn()
+}
+
+func wireStore(t *testing.T) *content.Store {
+	t.Helper()
+	store, err := content.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
 }

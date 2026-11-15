@@ -31,9 +31,10 @@ func main() {
 		}
 		return
 	}
-	if len(os.Args) == 2 && os.Args[1] == "workload-shell" {
-		if err := workload.ExecShell(); err != nil {
-			os.Exit(1)
+	if len(os.Args) > 2 && os.Args[1] == "workload-exec" {
+		if err := workload.Exec(os.Args[2:]); err != nil {
+			// The exec failed: report it as a shell does a missing command.
+			os.Exit(127)
 		}
 		return
 	}
@@ -64,6 +65,8 @@ func runAgent(args []string) int {
 	fs := flag.NewFlagSet("agent", flag.ContinueOnError)
 	home := fs.String("home", "", "projected tree; the shell's working directory")
 	scratch := fs.String("scratch", "", "the shell's $HOME, outside the projected tree; empty uses -home")
+	contentDir := fs.String("content", "", "where file bodies are kept, outside the projected tree; empty uses a temporary directory")
+	diskHome := fs.String("disk-home", "", "the projected tree through its disk's own mount, where file writes land; empty uses -home")
 	contained := fs.Bool("contain-workload", false, "require a kernel-acknowledged unprivileged workload barrier")
 	listen := fs.String("listen", "", "unix socket the host dials; empty uses the guest link")
 	if err := fs.Parse(args); err != nil {
@@ -73,7 +76,7 @@ func runAgent(args []string) int {
 		fmt.Fprintln(os.Stderr, "usage: execenv agent -home <dir> [-scratch <dir>] [-listen <unix-socket>]")
 		return 2
 	}
-	cfg := agent.Config{Home: *home, Scratch: *scratch, ContainWorkload: *contained}
+	cfg := agent.Config{Home: *home, Scratch: *scratch, DiskHome: *diskHome, Content: *contentDir, ContainWorkload: *contained}
 	var ln net.Listener
 	var err error
 	if *listen != "" {

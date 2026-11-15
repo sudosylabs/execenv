@@ -1,8 +1,6 @@
 package memory_test
 
 import (
-	"bytes"
-	"io"
 	"testing"
 
 	"github.com/sudosylabs/execenv"
@@ -10,11 +8,11 @@ import (
 	"github.com/sudosylabs/execenv/memory"
 )
 
-func TestAttachEchoesBytes(t *testing.T) {
+func TestShellEchoesInput(t *testing.T) {
 	t.Parallel()
 	host, err := memory.New(memory.Config{
-		Images: []execenv.Image{"default"},
-		Slots:  1,
+		Images:   []execenv.Image{"default"},
+		Capacity: execenv.DefaultGrant.Times(1),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -23,30 +21,23 @@ func TestAttachEchoesBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	term, err := env.Attach(t.Context(), execenv.AttachRequest{})
-	if err != nil {
+	fence := execenv.ProjectionFence{ExecutionGrantID: env.ID(), EnvironmentEpoch: env.Epoch(), FenceRevision: 1}
+	if _, err := env.Control(t.Context(), execenv.ControlRequest{Fence: fence, State: execenv.ControlRunning}); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = term.Close() })
-	if _, err := term.Write([]byte("ping")); err != nil {
+	sh := execenvtest.StartShell(t, env, fence, "sh")
+	if err := sh.Type("ping"); err != nil {
 		t.Fatal(err)
 	}
-	got := make([]byte, 4)
-	if _, err := io.ReadFull(term, got); err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(got, []byte("ping")) {
-		t.Fatal("memory PTY did not echo")
-	}
+	sh.Expect("ping")
 }
 
 func TestConformance(t *testing.T) {
 	execenvtest.Run(t, func(t *testing.T, cfg execenvtest.Config) execenv.Host {
 		t.Helper()
 		host, err := memory.New(memory.Config{
-			Images:        []execenv.Image{"default", "alt"},
-			Slots:         2,
-			TerminalGrace: cfg.TerminalGrace,
+			Images:   []execenv.Image{"default", "alt"},
+			Capacity: execenv.DefaultGrant.Times(2),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -58,7 +49,7 @@ func TestConformance(t *testing.T) {
 func TestLossConformance(t *testing.T) {
 	execenvtest.RunLoss(t, func(t *testing.T) execenvtest.Lossy {
 		t.Helper()
-		host, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Slots: 2})
+		host, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Capacity: execenv.DefaultGrant.Times(2)})
 		if err != nil {
 			t.Fatal(err)
 		}

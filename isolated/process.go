@@ -14,10 +14,12 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/agent"
+	"github.com/sudosylabs/execenv/internal/unixsock"
 )
 
 // processLauncher starts a supervised microVM. The public isolated types
@@ -37,8 +39,14 @@ func newProcessLauncher(cfg Config) launcher {
 func (l *processLauncher) jailBase() string { return filepath.Join(l.cfg.WorkDir, jailsDir) }
 
 type processInstance struct {
-	cmd  *exec.Cmd
-	sock string
+	// pid and start name the monitor for good; it is this host's child
+	// only if this host started it.
+	pid   int
+	start uint64
+	rec   machine
+	sock  string
+	// api is the monitor's API socket, for limits changed while it runs.
+	api  string
 	done <-chan struct{}
 	// release runs in reverse order once the monitor has been reaped. A
 	// failed step is retried by the next Stop.
@@ -53,7 +61,7 @@ func (p *processInstance) Connect(ctx context.Context) (net.Conn, error) {
 	sock := p.sock
 	var last error
 	for {
-		conn, err := dialGuest(ctx, sock)
+		conn, err := dialGuest(ctx, sock, agent.LinkPort)
 		if err == nil {
 			return conn, nil
 		}
@@ -69,18 +77,31 @@ func (p *processInstance) Connect(ctx context.Context) (net.Conn, error) {
 	}
 }
 
-func dialGuest(ctx context.Context, sock string) (net.Conn, error) {
-	var d net.Dialer
-	conn, err := d.DialContext(ctx, "unix", sock)
+// dialGuest connects to port on the guest link.
+func dialGuest(ctx context.Context, sock string, port uint32) (net.Conn, error) {
+	conn, err := unixsock.Dial(ctx, sock)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := fmt.Fprintf(conn, "CONNECT %d\n", agent.LinkPort); err != nil {
+	if _, err := fmt.Fprintf(conn, "CONNECT %d\n", port); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
-	buf := make([]byte, 3)
-	if _, err := io.ReadFull(conn, buf); err != nil || string(buf) != "OK\n" {
+	// The answer is one line, "OK" and possibly the host-side port. Read it
+	// a byte at a time so nothing of the link's first bytes is consumed.
+	line := make([]byte, 0, 32)
+	one := make([]byte, 1)
+	for len(line) < cap(line) {
+		if _, err := io.ReadFull(conn, one); err != nil {
+			_ = conn.Close()
+			return nil, execenv.ErrUnavailable
+		}
+		if one[0] == '\n' {
+			break
+		}
+		line = append(line, one[0])
+	}
+	if s := string(line); s != "OK" && !strings.HasPrefix(s, "OK ") {
 		_ = conn.Close()
 		return nil, execenv.ErrUnavailable
 	}
@@ -133,13 +154,27 @@ func (l *processLauncher) Start(ctx context.Context, req startRequest) (instance
 	// The guest formats nothing: the host creates the empty writable disk
 	// and the guest mounts it. The host never mounts this disk, because its
 	// blocks are written by the guest kernel.
-	if err := createWorkspaceDisk(ctx, mkfs, req.Disk, req.DiskBytes); err != nil {
-		return fail(err)
+	// A suspended grant resumes on the disk it had.
+	switch {
+	case req.Restore != nil && !req.Restore.Start:
+	case req.Seed != "":
+		if err := cloneSeedDisk(ctx, filepath.Join(req.Seed, seedDiskName), req.Disk, req.Resources.DiskBytes); err != nil {
+			return fail(err)
+		}
+	default:
+		if err := createWorkspaceDisk(ctx, mkfs, req.Disk, req.Resources.DiskBytes); err != nil {
+			return fail(err)
+		}
 	}
 	jail := newJailLayout(l.jailBase(), runtimeBin, req.ID, uid, uid)
 	release = append(release, jail.remove)
 	if err := jail.populate(req); err != nil {
 		return fail(err)
+	}
+	if req.Restore != nil {
+		if err := jail.placeSaved(req.Restore); err != nil {
+			return fail(err)
+		}
 	}
 	// Attach is already prepared by occupancy. None means no NIC. The tap
 	// was created by root; the jailed monitor must be allowed to open it.
@@ -148,9 +183,13 @@ func (l *processLauncher) Start(ctx context.Context, req startRequest) (instance
 			return fail(execenv.ErrNetwork)
 		}
 	}
-	vm, err := writeMachineConfig(req, jail)
-	if err != nil {
-		return fail(err)
+	// A restored machine takes its configuration from what was saved.
+	var vm string
+	if req.Restore == nil {
+		vm, err = writeMachineConfig(req, jail)
+		if err != nil {
+			return fail(err)
+		}
 	}
 	// jailer --id <jail-id> --exec-file <runtime> --uid --gid
 	// --chroot-base-dir <work>/jails -- --config-file /machine.json
@@ -167,8 +206,15 @@ func (l *processLauncher) Start(ctx context.Context, req startRequest) (instance
 	}
 	if cgroupV2() {
 		args = append(args, "--cgroup-version", "2")
+		args = append(args, cgroupLimits(req.Resources)...)
 	}
-	args = append(args, "--", "--config-file", vm)
+	// The API socket is how UpdateLimits reaches the running machine. It
+	// sits in the jail, owned by the grant's identity.
+	args = append(args, "--")
+	if req.Restore == nil {
+		args = append(args, "--config-file", vm)
+	}
+	args = append(args, "--api-sock", inside(jailAPISock))
 	cmd := exec.Command(supervisor, args...)
 	cmd.Dir = filepath.Dir(req.TreeDir)
 	cmd.Stdin = nil
@@ -185,26 +231,94 @@ func (l *processLauncher) Start(ctx context.Context, req startRequest) (instance
 	}
 	done := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(done) }()
-	return &processInstance{cmd: cmd, sock: jail.host(jailLinkSoc), release: release, done: done}, nil
+	pid := cmd.Process.Pid
+	start, _ := procStart(pid)
+	rec := machine{
+		PID: pid, Start: start, UID: uid,
+		Jail: jail.dir, Exec: filepath.Base(runtimeBin),
+		Sock: jail.host(jailLinkSoc), API: jail.host(jailAPISock),
+		Net: netRecordOf(req.Attach),
+	}
+	p := &processInstance{pid: pid, start: start, rec: rec, sock: rec.Sock, api: rec.API, release: release, done: done}
+	if err := l.bring(ctx, req, p); err != nil {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = p.Stop(stopCtx)
+		cancel()
+		return nil, err
+	}
+	return p, nil
 }
 
-// cleanStale reclaims what a crashed daemon left: jailed monitors (which
-// the parent-death signal no longer reaches once the supervisor dropped
-// privileges), their taps, filters and NAT, then their jails.
-func (l *processLauncher) cleanStale() error {
+// Adopt takes over a machine a previous host started. It is the same
+// machine only if its pid still runs with the start time recorded.
+func (l *processLauncher) Adopt(_ context.Context, m machine) (instance, error) {
+	if start, ok := procStart(m.PID); !ok || start != m.Start || m.PID <= 0 {
+		return nil, execenv.ErrLost
+	}
+	l.uids.claim(m.UID)
+	att, err := m.Net.attach()
+	if err != nil {
+		return nil, execenv.ErrLost
+	}
+	release := []func() error{
+		func() error { l.uids.release(m.UID); return nil },
+		jailLayout{dir: m.Jail}.remove,
+		func() error { removeJailCgroups(m.Exec); return nil },
+	}
+	if att != nil {
+		release = append(release, func() error { att.close(); return nil })
+	}
+	return &processInstance{pid: m.PID, start: m.Start, rec: m, sock: m.Sock, api: m.API, release: release, done: watchExit(m.PID, m.Start)}, nil
+}
+
+func (p *processInstance) Machine() machine { return p.rec }
+
+// cleanStale reclaims what a previous daemon left that is not being
+// adopted: jailed monitors, their taps, filters and NAT, then their jails.
+func (l *processLauncher) cleanStale(keep []machine) error {
 	if runtime.GOOS != "linux" {
 		return nil
 	}
-	killJailed(l.uids)
-	// The monitors are gone, so their taps can be deleted.
-	cleanStaleLinks()
-	if err := unmountUnder(l.jailBase()); err != nil {
+	uids := map[int]bool{}
+	jails := map[string]bool{}
+	var nets []*netAttach
+	for _, m := range keep {
+		uids[m.UID] = true
+		jails[m.Jail] = true
+		if att, err := m.Net.attach(); err == nil && att != nil {
+			nets = append(nets, att)
+		}
+	}
+	killJailed(l.uids, uids)
+	// The other monitors are gone, so their taps can be deleted.
+	cleanStaleLinks(nets)
+	execs, err := os.ReadDir(l.jailBase())
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
+	}
+	for _, e := range execs {
+		parent := filepath.Join(l.jailBase(), e.Name())
+		dirs, err := os.ReadDir(parent)
+		if err != nil {
+			continue
+		}
+		for _, d := range dirs {
+			dir := filepath.Join(parent, d.Name())
+			if jails[dir] {
+				continue
+			}
+			if err := unmountUnder(dir); err != nil {
+				return err
+			}
+			if err := os.RemoveAll(dir); err != nil {
+				return err
+			}
+		}
 	}
 	if runtimeBin, err := lookBinary(l.cfg.Runtime, defaultRuntime); err == nil {
 		removeJailCgroups(filepath.Base(runtimeBin))
 	}
-	return os.RemoveAll(l.jailBase())
+	return nil
 }
 
 // Done closes when the monitor process has been reaped. The guest kernel
@@ -213,22 +327,32 @@ func (l *processLauncher) cleanStale() error {
 func (p *processInstance) Done() <-chan struct{} { return p.done }
 
 func (p *processInstance) Pause(ctx context.Context) error {
-	return signalProcess(ctx, p.cmd, true)
+	return signalProcess(ctx, p.pid, true)
 }
 
 func (p *processInstance) Resume(ctx context.Context) error {
-	return signalProcess(ctx, p.cmd, false)
+	return signalProcess(ctx, p.pid, false)
 }
 
 func (p *processInstance) Stop(ctx context.Context) error {
-	if p.cmd == nil || p.cmd.Process == nil || p.done == nil {
+	if p.pid <= 0 || p.done == nil {
 		return execenv.ErrUnavailable
 	}
-	if err := p.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-		return err
+	select {
+	case <-p.done:
+	default:
+		// Only the recorded machine is killed: a pid whose start time
+		// changed is someone else's.
+		if start, ok := procStart(p.pid); ok && (p.start == 0 || start == p.start) {
+			if proc, err := os.FindProcess(p.pid); err == nil {
+				if err := proc.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+					return err
+				}
+			}
+		}
 	}
-	// The launch-owned waiter reaps exactly once. Killing a process is not a
-	// destruction acknowledgement until that waiter observes its exit.
+	// Killing a process is not a destruction acknowledgement until its
+	// exit has been observed.
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -259,14 +383,8 @@ func guestCID(id execenv.ID) uint32 {
 // in it is the monitor's view from inside the jail root; the returned path
 // is the one to pass after the supervisor's "--".
 func writeMachineConfig(req startRequest, jail jailLayout) (string, error) {
-	mem := req.Memory / (1024 * 1024)
-	if mem <= 0 {
-		mem = 128
-	}
-	vcpus := req.CPU / 1000
-	if vcpus <= 0 {
-		vcpus = 1
-	}
+	mem := req.Resources.MemoryBytes >> 20
+	vcpus := vcpuCount(req.Resources.CPUMillis)
 	// Machine JSON follows the supervisor's config-file schema. Rootfs is
 	// read-only and shared by every grant of the image. The second drive is
 	// this grant's sparse writable disk; the guest init mounts it and
@@ -282,7 +400,7 @@ func writeMachineConfig(req startRequest, jail jailLayout) (string, error) {
 	doc := map[string]any{
 		"boot-source": map[string]any{
 			"kernel_image_path": inside(jailKernel),
-			"boot_args":         bootArgs(req.Attach),
+			"boot_args":         bootArgs(),
 		},
 		"drives": []map[string]any{
 			{
@@ -296,6 +414,7 @@ func writeMachineConfig(req startRequest, jail jailLayout) (string, error) {
 				"path_on_host":   inside(jailDisk),
 				"is_root_device": false,
 				"is_read_only":   false,
+				"rate_limiter":   rateLimiter(req.Limits.DiskBytes, req.Limits.DiskOps),
 			},
 		},
 		"balloon": map[string]any{
@@ -315,9 +434,11 @@ func writeMachineConfig(req startRequest, jail jailLayout) (string, error) {
 	}
 	if req.Attach != nil {
 		doc["network-interfaces"] = []map[string]any{{
-			"iface_id":      "eth0",
-			"guest_mac":     req.Attach.MAC,
-			"host_dev_name": req.Attach.Dev,
+			"iface_id":        "eth0",
+			"guest_mac":       req.Attach.MAC,
+			"host_dev_name":   req.Attach.Dev,
+			"rx_rate_limiter": rateLimiter(req.Limits.NetworkBytes, execenv.TokenBucket{}),
+			"tx_rate_limiter": rateLimiter(req.Limits.NetworkBytes, execenv.TokenBucket{}),
 		}}
 	}
 	raw, err := json.Marshal(doc)
@@ -335,10 +456,9 @@ func writeMachineConfig(req startRequest, jail jailLayout) (string, error) {
 	return inside(jailConfig), nil
 }
 
-func bootArgs(attach *netAttach) string {
-	args := "console=ttyS0 reboot=k panic=1 pci=off init=" + execenv.GuestInit
-	if attach == nil {
-		return args
-	}
-	return args + " ip=" + attach.GuestIP + "::" + attach.HostIP + ":255.255.255.252::eth0:off"
+// bootArgs is the guest kernel's command line. The network, when there is
+// one, is configured from the start message, not here, so a booted guest
+// and a restored one are set up the same way.
+func bootArgs() string {
+	return "console=ttyS0 reboot=k panic=1 pci=off init=" + execenv.GuestInit
 }

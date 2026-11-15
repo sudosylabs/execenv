@@ -66,9 +66,18 @@ type Report struct {
 	Reason   string
 	Images   []Image
 	Networks []Network
-	// Slots is how many more grants the host has room for. A grant whose
-	// environment was lost no longer holds a slot.
-	Slots int
+	// CPUMillis, MemoryBytes and DiskBytes are the host's capacity. Every
+	// grant reserves its whole Resources from the moment it starts until it
+	// is revoked or lost; a grant being started counts at once. CPU totals
+	// already include the operator's overcommit; memory is never
+	// overcommitted.
+	CPUMillis   Capacity
+	MemoryBytes Capacity
+	DiskBytes   Capacity
+	// Defaults is what a Spec's zero Resources fields mean on this host,
+	// and GrantMax the most one grant may ask for.
+	Defaults Resources
+	GrantMax Resources
 	// Grants is how many grants the host holds now, including those still
 	// starting. Lost grants are not counted.
 	Grants int
@@ -78,6 +87,25 @@ type Report struct {
 	Release string
 	// Isolation is the boundary class this host provides.
 	Isolation Isolation
+	// Templates are the saved machines grants start from instead of
+	// booting: one per image and operator shape, once it is built.
+	Templates []TemplateStatus
+}
+
+// TemplateStatus is one template: a machine of Shape booted from Image and
+// saved, which a grant of exactly its memory, and no more virtual CPUs,
+// starts from.
+type TemplateStatus struct {
+	Image Image
+	Shape string
+	// Network is a template saved with a network device: grants with
+	// network access start from it.
+	Network bool
+	// Ready is whether grants start from it; until then they boot.
+	Ready bool
+	// Reason says why a template is not ready: still building, or why it
+	// failed.
+	Reason string
 }
 
 // Report reasons. Adapters may report other text; these are stable.
@@ -90,11 +118,33 @@ const (
 	ReasonUnavailable = "unavailable"
 )
 
-// Spec asks a host to occupy a grant.
+// Spec asks a host to occupy a grant. Ensure is idempotent on ID: the same
+// spec returns the same grant, and a different one, other than in Limits,
+// is ErrConflict.
 type Spec struct {
 	ID      ID
 	Image   Image
 	Network Network
+	// Resources is what the grant is given. Zero fields use the host's
+	// Defaults. A grant that does not fit is a *CapacityError at once; the
+	// host never queues it.
+	Resources Resources
+	// WallTimeout, when set, revokes the grant that long after it started.
+	WallTimeout time.Duration
+	// IdleTimeout and IdleAction, set together, freeze, suspend or revoke
+	// the grant once it has been idle that long. A grant is busy while
+	// anything is attached to one of its processes and for a moment after
+	// any call on it.
+	IdleTimeout time.Duration
+	IdleAction  IdleAction
+	// Labels are the caller's, for its own bookkeeping. The host never
+	// interprets them.
+	Labels map[string]string
+	// Limits throttle the grant's devices from its start.
+	Limits Limits
+	// Seed, when set, is the digest of a seed this host holds: the grant's
+	// workspace starts as a copy of it. An unknown seed is ErrNotFound.
+	Seed string
 }
 
 // Window is a terminal size. Zero Cols or Rows means 80 by 24.
@@ -106,7 +156,7 @@ type Window struct {
 // Host occupies grants on exactly one machine.
 //
 // A grant's environment can end without a revoke: its machine stops or its
-// guest crashes. The host notices on its own, releases the grant's slot and
+// guest crashes. The host notices on its own, releases the grant's
 // resources, and fails every later call on that occupancy, and Ensure of the
 // same id, with ErrLost until the caller calls Revoke for it.
 type Host interface {
@@ -114,6 +164,8 @@ type Host interface {
 	Ready(ctx context.Context) (Report, error)
 	Ensure(ctx context.Context, spec Spec) (Env, error)
 	Revoke(ctx context.Context, id ID) error
+	Seeder
+	Grants
 }
 
 // Env is one grant's occupancy for one epoch.
@@ -136,7 +188,6 @@ type Env interface {
 	// Epoch is the opaque identity of this occupancy. It is never reused
 	// after the grant is revoked or reconstructed.
 	Epoch() string
-	Attach(ctx context.Context, request AttachRequest) (Terminal, error)
 	Control(ctx context.Context, request ControlRequest) (ControlReceipt, error)
 	ControlStatus(ctx context.Context) (ControlReceipt, error)
 	UploadProjectionContent(ctx context.Context, fence ProjectionFence, body io.Reader) (ContentReference, error)
@@ -155,78 +206,9 @@ type Env interface {
 	// sequence. Acknowledging past the events produced is ErrInvalid; an
 	// older acknowledgement is a no-op.
 	AcknowledgeProcesses(ctx context.Context, fence ProjectionFence, through uint64) error
+	// UpdateLimits replaces the grant's device limits while it runs.
+	UpdateLimits(ctx context.Context, fence ProjectionFence, limits Limits) error
 	Revoke(ctx context.Context) error
-}
-
-// TerminalID is the opaque identity of one terminal session: one shell and
-// its output history. Every new shell gets a fresh value; it is never reused.
-type TerminalID string
-
-// Terminal session limits shared by every adapter.
-const (
-	// TerminalHistoryBytes is how much of a terminal session's most recent
-	// output the host keeps for replay. Older output is overwritten.
-	TerminalHistoryBytes = 1 << 20
-	// TerminalTailBytes is how much recent output an attach without Resume
-	// replays before live output.
-	TerminalTailBytes = 16 << 10
-	// DefaultTerminalGrace is how long a detached shell keeps running when
-	// the host configures no grace.
-	DefaultTerminalGrace = 60 * time.Second
-)
-
-// TerminalPosition names a byte in one terminal session's output. Offsets
-// are absolute: offset 0 is the shell's first output byte.
-type TerminalPosition struct {
-	Terminal TerminalID
-	// Offset is the next byte the client has not seen.
-	Offset uint64
-}
-
-// AttachRequest asks for the grant's terminal session.
-//
-// A grant has at most one terminal session, and at most one client is
-// attached to it. With no live session, Attach starts a shell and delivers
-// from offset 0. With Resume naming the live session, Attach delivers from
-// Resume.Offset, or from the start of the retained history when that output
-// was overwritten; Start reports which. A Resume naming any other session is
-// ErrNotFound, and an Offset beyond the output produced so far is
-// ErrInvalid. Without Resume, Attach joins a live session, replays its last
-// TerminalTailBytes and forces full-screen programs to redraw. Window
-// applies on every attach.
-type AttachRequest struct {
-	Window Window
-	// Resume continues a session from a known position. Nil attaches to
-	// the live session, or starts one.
-	Resume *TerminalPosition
-	// Takeover replaces a currently attached client instead of returning
-	// ErrBusy. The replaced Terminal's Read and Write return ErrSuperseded.
-	Takeover bool
-}
-
-// Terminal is one client's attachment to a grant's terminal session.
-//
-// Read delivers the session's output from Start onward and returns io.EOF
-// once the shell has exited and its output is drained. The host never
-// blocks the shell on a slow reader: a reader that falls behind the
-// retained history skips ahead to its oldest byte, which Offset makes
-// visible as a jump. Input is accepted only from the attached client.
-type Terminal interface {
-	// ID is the session this attachment belongs to.
-	ID() TerminalID
-	// Start is the absolute offset of the first byte this attachment
-	// delivers. Start greater than a requested Resume.Offset means the
-	// output in between was lost.
-	Start() uint64
-	// Offset is the absolute offset of the next byte Read will return:
-	// Start plus the bytes read, plus any output skipped by falling behind.
-	Offset() uint64
-	Read(p []byte) (int, error)
-	Write(p []byte) (int, error)
-	Resize(ctx context.Context, win Window) error
-	// Close detaches. The shell keeps running for the host's terminal
-	// grace; a later Attach can resume it.
-	Close() error
-	// Hangup ends the shell now. The session is gone.
-	Hangup(ctx context.Context) error
+	Files
+	Processes
 }

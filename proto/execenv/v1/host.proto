@@ -1,0 +1,209 @@
+syntax = "proto3";
+
+package execenv.v1;
+
+import "execenv/v1/common.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/sudosylabs/execenv/internal/gen/execenv/v1;execenvv1";
+
+// HostService is one machine that occupies grants.
+service HostService {
+  // Hello is the first call a client makes. It names the features the
+  // client needs; the host refuses with failed_precondition and an
+  // ErrorDetail naming the first one it does not offer.
+  rpc Hello(HelloRequest) returns (HelloResponse);
+  rpc GetReport(GetReportRequest) returns (Report);
+  // EnsureGrant creates the grant named by the spec, or returns it when it
+  // exists with the same spec.
+  rpc EnsureGrant(EnsureGrantRequest) returns (EnsureGrantResponse);
+  rpc RevokeGrant(RevokeGrantRequest) returns (RevokeGrantResponse);
+  // PutSeed builds a seed from an archive. The first message names its
+  // digest; the rest are the archive's bytes.
+  rpc PutSeed(stream PutSeedRequest) returns (Seed);
+  rpc ListSeeds(ListSeedsRequest) returns (ListSeedsResponse);
+  rpc DeleteSeed(DeleteSeedRequest) returns (DeleteSeedResponse);
+  // ListGrants describes every grant the host holds, lost ones included.
+  rpc ListGrants(ListGrantsRequest) returns (ListGrantsResponse);
+  // WaitGrant returns once the grant has left GRANT_STATE_CREATING.
+  rpc WaitGrant(WaitGrantRequest) returns (GrantInfo);
+  // WatchGrant streams one grant's state now and each change, ending after
+  // GRANT_STATE_REVOKED.
+  rpc WatchGrant(WatchGrantRequest) returns (stream GrantInfo);
+  // WatchHost streams every grant's state and the capacity now, then each
+  // change.
+  rpc WatchHost(WatchHostRequest) returns (stream HostEvent);
+}
+
+enum GrantState {
+  GRANT_STATE_UNSPECIFIED = 0;
+  GRANT_STATE_CREATING = 1;
+  GRANT_STATE_RUNNING = 2;
+  GRANT_STATE_FROZEN = 3;
+  GRANT_STATE_SUSPENDED = 4;
+  GRANT_STATE_REVOKED = 5;
+  GRANT_STATE_LOST = 6;
+}
+
+message GrantInfo {
+  string grant_id = 1;
+  string epoch = 2;
+  string image = 3;
+  Network network = 4;
+  Resources resources = 5;
+  map<string, string> labels = 6;
+  GrantState state = 7;
+  // The revision of the control that put the grant in its state.
+  uint64 fence_revision = 8;
+  google.protobuf.Timestamp started = 9;
+}
+
+message HostCapacity {
+  Capacity cpu_millis = 1;
+  Capacity memory_bytes = 2;
+  Capacity disk_bytes = 3;
+}
+
+// HostEvent is one change: a grant's new state, or the capacity.
+message HostEvent {
+  oneof change {
+    GrantInfo grant = 1;
+    HostCapacity capacity = 2;
+  }
+}
+
+message ListGrantsRequest {}
+
+message ListGrantsResponse {
+  repeated GrantInfo grants = 1;
+}
+
+message WaitGrantRequest {
+  string grant_id = 1;
+}
+
+message WatchGrantRequest {
+  string grant_id = 1;
+}
+
+message WatchHostRequest {}
+
+message Seed {
+  string digest = 1;
+  int64 bytes = 2;
+  int64 entries = 3;
+}
+
+message PutSeedRequest {
+  oneof part {
+    string digest = 1;
+    bytes chunk = 2;
+  }
+}
+
+message ListSeedsRequest {}
+
+message ListSeedsResponse {
+  repeated Seed seeds = 1;
+}
+
+message DeleteSeedRequest {
+  string digest = 1;
+}
+
+message DeleteSeedResponse {}
+
+message HelloRequest {
+  repeated string required_features = 1;
+}
+
+message HelloResponse {
+  // protocol is the major version of this schema the host serves.
+  uint32 protocol = 1;
+  repeated string features = 2;
+  bool isolated = 3;
+  string release = 4;
+}
+
+message GetReportRequest {}
+
+enum Isolation {
+  ISOLATION_UNSPECIFIED = 0;
+  ISOLATION_NONE = 1;
+  ISOLATION_VM = 2;
+}
+
+message Report {
+  bool usable = 1;
+  string reason = 2;
+  repeated string images = 3;
+  repeated Network networks = 4;
+  int64 grants = 5;
+  int64 lost = 6;
+  string release = 7;
+  Isolation isolation = 8;
+  // The host's capacity. CPU already includes the operator's overcommit;
+  // memory is never overcommitted.
+  Capacity cpu_millis = 9;
+  Capacity memory_bytes = 10;
+  Capacity disk_bytes = 11;
+  // defaults fill a spec's zero resources; grant_max bounds one grant.
+  Resources defaults = 12;
+  Resources grant_max = 13;
+  // templates are the saved machines grants start from instead of booting.
+  repeated TemplateStatus templates = 14;
+}
+
+message TemplateStatus {
+  string image = 1;
+  string shape = 2;
+  bool ready = 3;
+  string reason = 4;
+  // Saved with a network device, for grants with network access.
+  bool network = 5;
+}
+
+message Capacity {
+  int64 total = 1;
+  int64 reserved = 2;
+  int64 free = 3;
+}
+
+enum IdleAction {
+  IDLE_ACTION_UNSPECIFIED = 0;
+  IDLE_ACTION_FREEZE = 1;
+  IDLE_ACTION_REVOKE = 2;
+  IDLE_ACTION_SUSPEND = 3;
+}
+
+message Spec {
+  string id = 1;
+  string image = 2;
+  Network network = 3;
+  Resources resources = 4;
+  google.protobuf.Duration wall_timeout = 5;
+  google.protobuf.Duration idle_timeout = 6;
+  IdleAction idle_action = 7;
+  map<string, string> labels = 8;
+  Limits limits = 9;
+  // seed, when set, is the digest of a seed the host holds.
+  string seed = 10;
+}
+
+message EnsureGrantRequest {
+  Spec spec = 1;
+}
+
+message EnsureGrantResponse {
+  string epoch = 1;
+}
+
+message RevokeGrantRequest {
+  string grant_id = 1;
+  // epoch, when set, revokes only that incarnation; another one is
+  // ErrConflict.
+  string epoch = 2;
+}
+
+message RevokeGrantResponse {}

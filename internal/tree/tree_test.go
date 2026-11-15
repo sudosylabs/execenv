@@ -9,14 +9,14 @@ import (
 
 func TestFromTreeRequiresFileBodies(t *testing.T) {
 	t.Parallel()
-	next, err := FromTree(execenv.Tree{{Path: "a.txt", Kind: execenv.KindFile, Version: "v1", Data: []byte("one")}, {Path: "empty", Kind: execenv.KindFile, Data: []byte{}}})
+	next, err := FromTree(Tree{{Path: "a.txt", Kind: KindFile, Version: "v1", Content: blob("one")}, {Path: "empty", Kind: KindFile, Content: blob("")}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if empty, ok := next["empty"]; string(next["a.txt"].Data) != "one" || !ok || len(empty.Data) != 0 {
+	if empty, ok := next["empty"]; next["a.txt"].Content != blob("one") || !ok || empty.Content != blob("") {
 		t.Fatalf("snapshot = %+v", next)
 	}
-	if _, err := FromTree(execenv.Tree{{Path: "a.txt", Kind: execenv.KindFile, Version: "v1"}}); !errors.Is(err, execenv.ErrInvalid) {
+	if _, err := FromTree(Tree{{Path: "a.txt", Kind: KindFile, Version: "v1"}}); !errors.Is(err, execenv.ErrInvalid) {
 		t.Fatalf("missing body error = %v", err)
 	}
 }
@@ -24,31 +24,31 @@ func TestFromTreeRequiresFileBodies(t *testing.T) {
 func TestApplyConflictLeavesCallerToDropNext(t *testing.T) {
 	t.Parallel()
 	cur := Snapshot{
-		"a.txt": {Kind: execenv.KindFile, Version: "v1", Data: []byte("one")},
+		"a.txt": {Kind: KindFile, Version: "v1", Content: blob("one")},
 	}
-	_, err := Apply(cur, execenv.Batch{Mutations: []execenv.Mutation{{
-		Op:       execenv.OpReplace,
+	_, err := Apply(cur, Batch{Mutations: []Mutation{{
+		Op:       OpReplace,
 		Path:     "a.txt",
-		Kind:     execenv.KindFile,
+		Kind:     KindFile,
 		Expected: "v9",
-		Data:     []byte("two"),
+		Content:  blob("two"),
 	}}})
 	if !errors.Is(err, execenv.ErrConflict) {
 		t.Fatalf("error = %v, want ErrConflict", err)
 	}
-	if string(cur["a.txt"].Data) != "one" {
+	if cur["a.txt"].Content != blob("one") {
 		t.Fatal("Apply mutated current on conflict")
 	}
 }
 
 func TestApplyCreateConflict(t *testing.T) {
 	t.Parallel()
-	cur := Snapshot{"a.txt": {Kind: execenv.KindFile, Data: []byte("x")}}
-	_, err := Apply(cur, execenv.Batch{Mutations: []execenv.Mutation{{
-		Op:   execenv.OpCreate,
-		Path: "a.txt",
-		Kind: execenv.KindFile,
-		Data: []byte("y"),
+	cur := Snapshot{"a.txt": {Kind: KindFile, Content: blob("x")}}
+	_, err := Apply(cur, Batch{Mutations: []Mutation{{
+		Op:      OpCreate,
+		Path:    "a.txt",
+		Kind:    KindFile,
+		Content: blob("y"),
 	}}})
 	if !errors.Is(err, execenv.ErrConflict) {
 		t.Fatalf("error = %v", err)

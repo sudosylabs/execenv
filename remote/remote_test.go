@@ -1,7 +1,6 @@
 package remote_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -20,9 +19,8 @@ func TestConformance(t *testing.T) {
 	execenvtest.Run(t, func(t *testing.T, cfg execenvtest.Config) execenv.Host {
 		t.Helper()
 		inner, err := memory.New(memory.Config{
-			Images:        []execenv.Image{"default", "alt"},
-			Slots:         2,
-			TerminalGrace: cfg.TerminalGrace,
+			Images:   []execenv.Image{"default", "alt"},
+			Capacity: execenv.DefaultGrant.Times(2),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -31,12 +29,12 @@ func TestConformance(t *testing.T) {
 	})
 }
 
-// Loss crosses the wire: every call on a lost grant, and its terminal
-// stream, fail with ErrLost on the client.
+// Loss crosses the wire: every call on a lost grant, and its process
+// attachments, fail with ErrLost on the client.
 func TestLossConformance(t *testing.T) {
 	execenvtest.RunLoss(t, func(t *testing.T) execenvtest.Lossy {
 		t.Helper()
-		inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Slots: 2})
+		inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Capacity: execenv.DefaultGrant.Times(2)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -49,7 +47,7 @@ func TestLossConformance(t *testing.T) {
 }
 
 func TestDrainingCrossesTheWire(t *testing.T) {
-	inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Slots: 2})
+	inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Capacity: execenv.DefaultGrant.Times(2)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,56 +145,8 @@ func TestOperationTimeoutCancelsHostCall(t *testing.T) {
 	}
 }
 
-func TestAttachEchoesBytes(t *testing.T) {
-	t.Parallel()
-	host := startLoopback(t)
-	env, err := host.Ensure(t.Context(), execenv.Spec{ID: "grant-1", Image: "default"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	term, err := env.Attach(t.Context(), execenv.AttachRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = term.Close() })
-	if _, err := term.Write([]byte("ping")); err != nil {
-		t.Fatal(err)
-	}
-	got := make([]byte, 4)
-	if _, err := io.ReadFull(term, got); err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "ping" {
-		t.Fatal("remote PTY did not echo the inner host")
-	}
-}
-
-func TestAttachKeepsOutputProducedBeforeReply(t *testing.T) {
-	inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Slots: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	client := serveInner(t, promptHost{Host: inner})
-	env, err := client.Ensure(t.Context(), execenv.Spec{ID: "grant-1", Image: "default"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	term, err := env.Attach(t.Context(), execenv.AttachRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = term.Close() })
-	got := make([]byte, len("prompt"))
-	if _, err := io.ReadFull(term, got); err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "prompt" {
-		t.Fatalf("initial output = %q", got)
-	}
-}
-
 func TestDifferentGrantsDoNotBlockEachOther(t *testing.T) {
-	inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Slots: 2})
+	inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Capacity: execenv.DefaultGrant.Times(2)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +176,7 @@ func TestDifferentGrantsDoNotBlockEachOther(t *testing.T) {
 }
 
 func TestObservationsReplayAcrossRemoteReconnect(t *testing.T) {
-	inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Slots: 1})
+	inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Capacity: execenv.DefaultGrant.Times(1)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,37 +238,42 @@ func TestObservationsReplayAcrossRemoteReconnect(t *testing.T) {
 	}
 }
 
-func TestDroppedPtyIsHangupNotRevoke(t *testing.T) {
+func TestClosingAnAttachmentLeavesTheProcess(t *testing.T) {
 	t.Parallel()
 	host := startLoopback(t)
 	env, err := host.Ensure(t.Context(), execenv.Spec{ID: "grant-1", Image: "default"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	term, err := env.Attach(t.Context(), execenv.AttachRequest{})
-	if err != nil {
+	fence := running(t, env)
+	sh := execenvtest.StartShell(t, env, fence, "sh")
+	if err := sh.Attachment().Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := term.Close(); err != nil {
-		t.Fatal(err)
-	}
-	// Control must still work on the same grant.
 	receipt, err := env.ControlStatus(t.Context())
 	if err != nil || receipt.State != execenv.ControlRunning {
-		t.Fatalf("ControlStatus() after PTY close = %+v %v", receipt, err)
+		t.Fatalf("ControlStatus() after detaching = %+v %v", receipt, err)
 	}
-	again, err := env.Attach(t.Context(), execenv.AttachRequest{})
-	if err != nil {
-		t.Fatalf("Attach() after hangup error = %v", err)
+	info, err := env.Process(t.Context(), "sh")
+	if err != nil || !info.Running {
+		t.Fatalf("Process() after detaching = %+v %v", info, err)
 	}
-	_ = again.Close()
+}
+
+func running(t *testing.T, env execenv.Env) execenv.ProjectionFence {
+	t.Helper()
+	fence := execenv.ProjectionFence{ExecutionGrantID: env.ID(), EnvironmentEpoch: env.Epoch(), FenceRevision: 1}
+	if _, err := env.Control(t.Context(), execenv.ControlRequest{Fence: fence, State: execenv.ControlRunning}); err != nil {
+		t.Fatal(err)
+	}
+	return fence
 }
 
 func startLoopback(t *testing.T) execenv.Host {
 	t.Helper()
 	inner, err := memory.New(memory.Config{
-		Images: []execenv.Image{"default", "alt"},
-		Slots:  2,
+		Images:   []execenv.Image{"default", "alt"},
+		Capacity: execenv.DefaultGrant.Times(2),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -350,42 +305,6 @@ func serveInner(t *testing.T, inner execenv.Host) execenv.Host {
 	}
 	t.Cleanup(func() { _ = client.Close() })
 	return client
-}
-
-type promptHost struct {
-	execenv.Host
-}
-
-func (h promptHost) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, error) {
-	env, err := h.Host.Ensure(ctx, spec)
-	if err != nil {
-		return nil, err
-	}
-	return promptEnv{Env: env}, nil
-}
-
-type promptEnv struct {
-	execenv.Env
-}
-
-func (e promptEnv) Attach(ctx context.Context, request execenv.AttachRequest) (execenv.Terminal, error) {
-	term, err := e.Env.Attach(ctx, request)
-	if err != nil {
-		return nil, err
-	}
-	return &promptTerminal{Terminal: term, prompt: bytes.NewReader([]byte("prompt"))}, nil
-}
-
-type promptTerminal struct {
-	execenv.Terminal
-	prompt *bytes.Reader
-}
-
-func (t *promptTerminal) Read(p []byte) (int, error) {
-	if t.prompt.Len() > 0 {
-		return t.prompt.Read(p)
-	}
-	return t.Terminal.Read(p)
 }
 
 type blockingHost struct {

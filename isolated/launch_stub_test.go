@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -30,9 +31,49 @@ type stubInstance struct {
 	// exited closes when the simulated machine ends: Stop, or die.
 	exited   chan struct{}
 	exitOnce sync.Once
+	// limits is what UpdateLimits last applied.
+	limits execenv.Limits
+	// saved is where Save put the machine; its helper keeps running, as the
+	// saved memory would hold it, until a Start restores it.
+	saved string
+}
+
+// Save stands for saving the machine: its link breaks, as a real save
+// resets the guest link, and its helper waits for a restore.
+func (s *stubInstance) Save(_ context.Context, dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	for _, name := range []string{jailState, jailMemory} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
+			return err
+		}
+	}
+	s.mu.Lock()
+	s.saved = dir
+	s.mu.Unlock()
+	s.dropLink()
+	return nil
 }
 
 func (s *stubInstance) Done() <-chan struct{} { return s.exited }
+
+// Machine names the stub by its socket, which a restarted host finds again.
+func (s *stubInstance) Machine() machine {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return machine{Sock: s.sock}
+}
+
+func (s *stubInstance) UpdateLimits(_ context.Context, limits execenv.Limits, _ bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stopped {
+		return execenv.ErrUnavailable
+	}
+	s.limits = limits
+	return nil
+}
 
 // dropLink breaks the guest link while the simulated machine keeps
 // running, as a guest helper that died would.
@@ -110,6 +151,11 @@ func (s *stubInstance) Stop(context.Context) error {
 		return s.stopErr
 	}
 	s.stopped = true
+	if s.saved != "" {
+		// The saved machine is gone from memory but not lost.
+		s.exitOnce.Do(func() { close(s.exited) })
+		return nil
+	}
 	if s.cancel != nil {
 		s.cancel()
 		s.cancel = nil
@@ -142,6 +188,7 @@ func (s *stubInstance) Connect(ctx context.Context) (net.Conn, error) {
 type recordingLauncher struct {
 	mu        sync.Mutex
 	starts    int
+	restores  int
 	instances []*stubInstance
 	last      startRequest
 	fail      error
@@ -175,6 +222,21 @@ func (l *recordingLauncher) Start(ctx context.Context, req startRequest) (instan
 	if l.fail != nil {
 		return nil, l.fail
 	}
+	if req.Restore != nil && !req.Restore.Start {
+		for _, inst := range l.instances {
+			inst.mu.Lock()
+			if inst.saved == req.Restore.Dir {
+				inst.saved, inst.stopped = "", false
+				inst.exited, inst.exitOnce = make(chan struct{}), sync.Once{}
+				inst.mu.Unlock()
+				l.restores++
+				l.last = req
+				return inst, nil
+			}
+			inst.mu.Unlock()
+		}
+		return nil, execenv.ErrUnavailable
+	}
 	inst, err := startStubAgent(ctx, req, !l.noJournal, !l.noProcesses)
 	if err != nil {
 		return nil, err
@@ -187,6 +249,27 @@ func (l *recordingLauncher) Start(ctx context.Context, req startRequest) (instan
 	}
 	l.byID[req.ID] = inst
 	return inst, nil
+}
+
+// Adopt finds a stub machine a previous host started, if it still runs.
+func (l *recordingLauncher) Adopt(_ context.Context, m machine) (instance, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, inst := range l.instances {
+		select {
+		case <-inst.exited:
+			continue
+		default:
+		}
+		if inst.Machine().Sock == m.Sock {
+			return inst, nil
+		}
+	}
+	return nil, execenv.ErrLost
+}
+
+func (l *blockingLauncher) Adopt(ctx context.Context, m machine) (instance, error) {
+	return l.inner.Adopt(ctx, m)
 }
 
 // instance returns the machine last started for id.
@@ -210,6 +293,12 @@ func (quiescentBarrier) Stopped(ctx context.Context, fn func() error) error {
 func startStubAgent(_ context.Context, req startRequest, journal, processLog bool) (*stubInstance, error) {
 	if err := os.MkdirAll(req.TreeDir, 0o700); err != nil {
 		return nil, err
+	}
+	// The stub has no disk image: it plants the seed's tree directly.
+	if req.Seed != "" {
+		if err := os.CopyFS(req.TreeDir, os.DirFS(filepath.Join(req.Seed, "tree"))); err != nil {
+			return nil, err
+		}
 	}
 	f, err := os.CreateTemp("", "e*.sock")
 	if err != nil {
@@ -274,12 +363,22 @@ func (p *stubProcesses) Close() error {
 }
 
 func (p *stubProcesses) Run(ctx context.Context, argv []string) error {
+	return p.report(ctx, "", argv)
+}
+
+// Start reports a process the helper started under tag, as its kernel
+// process tracker would.
+func (p *stubProcesses) Start(ctx context.Context, tag string, argv []string) error {
+	return p.report(ctx, tag, argv)
+}
+
+func (p *stubProcesses) report(ctx context.Context, tag string, argv []string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.pid++
 	code := 0
 	for _, event := range []execenv.ProcessEvent{
-		{Kind: execenv.ProcessStarted, PID: p.pid, ParentPID: 100, Argv: argv, At: time.Now()},
+		{Kind: execenv.ProcessStarted, PID: p.pid, ParentPID: 100, Argv: argv, Tag: tag, At: time.Now()},
 		{Kind: execenv.ProcessExited, PID: p.pid, ExitCode: &code, At: time.Now()},
 	} {
 		select {

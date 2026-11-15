@@ -36,14 +36,24 @@ func TestObservationsPreserveOriginalContentAndSubtreeIdentity(t *testing.T) {
 	if _, err := semantic.InitializeProjection(t.Context(), initial); err != nil {
 		t.Fatal(err)
 	}
+	// The guest's changes are captured when the caller observes, as on a
+	// real guest, so observe after each one to see each one.
+	captured := func() {
+		t.Helper()
+		if _, err := semantic.Observe(t.Context(), fence, 0, 128); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, body := range []string{"first", "second"} {
 		if err := host.WriteGuest(t.Context(), env.ID(), "dir/file", []byte(body)); err != nil {
 			t.Fatal(err)
 		}
+		captured()
 	}
 	if err := host.MoveGuest(t.Context(), env.ID(), "dir", "moved"); err != nil {
 		t.Fatal(err)
 	}
+	captured()
 	if err := host.WriteGuest(t.Context(), env.ID(), "moved/file", []byte("third")); err != nil {
 		t.Fatal(err)
 	}
@@ -52,20 +62,27 @@ func TestObservationsPreserveOriginalContentAndSubtreeIdentity(t *testing.T) {
 		t.Fatalf("observations: %+v %v", page, err)
 	}
 	identity := page.Observations[0].NodeIdentity
-	for i, want := range map[int]string{0: "first", 1: "second", 3: "third"} {
+	for _, i := range []int{0, 1, 3} {
 		event := page.Observations[i]
 		if event.NodeIdentity != identity || event.ExpectedContentVersion != "v1" || event.BasedOnWorkspaceCursor != 5 {
 			t.Fatalf("changed identity/baseline: %+v", event)
 		}
-		reader, err := semantic.OpenObservationContent(t.Context(), fence, *event.Content)
-		if err != nil {
-			t.Fatal(err)
+	}
+	// Bodies are read from the workspace: the earlier writes are stale, and
+	// the newest observation reads what is there.
+	for _, i := range []int{0, 1} {
+		if _, err := semantic.OpenObservationContent(t.Context(), fence, *page.Observations[i].Content); !errors.Is(err, execenv.ErrStale) {
+			t.Fatalf("superseded body %d = %v, want ErrStale", i, err)
 		}
-		body, err := io.ReadAll(reader)
-		_ = reader.Close()
-		if err != nil || string(body) != want {
-			t.Fatalf("captured body: %q %v", body, err)
-		}
+	}
+	reader, err := semantic.OpenObservationContent(t.Context(), fence, *page.Observations[3].Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(reader)
+	_ = reader.Close()
+	if err != nil || string(body) != "third" {
+		t.Fatalf("captured body: %q %v", body, err)
 	}
 	moved := page.Observations[2]
 	if moved.Operation != execenv.ObservationMove || moved.Kind != execenv.ProjectionDirectory || moved.Path != "dir" || moved.DestinationPath != "moved" {

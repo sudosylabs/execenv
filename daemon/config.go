@@ -10,9 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/capacity"
 	"github.com/sudosylabs/execenv/isolated"
 	"github.com/sudosylabs/execenv/remote"
 )
@@ -24,8 +24,19 @@ const (
 	securityLocal   = "insecure_local"
 	networkNone     = "none"
 	networkAllow    = "allowlist"
-	minDiskBytes    = 64 << 20
 )
+
+// Resources is a size in the host configuration: a host's capacity, or one
+// grant's.
+type Resources struct {
+	CPUMillis   int64 `json:"cpu_millis"`
+	MemoryBytes int64 `json:"memory_bytes"`
+	DiskBytes   int64 `json:"disk_bytes"`
+}
+
+func (r Resources) contract() execenv.Resources {
+	return execenv.Resources{CPUMillis: r.CPUMillis, MemoryBytes: r.MemoryBytes, DiskBytes: r.DiskBytes}
+}
 
 // Config is the operator document that turns a machine into a host.
 // Token, file bodies, and PTY octets must never be logged.
@@ -48,20 +59,23 @@ type Config struct {
 	// microVM monitors (default 2000000000). Nothing else may use them.
 	JailUIDBase int     `json:"jail_uid_base,omitempty"`
 	Images      []Image `json:"images"`
-	Slots       int     `json:"slots"`
-	// Isolated grants use these as machine defaults. Memory ignores them.
-	// DiskBytes sizes each grant's sparse workspace disk (default 2 GiB,
-	// minimum 64 MiB); only written blocks use host storage.
-	CPUMillis   int      `json:"cpu_millis,omitempty"`
-	MemoryBytes int64    `json:"memory_bytes,omitempty"`
-	DiskBytes   int64    `json:"disk_bytes,omitempty"`
-	Network     string   `json:"network,omitempty"`
-	Allow       []string `json:"allow,omitempty"`
-	// Grace (JSON "grace", a Go duration) is how long a detached terminal
-	// shell keeps running before the host hangs it up. Unset uses
-	// execenv.DefaultTerminalGrace (60s).
-	Grace     time.Duration `json:"-"`
-	GraceText string        `json:"grace,omitempty"`
+	// Shapes are the machine sizes the isolated adapter saves templates
+	// in, for every image: a grant of exactly a shape's memory starts
+	// from its template instead of booting. Empty builds none.
+	Shapes []isolated.Shape `json:"shapes,omitempty"`
+	// Capacity is what the host gives its grants in all. Every grant
+	// reserves its whole size from it. CPUOvercommit multiplies the CPU
+	// total (1 when unset); memory and disk are never overcommitted.
+	Capacity      Resources `json:"capacity"`
+	CPUOvercommit float64   `json:"cpu_overcommit,omitempty"`
+	// GrantDefaults is what a grant gets when its Spec leaves a size unset
+	// (execenv.DefaultGrant when unset); GrantMax the most one grant may ask for
+	// (the capacity when unset). A grant's disk is a sparse file: only
+	// written blocks use host storage.
+	GrantDefaults Resources `json:"grant_defaults,omitzero"`
+	GrantMax      Resources `json:"grant_max,omitzero"`
+	Network       string    `json:"network,omitempty"`
+	Allow         []string  `json:"allow,omitempty"`
 	// OperatorSocket is the absolute path of the Unix socket execenvctl
 	// uses to drain this daemon before a restart. Empty serves none, and
 	// execenvctl then cannot tell whether grants are live.
@@ -198,9 +212,6 @@ func (cfg *Config) validate() error {
 		if cfg.JailUIDBase < 0 || cfg.JailUIDBase > 1<<31-1-65536 {
 			return execenv.Error("config", execenv.ErrInvalid)
 		}
-		if cfg.DiskBytes < 0 || (cfg.DiskBytes > 0 && cfg.DiskBytes < minDiskBytes) {
-			return execenv.Error("config", execenv.ErrInvalid)
-		}
 	default:
 		return execenv.Error("config", execenv.ErrInvalid)
 	}
@@ -230,7 +241,11 @@ func (cfg *Config) validate() error {
 			}
 		}
 	}
-	if cfg.Slots <= 0 {
+	if cfg.CPUOvercommit < 0 {
+		return execenv.Error("config", execenv.ErrInvalid)
+	}
+	// The pool checks the sizes against each other and the minimums.
+	if _, err := capacity.New(cfg.totals(), cfg.GrantDefaults.contract(), cfg.GrantMax.contract()); err != nil {
 		return execenv.Error("config", execenv.ErrInvalid)
 	}
 	// The daemon's working directory is not the operator's, so the socket
@@ -238,14 +253,16 @@ func (cfg *Config) validate() error {
 	if cfg.OperatorSocket != "" && !filepath.IsAbs(cfg.OperatorSocket) {
 		return execenv.Error("config", execenv.ErrInvalid)
 	}
-	if cfg.GraceText != "" {
-		grace, err := time.ParseDuration(cfg.GraceText)
-		if err != nil || grace <= 0 {
-			return execenv.Error("config", execenv.ErrInvalid)
-		}
-		cfg.Grace = grace
-	}
 	return nil
+}
+
+// totals is the capacity the host gives grants, CPU overcommit included.
+func (cfg Config) totals() execenv.Resources {
+	total := cfg.Capacity.contract()
+	if cfg.CPUOvercommit > 0 {
+		total.CPUMillis = int64(float64(total.CPUMillis) * cfg.CPUOvercommit)
+	}
+	return total
 }
 
 // isolation is the boundary class the configured adapter provides, for logs.
@@ -273,6 +290,7 @@ func (cfg Config) imageIDs() []execenv.Image {
 
 // redacted is safe for operator logs. It never includes Token.
 func (cfg Config) redacted() string {
-	return fmt.Sprintf("listen=%s adapter=%s isolation=%s security=%s slots=%d images=%d",
-		cfg.Listen, cfg.Adapter, cfg.isolation(), cfg.Security, cfg.Slots, len(cfg.Images))
+	total := cfg.totals()
+	return fmt.Sprintf("listen=%s adapter=%s isolation=%s security=%s cpu_millis=%d memory_bytes=%d disk_bytes=%d images=%d",
+		cfg.Listen, cfg.Adapter, cfg.isolation(), cfg.Security, total.CPUMillis, total.MemoryBytes, total.DiskBytes, len(cfg.Images))
 }

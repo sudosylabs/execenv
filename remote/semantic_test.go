@@ -45,13 +45,6 @@ func TestRemoteSemanticReplayAndImmutableStreamingContent(t *testing.T) {
 	if err != nil || len(page.Observations) != 1 {
 		t.Fatalf("observe: %+v %v", page, err)
 	}
-	if err := inner.WriteGuest(t.Context(), env.ID(), "file", []byte("later content")); err != nil {
-		t.Fatal(err)
-	}
-	replay, err := two.Observe(t.Context(), fence, 0, 1)
-	if err != nil || len(replay.Observations) != 1 || *replay.Observations[0].Content != *page.Observations[0].Content {
-		t.Fatalf("reconnect replay: %+v %v", replay, err)
-	}
 	reader, err := two.OpenObservationContent(t.Context(), fence, *page.Observations[0].Content)
 	if err != nil {
 		t.Fatal(err)
@@ -59,7 +52,17 @@ func TestRemoteSemanticReplayAndImmutableStreamingContent(t *testing.T) {
 	body, err := io.ReadAll(reader)
 	closeErr := reader.Close()
 	if err != nil || closeErr != nil || !bytes.Equal(body, captured) {
-		t.Fatalf("streamed immutable body differs: %v %v", err, closeErr)
+		t.Fatalf("streamed body differs: %v %v", err, closeErr)
+	}
+	if err := inner.WriteGuest(t.Context(), env.ID(), "file", []byte("later content")); err != nil {
+		t.Fatal(err)
+	}
+	replay, err := two.Observe(t.Context(), fence, 0, 1)
+	if err != nil || len(replay.Observations) != 1 || *replay.Observations[0].Content != *page.Observations[0].Content {
+		t.Fatalf("reconnect replay: %+v %v", replay, err)
+	}
+	if _, err := two.OpenObservationContent(t.Context(), fence, *page.Observations[0].Content); !errors.Is(err, execenv.ErrStale) {
+		t.Fatalf("changed body = %v, want ErrStale", err)
 	}
 	upload, err := two.UploadProjectionContent(t.Context(), fence, bytes.NewReader(captured))
 	if err != nil {
@@ -128,7 +131,7 @@ func TestRemoteInitialProjectionRetainsLargeSnapshot(t *testing.T) {
 		path += strings.Repeat("&", execenv.MaxSegmentBytes)
 		request.Entries = append(request.Entries, execenv.ProjectionEntry{EntryID: fmt.Sprintf("parent-%d", i), Kind: execenv.ProjectionDirectory, Path: path})
 	}
-	for i := len(request.Entries); i < execenv.MaxTreeEntries; i++ {
+	for i := len(request.Entries); i < 1200; i++ {
 		request.Entries = append(request.Entries, execenv.ProjectionEntry{EntryID: fmt.Sprintf("entry-%d", i), Kind: execenv.ProjectionDirectory, Path: fmt.Sprintf("%s/%04d", path, i)})
 	}
 	raw, _ := json.Marshal(request)

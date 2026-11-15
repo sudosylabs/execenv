@@ -244,14 +244,23 @@ func TestGuestInitPutsWorkspaceAndHomeOnWritableDisk(t *testing.T) {
 	if strings.Contains(text, "tmpfs /workspace") || strings.Contains(text, "HOME="+execenv.GuestWorkspace+"\n") {
 		t.Fatal("workspace is still memory-backed or doubles as HOME")
 	}
-	if !strings.Contains(text, "/dev/vdb") || !strings.Contains(text, "-t ext4") {
-		t.Fatal("guest init does not mount the per-grant writable disk")
+	// The grant's disk is mounted only after the start message, by init,
+	// so a saved template has never seen one.
+	if strings.Contains(text, "/dev/vdb") {
+		t.Fatal("the first stage mounts the grant's disk before the start message")
+	}
+	init, err := os.ReadFile(filepath.Join("internal", "workload", "init_linux.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(init), `"/dev/vdb"`) || !strings.Contains(string(init), `"ext4"`) || !strings.Contains(string(init), "execenv.GuestWorkspace") {
+		t.Fatal("guest init does not mount the per-grant writable disk under the workspace")
 	}
 	if !strings.Contains(text, "export HOME="+execenv.GuestHome) || !strings.Contains(text, "-scratch "+execenv.GuestHome) {
 		t.Fatal("scratch HOME is not outside the workspace")
 	}
-	if !strings.Contains(text, "-home "+execenv.GuestWorkspace) || !strings.Contains(text, "cd "+execenv.GuestWorkspace) {
-		t.Fatal("workspace is not the projected tree and working directory")
+	if !strings.Contains(text, "-home "+execenv.GuestWorkspace) {
+		t.Fatal("workspace is not the projected tree")
 	}
 }
 
@@ -324,8 +333,8 @@ func TestCheckKernelConfig(t *testing.T) {
 	full := strings.Join([]string{
 		"CONFIG_VIRTIO_BLK=y", "CONFIG_EXT4_FS=y", "CONFIG_DEVTMPFS=y", "CONFIG_TMPFS=y",
 		"CONFIG_VSOCKETS=y", "CONFIG_VIRTIO_VSOCKETS=y", "CONFIG_CGROUPS=y", "CONFIG_UNIX98_PTYS=y", "CONFIG_CONNECTOR=y", "CONFIG_PROC_EVENTS=y",
-		"CONFIG_INOTIFY_USER=y", "CONFIG_MEMORY_BALLOON=y", "CONFIG_VIRTIO_BALLOON=y",
-		"CONFIG_PAGE_REPORTING=y", "CONFIG_BALLOON_COMPACTION=y", "CONFIG_VMGENID=y",
+		"CONFIG_FANOTIFY=y", "CONFIG_MEMORY_BALLOON=y", "CONFIG_VIRTIO_BALLOON=y",
+		"CONFIG_PAGE_REPORTING=y", "CONFIG_BALLOON_COMPACTION=y", "CONFIG_VMGENID=y", "CONFIG_HW_RANDOM_VIRTIO=y",
 	}, "\n") + "\n"
 	run := func(body string) (string, error) {
 		path := filepath.Join(dir, "config")
@@ -345,6 +354,10 @@ func TestCheckKernelConfig(t *testing.T) {
 	out, err = run(strings.Replace(full, "CONFIG_VIRTIO_BLK=y", "CONFIG_VIRTIO_BLK=m", 1))
 	if err == nil || !strings.Contains(out, "MISSING  VIRTIO_BLK") {
 		t.Fatalf("modular block driver should fail: %v\n%s", err, out)
+	}
+	out, err = run(strings.Replace(full, "CONFIG_VMGENID=y", "# CONFIG_VMGENID is not set", 1))
+	if err == nil || !strings.Contains(out, "MISSING  VMGENID") {
+		t.Fatalf("missing generation id should fail: %v\n%s", err, out)
 	}
 	out, err = run(strings.Replace(full, "CONFIG_PROC_EVENTS=y", "# CONFIG_PROC_EVENTS is not set", 1))
 	if err == nil || !strings.Contains(out, "MISSING  PROC_EVENTS") {

@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -17,8 +16,8 @@ import (
 
 // SIGSTOP applies to the entire thread group, including every execution
 // thread. A successful signal send is not a suspension acknowledgement.
-func signalProcess(ctx context.Context, cmd *exec.Cmd, pause bool) error {
-	if cmd == nil || cmd.Process == nil {
+func signalProcess(ctx context.Context, pid int, pause bool) error {
+	if pid <= 0 {
 		return execenv.ErrUnavailable
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -27,13 +26,13 @@ func signalProcess(ctx context.Context, cmd *exec.Cmd, pause bool) error {
 	if pause {
 		sig = syscall.SIGSTOP
 	}
-	if err := cmd.Process.Signal(sig); err != nil {
+	if err := syscall.Kill(pid, sig); err != nil {
 		return err
 	}
 	tick := time.NewTicker(time.Millisecond)
 	defer tick.Stop()
 	for {
-		confirmed, err := processState(cmd.Process.Pid, pause)
+		confirmed, err := processState(pid, pause)
 		if err != nil {
 			return execenv.ErrUnavailable
 		}

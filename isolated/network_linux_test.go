@@ -3,6 +3,7 @@
 package isolated
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/execenvtest"
 )
 
 // TestDeniedDestinationUnreachableFromGuestSide applies the same host
@@ -146,9 +148,9 @@ func TestLiveAllowlistDeniesFromGuest(t *testing.T) {
 		t.Fatal(err)
 	}
 	host, err := New(Config{
-		WorkDir: t.TempDir(),
-		Slots:   1,
-		Allow:   []string{"203.0.113.1"},
+		WorkDir:  t.TempDir(),
+		Capacity: execenv.DefaultGrant.Times(1),
+		Allow:    []string{"203.0.113.1"},
 		Images: []Image{{
 			ID:     "fixture",
 			Kernel: kernel,
@@ -168,16 +170,13 @@ func TestLiveAllowlistDeniesFromGuest(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = env.Revoke(t.Context()) })
-	term, err := env.Attach(t.Context(), execenv.AttachRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = term.Close() })
+	term := execenvtest.OpenShell(t, env, runningFence(t, env), "sh")
 	// 1.1.1.1 is not on the host allowlist. Success from this shell
 	// would mean the guest has a general NIC.
 	// A missing wget or no default route is not proof. Require wget,
 	// then treat a completed TCP handshake as a leak.
-	if _, err := term.Write([]byte("command -v wget >/dev/null || { echo NO_WGET; exit 0; }; wget -q -T 2 -O /dev/null http://1.1.1.1/ && echo LEAKED || echo DENIED\n")); err != nil {
+	// The terminal echoes the line: quotes keep the echo from matching.
+	if _, err := term.Write([]byte("command -v wget >/dev/null || { echo NO_\"\"WGET; exit 0; }; wget -q -T 2 -O /dev/null http://1.1.1.1/ && echo LEAK\"\"ED || echo DEN\"\"IED\n")); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(8 * time.Second)
@@ -201,5 +200,90 @@ func TestLiveAllowlistDeniesFromGuest(t *testing.T) {
 	}
 	if !strings.Contains(string(buf), "DENIED") {
 		t.Fatal("guest did not report that the dest was denied")
+	}
+}
+
+// A grant with network access comes up with its own address and route,
+// whether it booted or was restored from a network template: the start
+// message configures it either way. Needs root and ip/iptables, like the
+// test above.
+func TestLiveNetworkGrantIsConfigured(t *testing.T) {
+	if os.Getenv("EXECENV_ISOLATION") != "1" {
+		t.Skip("set EXECENV_ISOLATION=1 on a machine with isolation hardware")
+	}
+	kernel := os.Getenv("EXECENV_FIXTURE_KERNEL")
+	rootfs := os.Getenv("EXECENV_FIXTURE_ROOTFS")
+	if kernel == "" || rootfs == "" {
+		t.Skip("set EXECENV_FIXTURE_KERNEL and EXECENV_FIXTURE_ROOTFS")
+	}
+	hash, err := Digest(kernel, rootfs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	size := execenv.Resources{CPUMillis: 1000, MemoryBytes: 256 << 20, DiskBytes: 512 << 20}
+	for _, withTemplate := range []bool{false, true} {
+		name := "boot"
+		if withTemplate {
+			name = "template"
+		}
+		t.Run(name, func(t *testing.T) {
+			cfg := Config{
+				WorkDir:  t.TempDir(),
+				Capacity: size.Times(3),
+				Defaults: size,
+				Allow:    []string{"203.0.113.1"},
+				Images:   []Image{{ID: "fixture", Kernel: kernel, Rootfs: rootfs, Hash: hash}},
+			}
+			if withTemplate {
+				cfg.Shapes = []Shape{{Name: "net", VCPUs: 1, MemoryBytes: size.MemoryBytes}}
+			}
+			host, err := New(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { host.templates.stop() })
+			if withTemplate {
+				deadline := time.Now().Add(5 * time.Minute)
+				for {
+					report, err := host.Ready(t.Context())
+					if err != nil {
+						t.Fatal(err)
+					}
+					ready := 0
+					for _, tpl := range report.Templates {
+						if tpl.Network && tpl.Ready {
+							ready++
+						}
+					}
+					if ready == 1 && len(report.Templates) == 2 {
+						break
+					}
+					if time.Now().After(deadline) {
+						t.Fatalf("network template not ready: %+v", report.Templates)
+					}
+					time.Sleep(time.Second)
+				}
+			}
+			started := time.Now()
+			env, err := host.Ensure(t.Context(), execenv.Spec{ID: execenv.ID("net-" + name), Image: "fixture", Network: execenv.NetworkAllowlist})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("%s grant started in %v", name, time.Since(started))
+			t.Cleanup(func() { _ = env.Revoke(context.Background()) })
+			att := planAttach(env.ID(), nil)
+			fence := runningFence(t, env)
+			sh := execenvtest.StartShell(t, env, fence, "sh")
+			if err := sh.Type(`cat /sys/class/net/eth0/operstate; ip -4 -o addr show eth0; cat /proc/net/route; echo net""-done`); err != nil {
+				t.Fatal(err)
+			}
+			sh.Expect("net-done")
+			seen := sh.Seen()
+			gw := net.ParseIP(att.HostIP).To4()
+			route := fmt.Sprintf("eth0\t00000000\t%02X%02X%02X%02X", gw[3], gw[2], gw[1], gw[0])
+			if !strings.Contains(seen, "\nup") || !strings.Contains(seen, att.GuestIP+"/30") || !strings.Contains(seen, route) {
+				t.Fatalf("guest network: want up, %s/30 and default via %s; saw %q", att.GuestIP, att.HostIP, seen)
+			}
+		})
 	}
 }

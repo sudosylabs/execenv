@@ -12,7 +12,7 @@ import (
 
 func tracedMemory(t *testing.T) (execenv.Env, execenv.ProjectionFence) {
 	t.Helper()
-	host, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Slots: 1})
+	host, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Capacity: execenv.DefaultGrant.Times(1)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +30,7 @@ func tracedMemory(t *testing.T) (execenv.Env, execenv.ProjectionFence) {
 func TestProcessConformance(t *testing.T) {
 	execenvtest.RunProcesses(t, func(t *testing.T) execenvtest.Traced {
 		env, fence := tracedMemory(t)
-		return execenvtest.Traced{Env: env, Fence: fence, Workload: execenvtest.TerminalWorkload(t, env)}
+		return execenvtest.Traced{Env: env, Fence: fence, Workload: execenvtest.ShellWorkload(t, env, fence)}
 	})
 }
 
@@ -38,15 +38,11 @@ func TestProcessConformance(t *testing.T) {
 // command, and its own exit.
 func TestShellRecordsItsCommandLines(t *testing.T) {
 	env, fence := tracedMemory(t)
-	term, err := env.Attach(t.Context(), execenv.AttachRequest{})
-	if err != nil {
+	sh := execenvtest.StartShell(t, env, fence, "sh")
+	if err := sh.Type("NAME=x\necho $NAME\nmissing a\nexit"); err != nil {
 		t.Fatal(err)
 	}
-	out := execenvtest.Watch(t, term)
-	if _, err := term.Write([]byte("NAME=x\necho $NAME\nmissing a\nexit\n")); err != nil {
-		t.Fatal(err)
-	}
-	out.WaitFor("not found")
+	sh.Expect("not found")
 	var events []execenv.ProcessEvent
 	deadline := time.Now().Add(5 * time.Second)
 	for len(events) < 6 && time.Now().Before(deadline) {
@@ -71,7 +67,8 @@ func TestShellRecordsItsCommandLines(t *testing.T) {
 	if !slices.Equal(missing.Argv, []string{"missing", "a"}) || events[4].PID != missing.PID || *events[4].ExitCode != 127 {
 		t.Fatalf("unknown command: %+v %+v", missing, events[4])
 	}
-	if events[5].PID != shell.PID || *events[5].ExitCode != 0 {
+	// A bare exit leaves with the last command's status, as POSIX says.
+	if events[5].PID != shell.PID || *events[5].ExitCode != 127 {
 		t.Fatalf("shell exit: %+v", events[5])
 	}
 }

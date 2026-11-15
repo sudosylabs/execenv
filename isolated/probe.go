@@ -1,6 +1,7 @@
 package isolated
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,10 +20,14 @@ const (
 )
 
 // probePlatform fails closed unless this machine can run isolated grants:
-// Linux, a usable isolation device, and both supervisor processes.
+// Linux, a usable isolation device, both supervisor processes, and a work
+// directory where device nodes work.
 func probePlatform(cfg Config) error {
 	if runtime.GOOS != "linux" {
 		return execenv.ErrUnavailable
+	}
+	if err := checkDeviceNodes(cfg.WorkDir); err != nil {
+		return errors.Join(execenv.ErrUnavailable, err)
 	}
 	device := cfg.Device
 	if device == "" {

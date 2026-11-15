@@ -1,8 +1,11 @@
 SHELL := /bin/sh
 
-.PHONY: check test test-race vet build bake isolation network certify
+.PHONY: check test test-race vet generate generated build bake isolation network certify
 
 PKG := github.com/sudosylabs/execenv
+# buf compiles proto/ into internal/gen. It runs from its module so building
+# execenv never needs it; the code generators are go.mod tools.
+BUF := go run github.com/bufbuild/buf/cmd/buf@v1.74.0
 TAG ?= $(shell git describe --tags --exact-match 2>/dev/null || true)
 VERSION ?= $(patsubst v%,%,$(TAG))
 ifeq ($(VERSION),)
@@ -14,7 +17,17 @@ BUILD := $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo dev)
 endif
 LDFLAGS := -X $(PKG).Release=$(VERSION) -X $(PKG).Build=$(BUILD) -X $(PKG).Tag=$(TAG)
 
-check: test test-race vet
+check: generated test test-race vet
+
+# generate rewrites internal/gen from proto/. Generated code is committed.
+generate:
+	$(BUF) lint
+	$(BUF) generate
+
+# generated fails when internal/gen does not match proto/.
+generated: generate
+	@git diff --exit-code -- internal/gen || (echo "internal/gen is stale: run make generate" >&2; exit 1)
+	@test -z "$$(git status --porcelain -- internal/gen)" || (echo "internal/gen has untracked files: run make generate and commit" >&2; exit 1)
 
 build:
 	go build -ldflags '$(LDFLAGS)' -o execenv ./cmd/execenv

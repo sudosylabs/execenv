@@ -3,6 +3,7 @@
 package daemon_test
 
 import (
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"io"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/daemon"
+	"github.com/sudosylabs/execenv/execenvtest"
 	"github.com/sudosylabs/execenv/internal/ctl"
 	"github.com/sudosylabs/execenv/isolated"
 	"github.com/sudosylabs/execenv/remote"
@@ -25,8 +27,8 @@ import (
 const harvestBody = "from-host\n"
 
 // TestCertifyRemoteHarvestsGuestFile is the certification path: a
-// bootstrapped host process, the client is remote.New, Attach is a guest
-// shell, and a guest-created file is harvested as an observation with its
+// bootstrapped host process, the client is remote.New, the process is a
+// guest login shell, and a guest-created file is harvested as an observation with its
 // captured content. Not an echo PTY.
 func TestCertifyRemoteHarvestsGuestFile(t *testing.T) {
 	client := startCertifyHost(t)
@@ -49,11 +51,7 @@ func TestCertifyRemoteHarvestsGuestFile(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	term, err := env.Attach(t.Context(), execenv.AttachRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = term.Close() })
+	term := execenvtest.OpenShell(t, env, fence, "sh")
 	go func() { _, _ = io.Copy(io.Discard, term) }()
 	if _, err := term.Write([]byte("cat hello.txt > seen.txt\n")); err != nil {
 		t.Fatal(err)
@@ -105,8 +103,9 @@ func freeLoopback(t *testing.T) string {
 func startHostProcess(t *testing.T, bin, configPath, addr string) {
 	t.Helper()
 	cmd := exec.Command(bin, "-config", configPath)
+	var stderr bytes.Buffer
 	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
+	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +122,7 @@ func startHostProcess(t *testing.T, bin, configPath, addr string) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatal("host process did not listen")
+	t.Fatalf("host process did not listen: %s", stderr.String())
 }
 
 func harvestTLS(t *testing.T, certPath string) *tls.Config {
@@ -163,14 +162,14 @@ func startCertifyHost(t *testing.T) *remote.Client {
 		t.Fatalf("build execenv: %v\n%s", err, out)
 	}
 	opts := ctl.Options{
-		Prefix:  filepath.Join(root, "usr", "local"),
-		Sysconf: filepath.Join(root, "etc", "execenv"),
-		State:   filepath.Join(root, "var", "lib", "execenv"),
-		Listen:  "127.0.0.1:0",
-		Slots:   1,
-		Execenv: stub,
-		NoStart: true,
-		NoFetch: true,
+		Prefix:   filepath.Join(root, "usr", "local"),
+		Sysconf:  filepath.Join(root, "etc", "execenv"),
+		State:    filepath.Join(root, "var", "lib", "execenv"),
+		Listen:   "127.0.0.1:0",
+		Capacity: daemon.Resources{CPUMillis: 1000, MemoryBytes: 512 << 20, DiskBytes: 2 << 30},
+		Execenv:  stub,
+		NoStart:  true,
+		NoFetch:  true,
 	}
 	if err := ctl.Bootstrap(opts, io.Discard); err != nil {
 		t.Fatalf("bootstrap: %v", err)

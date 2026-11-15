@@ -23,7 +23,6 @@ const (
 	supervisorName  = "jailer"
 	runtimeVersion  = "v1.16.1"
 	defaultListen   = "0.0.0.0:8443"
-	defaultSlots    = 8
 	defaultPrefix   = "/usr/local"
 	defaultSysconf  = "/etc/execenv"
 	defaultState    = "/var/lib/execenv"
@@ -34,7 +33,6 @@ const (
 	securityTLS     = "tls"
 	securityLocal   = "insecure_local"
 	adapterIsolated = "isolated"
-	defaultGrace    = "30s"
 	mkfsName        = "mkfs.ext4"
 )
 
@@ -50,8 +48,10 @@ type Options struct {
 	State   string
 	Device  string
 	Listen  string
-	Slots   int
-	Execenv string
+	// Capacity overrides what bootstrap measures on the machine; zero
+	// fields keep the measurement, or what an earlier bootstrap wrote.
+	Capacity daemon.Resources
+	Execenv  string
 	// Mkfs is the ext4 formatter for workspace disks. Empty looks it up on
 	// PATH.
 	Mkfs       string
@@ -61,7 +61,8 @@ type Options struct {
 	ReleaseURL string
 	// Reload, if set, replaces the systemd reload after catalog changes.
 	Reload func() error
-	// Force restarts the daemon even while it holds grants, destroying
+	// Force restarts a daemon whose grants do not survive a restart even
+	// while it holds some, destroying
 	// them. Without it install, remove and upgrade refuse to restart a
 	// daemon that holds grants.
 	Force bool
@@ -77,7 +78,6 @@ func Defaults() Options {
 		State:   defaultState,
 		Device:  defaultDevice,
 		Listen:  defaultListen,
-		Slots:   defaultSlots,
 	}
 }
 
@@ -97,9 +97,6 @@ func (o Options) resolved() Options {
 	}
 	if out.Listen == "" {
 		out.Listen = defaultListen
-	}
-	if out.Slots <= 0 {
-		out.Slots = defaultSlots
 	}
 	return out
 }
@@ -350,7 +347,7 @@ func writeHostConfig(opts Options, mkfs string) error {
 	doc.Device = opts.Device
 	doc.Runtime = opts.runtimePath()
 	doc.Supervisor = opts.supervisorPath()
-	doc.Slots = opts.Slots
+	doc.Capacity = capacityFor(opts, existing.Capacity)
 	doc.OperatorSocket = opts.operatorSocket()
 	if doc.Adapter == "" {
 		doc.Adapter = adapterIsolated
@@ -358,7 +355,6 @@ func writeHostConfig(opts Options, mkfs string) error {
 	if first {
 		doc.Network = networkNone
 		doc.Allow = nil
-		doc.GraceText = defaultGrace
 	}
 	return daemon.Save(opts.configPath(), doc)
 }
@@ -389,7 +385,9 @@ func writeUnit(opts Options) error {
 		"Type=simple\n" +
 		"ExecStart=" + opts.execenvPath() + " -config " + opts.configPath() + "\n" +
 		"Restart=on-failure\n" +
-		"KillMode=control-group\n" +
+		// Grants' machines outlive a restart of the daemon, which adopts
+		// them again; stopping the unit stops only the daemon.
+		"KillMode=process\n" +
 		"NoNewPrivileges=true\n" +
 		"\n" +
 		"[Install]\n" +

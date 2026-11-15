@@ -9,32 +9,45 @@ import (
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/agent"
 	"github.com/sudosylabs/execenv/internal/control"
-	"github.com/sudosylabs/execenv/internal/terminal"
+	"github.com/sudosylabs/execenv/internal/lifetime"
+	"github.com/sudosylabs/execenv/internal/procs"
 )
 
 type environment struct {
 	control *control.State
-	// terminal keeps the grant's shell across client detaches. The guest
-	// ends its shell when its PTY closes, so the host closes that PTY only
-	// when it hangs the session up.
-	terminal *terminal.Manager
-	mu       sync.Mutex
-	id       execenv.ID
-	image    Image
-	network  execenv.Network
-	host     *Host
-	inst     instance
-	client   *agent.Client
-	treeDir  string
-	frozen   bool
-	paused   bool
-	revoked  bool
+	// procs keeps the grant's processes: their history and input on the
+	// host, the processes themselves in the guest.
+	procs *procs.Manager
+	mu    sync.Mutex
+	id    execenv.ID
+	spec  execenv.Spec
+	image Image
+	host  *Host
+	timer *lifetime.Timer
+	// public is what callers hold: the environment, watched for activity
+	// when the grant has a timeout.
+	public  execenv.Env
+	inst    instance
+	client  *agent.Client
+	treeDir string
+	frozen  bool
+	paused  bool
+	revoked bool
 	// lost is set when the machine ended without a revoke. It implies
 	// revoked: the environment is gone, but calls report ErrLost.
 	lost bool
 	// gone closes once the environment has been stopped, by revoke or loss.
 	gone     chan struct{}
 	goneOnce sync.Once
+	// started is when the grant was first ensured; its wall timeout runs
+	// from then, across restarts.
+	started time.Time
+	// adoptPending says the host takes over the guest's processes when the
+	// grant thaws: it was adopted paused, or it was suspended.
+	adoptPending bool
+	// suspended says the grant's machine is saved to disk and stopped; a
+	// thaw restores it.
+	suspended bool
 }
 
 func (e *environment) ID() execenv.ID { return e.id }
@@ -76,47 +89,9 @@ func (e *environment) dial(ctx context.Context) error {
 	return nil
 }
 
-func (e *environment) Attach(ctx context.Context, request execenv.AttachRequest) (execenv.Terminal, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, execenv.Error("attach", err)
-	}
-	if _, err := e.live("attach"); err != nil {
-		return nil, err
-	}
-	return e.terminal.Attach(ctx, request)
-}
-
-// startShell is the terminal session's Starter: one guest login shell.
-func (e *environment) startShell(ctx context.Context, win execenv.Window) (terminal.Shell, error) {
-	client, err := e.live("attach")
-	if err != nil {
-		return nil, err
-	}
-	pty, err := client.Attach(ctx, win)
-	if err != nil {
-		return nil, err
-	}
-	return guestShell{Shell: pty, env: e}, nil
-}
-
-// guestShell reports why a shell's guest link broke. A broken link means
-// the machine is gone; the watcher decides moments later whether that was a
-// revoke or a loss, and the terminal session ends with that reason.
-type guestShell struct {
-	terminal.Shell
-	env *environment
-}
-
-// lossVerdict bounds how long a broken shell waits for the watcher.
+// lossVerdict bounds how long a process whose link broke waits for the
+// watcher's verdict.
 const lossVerdict = 10 * time.Second
-
-func (s guestShell) Read(p []byte) (int, error) {
-	n, err := s.Shell.Read(p)
-	if err != nil && errors.Is(err, execenv.ErrConnection) {
-		err = s.env.endCause(err)
-	}
-	return n, err
-}
 
 // endCause waits until the environment has been stopped and returns why:
 // ErrLost or ErrRevoked. It returns fallback if no verdict comes in time.
@@ -136,27 +111,49 @@ func (e *environment) endCause(fallback error) error {
 	return execenv.ErrRevoked
 }
 
-// watch waits for the machine or its guest link to end. Either one ending
-// before a revoke is a loss: the guest link cannot be re-established
-// without losing the guest's terminal and process log, so the host does
-// not try.
+// watch waits for the machine to end. Its ending before a revoke is a loss.
 func (e *environment) watch() {
 	e.mu.Lock()
-	inst, client := e.inst, e.client
+	inst := e.inst
 	e.mu.Unlock()
-	if inst == nil || client == nil {
+	if inst == nil {
 		return
 	}
 	select {
 	case <-e.gone:
 		return
 	case <-inst.Done():
-	case <-client.Done():
 	}
-	e.host.lose(e)
+	// A suspend stops the machine on purpose.
+	e.mu.Lock()
+	current := e.inst == inst
+	e.mu.Unlock()
+	if current {
+		e.host.lose(e)
+	}
 }
 
-// freeze stops PTY and journal I/O and pauses the microVM. The instance is
+// watchLink waits for a guest link to end. A link that breaks while the
+// host runs means the guest helper died, which is a loss; only a restarted
+// host dials a guest again.
+func (e *environment) watchLink(client *agent.Client) {
+	if client == nil {
+		return
+	}
+	select {
+	case <-e.gone:
+		return
+	case <-client.Done():
+	}
+	e.mu.Lock()
+	current := e.client == client
+	e.mu.Unlock()
+	if current {
+		e.host.lose(e)
+	}
+}
+
+// freeze stops process and journal I/O and pauses the microVM. The instance is
 // kept so thaw does not boot a new machine.
 func (e *environment) freeze(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
@@ -170,9 +167,11 @@ func (e *environment) freeze(ctx context.Context) error {
 	}
 	e.frozen = true
 	client, inst, paused := e.client, e.inst, e.paused
+	// A suspended machine is saved and stopped: frozen already.
+	suspended := e.suspended
 	e.mu.Unlock()
-	e.terminal.Freeze()
-	if paused {
+	e.manager().Freeze()
+	if paused || suspended {
 		return nil
 	}
 	if client == nil || inst == nil {
@@ -203,12 +202,18 @@ func (e *environment) thaw(ctx context.Context) error {
 		e.mu.Unlock()
 		return err
 	}
-	client, inst, frozen := e.client, e.inst, e.frozen
+	client, inst, frozen, pending, suspended := e.client, e.inst, e.frozen, e.adoptPending, e.suspended
 	e.mu.Unlock()
 	if !frozen {
 		return nil
 	}
-	if client == nil || inst == nil {
+	if suspended {
+		if err := e.resume(ctx); err != nil {
+			return execenv.Error("thaw", err)
+		}
+		return nil
+	}
+	if inst == nil || (client == nil && !pending) {
 		return execenv.Error("thaw", execenv.ErrUnavailable)
 	}
 	if err := inst.Resume(ctx); err != nil {
@@ -217,6 +222,16 @@ func (e *environment) thaw(ctx context.Context) error {
 	e.mu.Lock()
 	e.paused = false
 	e.mu.Unlock()
+	// A grant adopted paused meets its guest now.
+	if client == nil {
+		if err := e.dial(ctx); err != nil {
+			return execenv.Error("thaw", err)
+		}
+		e.mu.Lock()
+		client = e.client
+		e.mu.Unlock()
+		go e.watchLink(client)
+	}
 	if err := client.Reopen(ctx); err != nil {
 		// A failed recovery never leaves a runnable guest behind an apparently
 		// closed gate. Use a separate bounded context if the caller timed out.
@@ -228,10 +243,18 @@ func (e *environment) thaw(ctx context.Context) error {
 		e.mu.Unlock()
 		return execenv.Error("thaw", errors.Join(err, pauseErr))
 	}
+	e.manager().Thaw()
+	if pending {
+		if err := e.adoptProcesses(ctx, client); err != nil {
+			return execenv.Error("thaw", err)
+		}
+		e.mu.Lock()
+		e.adoptPending = false
+		e.mu.Unlock()
+	}
 	e.mu.Lock()
 	e.frozen = false
 	e.mu.Unlock()
-	e.terminal.Thaw()
 	return nil
 }
 
@@ -249,6 +272,7 @@ func (e *environment) revoke() error {
 // stop ends the environment for cause, ErrRevoked or ErrLost, and releases
 // its machine. A failed release is retried by the next stop.
 func (e *environment) stop(cause error) error {
+	e.timer.Stop()
 	e.mu.Lock()
 	e.revoked = true
 	if errors.Is(cause, execenv.ErrLost) {
@@ -259,11 +283,13 @@ func (e *environment) stop(cause error) error {
 	e.client = nil
 	inst := e.inst
 	e.mu.Unlock()
+	// Processes end with the cause before the verdict is out, so a reader
+	// whose link broke sees why.
+	e.manager().End(cause)
 	e.goneOnce.Do(func() { close(e.gone) })
 	if client != nil {
 		client.Hangup(cause)
 	}
-	e.terminal.End(cause)
 	if client != nil {
 		_ = client.Close()
 	}
@@ -278,6 +304,34 @@ func (e *environment) stop(cause error) error {
 		e.mu.Unlock()
 	}
 	return nil
+}
+
+// UpdateLimits replaces the grant's disk and network limits in its running
+// machine.
+func (e *environment) UpdateLimits(ctx context.Context, fence execenv.ProjectionFence, limits execenv.Limits) error {
+	if err := execenv.ValidateLimits(limits); err != nil {
+		return execenv.Error("update_limits", err)
+	}
+	err := e.control.Run(ctx, fence, func() error {
+		e.mu.Lock()
+		inst := e.inst
+		network := e.spec.Network
+		e.mu.Unlock()
+		if inst == nil {
+			return execenv.Error("update_limits", execenv.ErrUnavailable)
+		}
+		if err := inst.UpdateLimits(ctx, limits, network == execenv.NetworkAllowlist); err != nil {
+			return execenv.Error("update_limits", err)
+		}
+		e.mu.Lock()
+		e.spec.Limits = limits
+		e.mu.Unlock()
+		return nil
+	})
+	if err == nil {
+		e.persist()
+	}
+	return err
 }
 
 func (e *environment) live(op string) (*agent.Client, error) {

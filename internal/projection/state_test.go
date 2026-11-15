@@ -2,19 +2,21 @@ package projection
 
 import (
 	"errors"
-	"github.com/sudosylabs/execenv"
 	"testing"
+
+	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/tree"
 )
 
 func testProjection(t *testing.T) (*State, execenv.ProjectionFence) {
 	t.Helper()
 	s := New()
 	fence := execenv.ProjectionFence{ExecutionGrantID: "grant", EnvironmentEpoch: "epoch", FenceRevision: 1}
-	ref, err := s.Put([]byte("old"))
+	ref, err := s.Put(blob("old"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.Initialize(execenv.ProjectionInitialization{Fence: fence, MutationID: "init", WorkspaceCursor: 5, Entries: []execenv.ProjectionEntry{{EntryID: "dir-id", Kind: execenv.ProjectionDirectory, Path: "dir"}, {EntryID: "file-id", Kind: execenv.ProjectionFile, Path: "dir/file", ContentVersion: "v1", Content: &ref}}}, func(execenv.Tree) error { return nil })
+	_, err = s.Initialize(execenv.ProjectionInitialization{Fence: fence, MutationID: "init", WorkspaceCursor: 5, Entries: []execenv.ProjectionEntry{{EntryID: "dir-id", Kind: execenv.ProjectionDirectory, Path: "dir"}, {EntryID: "file-id", Kind: execenv.ProjectionFile, Path: "dir/file", ContentVersion: "v1", Content: &ref}}}, func(tree.Tree) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -22,7 +24,7 @@ func testProjection(t *testing.T) (*State, execenv.ProjectionFence) {
 }
 func TestApplyValidatesWholeBatchBeforeCommitAndPreservesReceipts(t *testing.T) {
 	s, fence := testProjection(t)
-	ref, err := s.Put([]byte("new"))
+	ref, err := s.Put(blob("new"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,15 +63,13 @@ func TestApplyValidatesWholeBatchBeforeCommitAndPreservesReceipts(t *testing.T) 
 }
 func TestContentReferencesAreImmutableScopedAndConsumedOnlyOnSuccess(t *testing.T) {
 	s := New()
-	body := []byte("bytes")
-	ref, err := s.Put(body)
+	ref, err := s.Put(blob("bytes"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	body[0] = 'X'
 	got, err := s.content(&ref)
-	if err != nil || string(got) != "bytes" {
-		t.Fatal("upload retains mutable caller bytes")
+	if err != nil || got != blob("bytes") {
+		t.Fatal("upload lost its body")
 	}
 	other := New()
 	if _, err := other.content(&ref); !errors.Is(err, execenv.ErrConflict) {
@@ -105,12 +105,12 @@ func TestInitializationRequiresOrderedParentsAndUniqueIdentities(t *testing.T) {
 	s := New()
 	fence := execenv.ProjectionFence{ExecutionGrantID: "grant", EnvironmentEpoch: "epoch", FenceRevision: 1}
 	request := execenv.ProjectionInitialization{Fence: fence, MutationID: "init", Entries: []execenv.ProjectionEntry{{EntryID: "child", Path: "parent/child", Kind: execenv.ProjectionDirectory}, {EntryID: "parent", Path: "parent", Kind: execenv.ProjectionDirectory}}}
-	if _, err := s.Initialize(request, func(execenv.Tree) error { t.Fatal("unordered parent committed"); return nil }); !errors.Is(err, execenv.ErrConflict) {
+	if _, err := s.Initialize(request, func(tree.Tree) error { t.Fatal("unordered parent committed"); return nil }); !errors.Is(err, execenv.ErrConflict) {
 		t.Fatal(err)
 	}
 	request.Entries[0], request.Entries[1] = request.Entries[1], request.Entries[0]
 	request.Entries[1].EntryID = "parent"
-	if _, err := s.Initialize(request, func(execenv.Tree) error { t.Fatal("duplicate identity committed"); return nil }); !errors.Is(err, execenv.ErrConflict) {
+	if _, err := s.Initialize(request, func(tree.Tree) error { t.Fatal("duplicate identity committed"); return nil }); !errors.Is(err, execenv.ErrConflict) {
 		t.Fatal(err)
 	}
 }

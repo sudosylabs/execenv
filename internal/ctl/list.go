@@ -105,8 +105,11 @@ func Remove(opts Options, id string, stdout io.Writer) error {
 		kept = append(kept, img)
 	}
 	if dropped != nil {
-		// Removing a disk restarts the daemon, so refuse before deleting
-		// anything a live grant may still boot from.
+		// A live grant runs from the image's disks, so it is never removed
+		// from under one; and removing a disk restarts the daemon.
+		if reply, err := opts.operate(daemon.OperatorStatus); err == nil && imageInUse(reply, id) {
+			return wrap("remove", fmt.Errorf("%w: live grants were started from %s; revoke them first", errImageInUse, id))
+		}
 		if err := opts.guardRestart(); err != nil {
 			return wrap("remove", err)
 		}

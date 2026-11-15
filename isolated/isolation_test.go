@@ -36,6 +36,10 @@ func requireLive(t *testing.T) {
 	}
 }
 
+// liveGrant is the size of every live test grant: small enough that a
+// laptop runs a handful at once.
+var liveGrant = execenv.Resources{CPUMillis: 1000, MemoryBytes: 256 << 20, DiskBytes: 512 << 20}
+
 func liveHost(t *testing.T, slots int, workDir string) *Host {
 	t.Helper()
 	requireLive(t)
@@ -52,9 +56,9 @@ func liveHost(t *testing.T, slots int, workDir string) *Host {
 		workDir = t.TempDir()
 	}
 	host, err := New(Config{
-		WorkDir:   workDir,
-		Slots:     slots,
-		DiskBytes: 512 << 20,
+		WorkDir:  workDir,
+		Capacity: liveGrant.Times(int64(slots)),
+		Defaults: liveGrant,
 		Images: []Image{
 			{ID: "default", Kernel: kernel, Rootfs: rootfs, Hash: hash},
 			{ID: "alt", Kernel: kernel, Rootfs: rootfs, Hash: hash},
@@ -86,7 +90,6 @@ func TestLiveConformance(t *testing.T) {
 	execenvtest.Run(t, func(t *testing.T, cfg execenvtest.Config) execenv.Host {
 		t.Helper()
 		host := liveHost(t, 2, "")
-		host.cfg.TerminalGrace = cfg.TerminalGrace
 		t.Cleanup(func() { revokeAll(host) })
 		return host
 	})
@@ -100,7 +103,7 @@ func TestLiveTouchIsObserved(t *testing.T) {
 		t.Fatal(err)
 	}
 	fence := liveJournal(t, env)
-	term := liveShell(t, env)
+	term := liveShell(t, env, fence)
 	if _, err := term.Write([]byte("touch seen.txt\n")); err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +121,7 @@ func TestLiveScratchHomeAndDiskWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	fence := liveJournal(t, env)
-	term := liveShell(t, env)
+	term := liveShell(t, env, fence)
 	script := "mkdir -p \"$HOME/.cache/pip\" && echo x > \"$HOME/.cache/pip/y\" && " +
 		"dd if=/dev/zero of=/workspace/big bs=1M count=256 2>/dev/null && rm /workspace/big && " +
 		"printf '%s\\n%s\\n' \"$HOME\" \"$(pwd)\" > where.txt\n"
@@ -138,9 +141,9 @@ func TestLiveScratchHomeAndDiskWorkspace(t *testing.T) {
 }
 
 // TestLiveStaleCleanupAfterCrash abandons a running grant without revoke,
-// as a crashed daemon would, then constructs a new host on the same work
-// directory. The new host must release the grant's processes, jails and
-// grant links.
+// as a crashed daemon would, and loses its state file, so the new host on
+// the same work directory has nothing to adopt it by. The new host must
+// release the grant's processes, jails and grant links.
 func TestLiveStaleCleanupAfterCrash(t *testing.T) {
 	workDir := t.TempDir()
 	first := liveHost(t, 1, workDir)
@@ -149,6 +152,9 @@ func TestLiveStaleCleanupAfterCrash(t *testing.T) {
 	}
 	// A crash: the jailed monitor keeps running, the lock is released.
 	_ = first.lock.Close()
+	if err := os.Remove(statePath(workDir, "grant-1")); err != nil {
+		t.Fatal(err)
+	}
 	second := liveHost(t, 1, workDir)
 	t.Cleanup(func() { revokeAll(second) })
 	pool := newJailUIDs(0)
@@ -161,8 +167,9 @@ func TestLiveStaleCleanupAfterCrash(t *testing.T) {
 			t.Fatalf("jailed process %s survived restart", entry.Name())
 		}
 	}
-	if _, err := os.Stat(filepath.Join(workDir, jailsDir)); err == nil {
-		if left, _ := os.ReadDir(filepath.Join(workDir, jailsDir)); len(left) != 0 {
+	execs, _ := os.ReadDir(filepath.Join(workDir, jailsDir))
+	for _, exec := range execs {
+		if left, _ := os.ReadDir(filepath.Join(workDir, jailsDir, exec.Name())); len(left) != 0 {
 			t.Fatalf("stale jails survived: %v", left)
 		}
 	}
@@ -177,9 +184,9 @@ func TestLiveStaleCleanupAfterCrash(t *testing.T) {
 func TestLiveReadyRequiresDevice(t *testing.T) {
 	requireLive(t)
 	host, err := New(Config{
-		WorkDir: t.TempDir(),
-		Slots:   1,
-		Images:  []Image{writeCatalogImage(t, t.TempDir(), "default", "rootfs")},
+		WorkDir:  t.TempDir(),
+		Capacity: execenv.DefaultGrant.Times(1),
+		Images:   []Image{writeCatalogImage(t, t.TempDir(), "default", "rootfs")},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -208,13 +215,9 @@ func liveJournal(t *testing.T, env execenv.Env) execenv.ProjectionFence {
 	return fence
 }
 
-func liveShell(t *testing.T, env execenv.Env) execenv.Terminal {
+func liveShell(t *testing.T, env execenv.Env, fence execenv.ProjectionFence) *execenvtest.ShellConn {
 	t.Helper()
-	term, err := env.Attach(t.Context(), execenv.AttachRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = term.Close() })
+	term := execenvtest.OpenShell(t, env, fence, "sh")
 	go func() { _, _ = io.Copy(io.Discard, term) }()
 	return term
 }
@@ -280,6 +283,53 @@ func TestLiveProcessConformance(t *testing.T) {
 			t.Fatal(err)
 		}
 		fence := runningFence(t, env)
-		return execenvtest.Traced{Env: env, Fence: fence, Workload: execenvtest.TerminalWorkload(t, env)}
+		return execenvtest.Traced{Env: env, Fence: fence, Workload: execenvtest.ShellWorkload(t, env, fence)}
 	})
+}
+
+// An Observe after one change in a 5,000-file workspace reads that change,
+// not the workspace: it reports exactly it, and it is quick.
+func TestLiveObserveCostsTheChangeNotTheTree(t *testing.T) {
+	host := liveHost(t, 1, "")
+	t.Cleanup(func() { revokeAll(host) })
+	env, err := host.Ensure(t.Context(), execenv.Spec{ID: "big-tree", Image: "default"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence := liveJournal(t, env)
+	sh := execenvtest.StartShell(t, env, fence, "sh")
+	// Built in halves and acknowledged as read: the log keeps at most 4096
+	// unacknowledged events.
+	var cursor uint64
+	for _, half := range []string{"1 25", "26 50"} {
+		if err := sh.Type(`for d in $(seq ` + half + `); do mkdir -p t/$d; for f in $(seq 1 100); do echo $d-$f > t/$d/$f; done; done; echo half""-made`); err != nil {
+			t.Fatal(err)
+		}
+		sh.Expect("half-made")
+		sh = execenvtest.StartShell(t, env, fence, "sh-"+strings.ReplaceAll(half, " ", "-"))
+		for {
+			page, err := env.Observe(t.Context(), fence, cursor, 128)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(page.Observations) == 0 {
+				break
+			}
+			cursor = page.Observations[len(page.Observations)-1].HostSequence
+			if err := env.AcknowledgeObservations(t.Context(), fence, cursor); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := sh.Type(`echo changed > t/25/50; echo one""-change`); err != nil {
+		t.Fatal(err)
+	}
+	sh.Expect("one-change")
+	started := time.Now()
+	page, err := env.Observe(t.Context(), fence, cursor, 128)
+	took := time.Since(started)
+	if err != nil || len(page.Observations) != 1 || page.Observations[0].Path != "t/25/50" {
+		t.Fatalf("Observe() after one change = %+v, %v", page.Observations, err)
+	}
+	t.Logf("Observe after one change in 5,000 files took %v", took)
 }

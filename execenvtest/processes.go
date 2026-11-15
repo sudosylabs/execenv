@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"slices"
 	"strings"
 	"testing"
@@ -19,6 +18,9 @@ type Workload interface {
 	// Run starts argv once. It need not wait for the command to end; the
 	// suite waits for the process log instead.
 	Run(ctx context.Context, argv []string) error
+	// Start runs argv once as a process of its own under tag, as the
+	// environment's Start does.
+	Start(ctx context.Context, tag string, argv []string) error
 }
 
 // Traced is one running environment, the fence that drives it, and a
@@ -34,24 +36,31 @@ type Traced struct {
 // TracedFactory returns a fresh Traced for one subtest.
 type TracedFactory func(t *testing.T) Traced
 
-// TerminalWorkload runs each command by typing it into env's terminal and
-// discards the output. The suite's commands are /bin/true with plain words,
-// so a real shell starts exactly that program with exactly those words.
-func TerminalWorkload(t *testing.T, env execenv.Env) Workload {
+// ShellWorkload runs each command by typing it into a shell started in env
+// and discards the output. The suite's commands are /bin/true with plain
+// words, so a real shell starts exactly that program with exactly those
+// words.
+func ShellWorkload(t *testing.T, env execenv.Env, fence execenv.ProjectionFence) Workload {
 	t.Helper()
-	term, err := env.Attach(t.Context(), execenv.AttachRequest{})
-	if err != nil {
-		t.Fatalf("Attach() error = %v", err)
-	}
-	go func() { _, _ = io.Copy(io.Discard, term) }()
-	t.Cleanup(func() { _ = term.Close() })
-	return terminalWorkload{term: term}
+	sh := StartShell(t, env, fence, "workload")
+	go func() {
+		for {
+			if _, err := sh.a.Next(context.Background()); err != nil {
+				return
+			}
+		}
+	}()
+	return shellWorkload{sh: sh}
 }
 
-type terminalWorkload struct{ term execenv.Terminal }
+type shellWorkload struct{ sh *TestShell }
 
-func (w terminalWorkload) Run(_ context.Context, argv []string) error {
-	_, err := w.term.Write([]byte(strings.Join(argv, " ") + "\n"))
+func (w shellWorkload) Run(_ context.Context, argv []string) error {
+	return w.sh.Type(strings.Join(argv, " "))
+}
+
+func (w shellWorkload) Start(ctx context.Context, tag string, argv []string) error {
+	_, err := w.sh.env.Start(ctx, w.sh.fence, execenv.ProcessSpec{Tag: tag, Argv: argv})
 	return err
 }
 
@@ -84,6 +93,32 @@ func RunProcesses(t *testing.T, factory TracedFactory) {
 				t.Fatalf("%v started before %v", commands[i], commands[i-1])
 			}
 		}
+	})
+
+	t.Run("a started process carries its tag and its commands none", func(t *testing.T) {
+		p := startTraced(t, factory)
+		base := p.settle()
+		// One at a time: the shell runs its command when it gets to it.
+		check := func(argv []string, start func(), want string) {
+			t.Helper()
+			start()
+			events := p.collect(base, func(events []execenv.ProcessEvent) bool {
+				_, ok := pairs(events, [][]string{argv})
+				return ok
+			})
+			found, _ := pairs(events, [][]string{argv})
+			if tag := events[found[0][0]].Tag; tag != want {
+				t.Fatalf("%v started with tag %q, want %q", argv, tag, want)
+			}
+		}
+		command := []string{"/bin/true", "untagged"}
+		check(command, func() { p.run(command) }, "")
+		tagged := []string{"/bin/true", "tagged"}
+		check(tagged, func() {
+			if err := p.workload.Start(p.t.Context(), "tagged", tagged); err != nil {
+				t.Fatal(err)
+			}
+		}, "tagged")
 	})
 
 	t.Run("acknowledgement trims the log", func(t *testing.T) {

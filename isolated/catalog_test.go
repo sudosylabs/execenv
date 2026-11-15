@@ -12,9 +12,9 @@ import (
 func TestNewRejectsIncompleteCatalog(t *testing.T) {
 	t.Parallel()
 	_, err := New(Config{
-		WorkDir: t.TempDir(),
-		Slots:   1,
-		Images:  []Image{{ID: "default"}},
+		WorkDir:  t.TempDir(),
+		Capacity: execenv.DefaultGrant.Times(1),
+		Images:   []Image{{ID: "default"}},
 	})
 	if !errors.Is(err, execenv.ErrInvalid) {
 		t.Fatalf("New() error = %v, want ErrInvalid", err)

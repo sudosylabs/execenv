@@ -4,16 +4,16 @@ package agent
 
 import (
 	"os"
+	"os/exec"
 
 	"github.com/sudosylabs/execenv"
-	"github.com/sudosylabs/execenv/internal/workload"
 )
 
 func isPtyHangup(error) bool {
 	return false
 }
 
-func startShell(string, string, execenv.Window, *workload.Group) (*shell, error) {
+func startPTY(*exec.Cmd, execenv.Window) (*os.File, error) {
 	return nil, execenv.ErrUnavailable
 }
 

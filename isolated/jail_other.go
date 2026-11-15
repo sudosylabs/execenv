@@ -10,6 +10,6 @@ func setTapOwner(string, int) error { return execenv.ErrUnavailable }
 
 func cgroupV2() bool { return false }
 
-func killJailed(*jailUIDs) {}
+func killJailed(*jailUIDs, map[int]bool) {}
 
 func removeJailCgroups(string) {}

@@ -26,6 +26,7 @@ const (
 	jailDisk    = diskName
 	jailConfig  = "machine.json"
 	jailLinkSoc = "guest.sock"
+	jailAPISock = "api.sock"
 	// defaultJailUIDBase is the first host uid (and gid) given to a jailed
 	// monitor. Each live grant holds its own uid so one escaped monitor
 	// cannot signal, trace or read another. The range sits far above
@@ -143,6 +144,13 @@ func (p *jailUIDs) acquire() (int, error) {
 		}
 	}
 	return 0, execenv.ErrCapacity
+}
+
+// claim marks uid used by an adopted machine.
+func (p *jailUIDs) claim(uid int) {
+	p.mu.Lock()
+	p.used[uid] = true
+	p.mu.Unlock()
 }
 
 func (p *jailUIDs) release(uid int) {

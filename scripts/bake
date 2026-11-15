@@ -107,6 +107,13 @@ here=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 cp "$here/guest.sh" "$STAGING/usr/local/libexec/execenv-guest"
 chmod 755 "$STAGING/usr/local/libexec/execenv-guest"
 
+# Templates save a booted guest and start many grants from it, so the image
+# carries no identity of its own to share: no machine id and no saved
+# random seed. Guest init sets the machine id from each grant's start.
+rm -f "$STAGING/etc/machine-id" "$STAGING/var/lib/dbus/machine-id"
+rm -f "$STAGING/var/lib/systemd/random-seed" "$STAGING/var/lib/urandom/random-seed"
+: >"$STAGING/etc/machine-id"
+
 if [ -z "$SIZE" ]; then
 	bytes=$(du -sk "$STAGING" | awk '{print $1 * 1024}')
 	SIZE=$((bytes * 2 + 64 * 1024 * 1024))

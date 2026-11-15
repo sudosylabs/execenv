@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package execenv.v1;
+
+import "execenv/v1/common.proto";
+
+option go_package = "github.com/sudosylabs/execenv/internal/gen/execenv/v1;execenvv1";
+
+// ControlService moves one incarnation of a grant between its states.
+service ControlService {
+  rpc Control(ControlRequest) returns (ControlReceipt);
+  rpc ControlStatus(ControlStatusRequest) returns (ControlReceipt);
+  // UpdateLimits replaces the grant's device limits while it runs.
+  rpc UpdateLimits(UpdateLimitsRequest) returns (UpdateLimitsResponse);
+}
+
+message UpdateLimitsRequest {
+  Fence fence = 1;
+  Limits limits = 2;
+}
+
+message UpdateLimitsResponse {}
+
+enum ControlState {
+  CONTROL_STATE_UNSPECIFIED = 0;
+  CONTROL_STATE_RUNNING = 1;
+  CONTROL_STATE_FROZEN = 2;
+  CONTROL_STATE_REVOKED = 3;
+}
+
+message ControlRequest {
+  Fence fence = 1;
+  ControlState state = 2;
+}
+
+message ControlStatusRequest {
+  string grant_id = 1;
+  string epoch = 2;
+}
+
+message ControlReceipt {
+  Fence fence = 1;
+  ControlState state = 2;
+  bool confirmed = 3;
+}

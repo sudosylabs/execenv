@@ -9,8 +9,8 @@ import (
 
 func TestMoveOutBeforeRecursiveDelete(t *testing.T) {
 	directory := Node{Identity: "dir-id", Kind: execenv.ProjectionDirectory}
-	survivor := Node{Identity: "file-id", Kind: execenv.ProjectionFile, Data: []byte("keep")}
-	removed := Node{Identity: "other-id", Kind: execenv.ProjectionFile, Data: []byte("remove")}
+	survivor := Node{Identity: "file-id", Kind: execenv.ProjectionFile, Content: blob("keep")}
+	removed := Node{Identity: "other-id", Kind: execenv.ProjectionFile, Content: blob("remove")}
 	before := &Snapshot{Nodes: map[string]Node{"dir": directory, "dir/survivor": survivor, "dir/removed": removed}}
 	after := &Snapshot{Nodes: map[string]Node{"survivor": survivor}}
 	changes, err := Diff(before, after)

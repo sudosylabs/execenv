@@ -4,6 +4,8 @@ package control
 import (
 	"context"
 	"crypto/rand"
+	"sync/atomic"
+
 	"github.com/sudosylabs/execenv"
 )
 
@@ -17,11 +19,38 @@ type State struct {
 	// then terminal like a revoke, but every fenced call reports ErrLost so
 	// the caller can tell a host-side end from its own revoke.
 	lost bool
+	// seen is the receipt as the last operation left it, for readers that
+	// must not wait for one under way.
+	seen atomic.Pointer[seen]
+	// changed, when set, is told after every operation.
+	changed atomic.Pointer[func()]
+}
+
+type seen struct {
+	receipt execenv.ControlReceipt
+	lost    bool
 }
 
 func New(id execenv.ID) *State {
 	epoch := rand.Text()
-	return &State{lock: make(chan struct{}, 1), epoch: epoch, receipt: execenv.ControlReceipt{Fence: execenv.ProjectionFence{ExecutionGrantID: id, EnvironmentEpoch: epoch}, State: execenv.ControlRunning, Confirmed: true}}
+	s := &State{lock: make(chan struct{}, 1), epoch: epoch, receipt: execenv.ControlReceipt{Fence: execenv.ProjectionFence{ExecutionGrantID: id, EnvironmentEpoch: epoch}, State: execenv.ControlRunning, Confirmed: true}}
+	s.seen.Store(&seen{receipt: s.receipt})
+	return s
+}
+
+// Restore resumes an epoch a restarted host recorded, with its last
+// receipt.
+func Restore(epoch string, receipt execenv.ControlReceipt) *State {
+	s := &State{lock: make(chan struct{}, 1), epoch: epoch, receipt: receipt}
+	s.seen.Store(&seen{receipt: receipt})
+	return s
+}
+
+// Peek is the receipt as the last control left it, and whether the epoch
+// was lost, without waiting for one under way.
+func (s *State) Peek() (execenv.ControlReceipt, bool) {
+	v := s.seen.Load()
+	return v.receipt, v.lost
 }
 
 func (s *State) Epoch() string { return s.epoch }
@@ -41,7 +70,16 @@ func (s *State) acquire(ctx context.Context) error {
 	}
 	return nil
 }
-func (s *State) release() { <-s.lock }
+func (s *State) release() {
+	s.seen.Store(&seen{receipt: s.receipt, lost: s.lost})
+	<-s.lock
+	if f := s.changed.Load(); f != nil {
+		(*f)()
+	}
+}
+
+// OnChange has f told after every operation, once its lock is released.
+func (s *State) OnChange(f func()) { s.changed.Store(&f) }
 
 func (s *State) Status(ctx context.Context) (execenv.ControlReceipt, error) {
 	if err := s.acquire(ctx); err != nil {
@@ -118,6 +156,28 @@ func (s *State) Lose(ctx context.Context, effect func() error) (bool, error) {
 	s.lost = true
 	s.receipt.State, s.receipt.Confirmed = execenv.ControlRevoked, false
 	err := effect()
+	s.receipt.Confirmed = err == nil
+	return true, err
+}
+
+// Idle freezes a running epoch on the host's own initiative, for its idle
+// timeout. It keeps the caller's fence revision: the caller sees frozen in
+// ControlStatus and thaws with its next revision, as after its own freeze.
+// It reports false, and runs nothing, unless the epoch is confirmed running.
+func (s *State) Idle(ctx context.Context, effect func(done execenv.ControlReceipt) error) (bool, error) {
+	if err := s.acquire(ctx); err != nil {
+		return false, err
+	}
+	defer s.release()
+	if s.lost || s.receipt.State != execenv.ControlRunning || !s.receipt.Confirmed {
+		return false, nil
+	}
+	s.receipt.State, s.receipt.Confirmed = execenv.ControlFrozen, false
+	// done is what the grant's control records once effect succeeds, for an
+	// effect that must make it durable before it finishes.
+	done := s.receipt
+	done.Confirmed = true
+	err := effect(done)
 	s.receipt.Confirmed = err == nil
 	return true, err
 }

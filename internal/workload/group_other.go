@@ -18,6 +18,6 @@ func (*Group) OwnHome(string) error                        { return execenv.ErrU
 func (*Group) Path() string                                { return "" }
 func (*Group) Kill(context.Context) error                  { return execenv.ErrUnavailable }
 func (*Group) Close() error                                { return nil }
-func ExecShell() error                                     { return execenv.ErrUnavailable }
+func Exec([]string) error                                  { return execenv.ErrUnavailable }
 
 func (*Group) Check() error { return execenv.ErrUnavailable }

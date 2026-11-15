@@ -26,7 +26,7 @@ func shortSocket(t *testing.T) string {
 
 func TestDrainStateMachine(t *testing.T) {
 	t.Parallel()
-	host, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Slots: 2})
+	host, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Capacity: execenv.DefaultGrant.Times(2)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestDrainStateMachine(t *testing.T) {
 // A lost grant does not hold a drain open.
 func TestDrainCompletesWhenTheLastGrantIsLost(t *testing.T) {
 	t.Parallel()
-	host, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Slots: 1})
+	host, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Capacity: execenv.DefaultGrant.Times(1)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestDrainCompletesWhenTheLastGrantIsLost(t *testing.T) {
 
 func TestOperatorSocketRoundTrip(t *testing.T) {
 	t.Parallel()
-	host, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Slots: 1})
+	host, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Capacity: execenv.DefaultGrant.Times(1)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestRunServesOperatorSocket(t *testing.T) {
 		"security": "insecure_local",
 		"adapter": "memory",
 		"images": [{"id": "default"}],
-		"slots": 2,
+		"capacity": {"cpu_millis": 2000, "memory_bytes": 1073741824, "disk_bytes": 4294967296},
 		"operator_socket": "`+path+`"
 	}`))
 	if err != nil {
@@ -230,7 +230,7 @@ func TestLoadRejectsRelativeOperatorSocket(t *testing.T) {
 		"security": "insecure_local",
 		"adapter": "memory",
 		"images": [{"id": "default"}],
-		"slots": 1,
+		"capacity": {"cpu_millis": 1000, "memory_bytes": 536870912, "disk_bytes": 2147483648},
 		"operator_socket": "operator.sock"
 	}`))
 	if !errors.Is(err, execenv.ErrInvalid) {

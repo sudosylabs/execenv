@@ -13,16 +13,25 @@ import (
 	"github.com/sudosylabs/execenv"
 )
 
+func allows(allow []net.IPNet, ip net.IP) bool {
+	for _, n := range allow {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestParseAllowAcceptsIPv4Only(t *testing.T) {
 	t.Parallel()
 	got, err := parseAllow([]string{"10.0.0.1", "192.168.0.0/16"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 || !containsIP(got, net.ParseIP("10.0.0.1")) || !containsIP(got, net.ParseIP("192.168.1.9")) {
+	if len(got) != 2 || !allows(got, net.ParseIP("10.0.0.1")) || !allows(got, net.ParseIP("192.168.1.9")) {
 		t.Fatalf("allow = %v", got)
 	}
-	if containsIP(got, net.ParseIP("11.0.0.1")) {
+	if allows(got, net.ParseIP("11.0.0.1")) {
 		t.Fatal("11.0.0.1 should be denied")
 	}
 	if _, err := parseAllow([]string{"example.com"}); err == nil {
@@ -36,10 +45,10 @@ func TestParseAllowAcceptsIPv4Only(t *testing.T) {
 func TestNewRejectsBadAllow(t *testing.T) {
 	t.Parallel()
 	_, err := New(Config{
-		WorkDir: t.TempDir(),
-		Slots:   1,
-		Images:  []Image{writeCatalogImage(t, t.TempDir(), "default", "root")},
-		Allow:   []string{"not-an-ip"},
+		WorkDir:  t.TempDir(),
+		Capacity: execenv.DefaultGrant.Times(1),
+		Images:   []Image{writeCatalogImage(t, t.TempDir(), "default", "root")},
+		Allow:    []string{"not-an-ip"},
 	})
 	if !errors.Is(err, execenv.ErrInvalid) {
 		t.Fatalf("New() error = %v, want ErrInvalid", err)
@@ -135,10 +144,10 @@ func TestEnsureNetworkChangeConflicts(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	h, err := New(Config{
-		WorkDir: t.TempDir(),
-		Slots:   2,
-		Images:  []Image{writeCatalogImage(t, dir, "default", "root")},
-		Allow:   []string{"203.0.113.10"},
+		WorkDir:  t.TempDir(),
+		Capacity: execenv.DefaultGrant.Times(2),
+		Images:   []Image{writeCatalogImage(t, dir, "default", "root")},
+		Allow:    []string{"203.0.113.10"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -207,9 +216,13 @@ func TestMachineConfigAddsNICWhenAllowlist(t *testing.T) {
 	if iface["host_dev_name"] != att.Dev || iface["guest_mac"] != att.MAC {
 		t.Fatalf("iface = %v", iface)
 	}
+	// The address is the start message's, as it is for a restored guest.
 	args, _ := doc["boot-source"].(map[string]any)["boot_args"].(string)
-	if !strings.Contains(args, att.GuestIP) || !strings.Contains(args, att.HostIP) {
+	if strings.Contains(args, "ip=") {
 		t.Fatalf("boot_args = %s", args)
+	}
+	if n := startNet(&att); n == nil || n.Address != att.GuestIP || n.Gateway != att.HostIP || n.Prefix != att.Prefix {
+		t.Fatalf("start network = %+v", n)
 	}
 }
 

@@ -23,7 +23,9 @@ func (e *environment) Control(ctx context.Context, request execenv.ControlReques
 		}
 	})
 	if err == nil && request.State == execenv.ControlRevoked {
-		err = e.host.revokeExact(ctx, e)
+		return receipt, e.host.revokeExact(ctx, e)
 	}
+	// Intent is recorded even when its effect failed.
+	e.persist()
 	return receipt, err
 }

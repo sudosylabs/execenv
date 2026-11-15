@@ -3,10 +3,14 @@
 package guesttree
 
 import (
-	"github.com/sudosylabs/execenv"
 	"os"
+
+	"github.com/sudosylabs/execenv"
 )
 
-type physicalKey struct{ device, inode uint64 }
+type physicalKey string
 
-func physicalIdentity(os.FileInfo) (physicalKey, error) { return physicalKey{}, execenv.ErrUnavailable }
+// physicalIdentity is unavailable where no guest or test host runs.
+func physicalIdentity(string, os.FileInfo) (physicalKey, error) {
+	return "", execenv.ErrUnavailable
+}

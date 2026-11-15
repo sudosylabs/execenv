@@ -8,9 +8,10 @@ import (
 )
 
 const (
-	// MaxProjectionInitializationBytes accommodates a complete bounded tree,
-	// including JSON escaping of every path. Incremental effects remain smaller.
-	MaxProjectionInitializationBytes        = 4 << 20
+	// MaxProjectionInitializationBytes bounds an initialization's metadata:
+	// paths and references, never bodies. It holds a tree of a few hundred
+	// thousand entries. Content is bounded only by the grant's disk.
+	MaxProjectionInitializationBytes        = 64 << 20
 	MaxProjectionMutations                  = 128
 	MaxProjectionMetadataBytes              = 256 << 10
 	MaxProjectionCursor              uint64 = 1<<53 - 1
@@ -230,8 +231,18 @@ func ValidateProjectionFence(fence ProjectionFence) error {
 	return ValidateControl(ControlRequest{Fence: fence, State: ControlRunning})
 }
 
+// ValidateSeededReference checks a reference to a seeded body: a size and
+// digest with no transfer id.
+func ValidateSeededReference(content ContentReference) error {
+	if content.TransferID != "" {
+		return ErrInvalid
+	}
+	content.TransferID = "seeded"
+	return ValidateContentReference(content)
+}
+
 func ValidateContentReference(content ContentReference) error {
-	if content.Size < 0 || content.Size > MaxFileBytes || validateName(content.TransferID) != nil || len(content.Digest) != 64 || strings.ToLower(content.Digest) != content.Digest {
+	if content.Size < 0 || validateName(content.TransferID) != nil || len(content.Digest) != 64 || strings.ToLower(content.Digest) != content.Digest {
 		return ErrInvalid
 	}
 	if _, err := hex.DecodeString(content.Digest); err != nil {
@@ -256,7 +267,6 @@ func ValidateProjectionApply(request ProjectionApply) error {
 	if request.ThroughWorkspaceCursor <= request.FromWorkspaceCursor || request.ThroughWorkspaceCursor-request.FromWorkspaceCursor != uint64(len(request.Mutations)) {
 		return ErrInvalid
 	}
-	var total int64
 	for index, mutation := range request.Mutations {
 		if mutation.JournalCursor != request.FromWorkspaceCursor+uint64(index)+1 {
 			return ErrInvalid
@@ -264,12 +274,6 @@ func ValidateProjectionApply(request ProjectionApply) error {
 		if err := validateProjectionMutation(mutation); err != nil {
 			return err
 		}
-		if mutation.Content != nil {
-			total += mutation.Content.Size
-		}
-	}
-	if total > MaxTreeBytes {
-		return ErrTooLarge
 	}
 	raw, err := json.Marshal(request)
 	if err != nil {
@@ -342,26 +346,26 @@ func ValidateProjectionInitialization(request ProjectionInitialization) error {
 	if ValidateProjectionFence(request.Fence) != nil || validateName(request.MutationID) != nil || request.WorkspaceCursor > MaxProjectionCursor {
 		return ErrInvalid
 	}
-	if len(request.Entries) > MaxTreeEntries {
-		return ErrTooLarge
-	}
 	if request.Ignore != nil {
 		if err := ValidateIgnoreRules(*request.Ignore); err != nil {
 			return err
 		}
 	}
-	var total int64
 	for _, entry := range request.Entries {
 		m := ProjectionMutation{EntryID: entry.EntryID, Path: entry.Path, Kind: entry.Kind, Operation: ProjectionCreate, ResultingContentVersion: entry.ContentVersion, Content: entry.Content}
+		if entry.Content != nil && entry.Content.TransferID == "" {
+			// A reference with no transfer id names a body the grant's seed
+			// already holds at this path.
+			if ValidateSeededReference(*entry.Content) != nil {
+				return ErrInvalid
+			}
+			seeded := *entry.Content
+			seeded.TransferID = "seeded"
+			m.Content = &seeded
+		}
 		if err := validateProjectionMutation(m); err != nil {
 			return err
 		}
-		if entry.Content != nil {
-			total += entry.Content.Size
-		}
-	}
-	if total > MaxTreeBytes {
-		return ErrTooLarge
 	}
 	raw, err := json.Marshal(request)
 	if err != nil {

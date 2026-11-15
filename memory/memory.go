@@ -4,17 +4,22 @@ package memory
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"time"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/capacity"
+	"github.com/sudosylabs/execenv/internal/content"
 	"github.com/sudosylabs/execenv/internal/control"
-	"github.com/sudosylabs/execenv/internal/guesttree"
-	"github.com/sudosylabs/execenv/internal/observations"
-	"github.com/sudosylabs/execenv/internal/projection"
-	"github.com/sudosylabs/execenv/internal/terminal"
-	"github.com/sudosylabs/execenv/internal/tree"
+	"github.com/sudosylabs/execenv/internal/files"
+	"github.com/sudosylabs/execenv/internal/grants"
+	"github.com/sudosylabs/execenv/internal/journal"
+	"github.com/sudosylabs/execenv/internal/lifetime"
+	"github.com/sudosylabs/execenv/internal/procs"
+	"github.com/sudosylabs/execenv/internal/seed"
 )
 
 var (
@@ -22,65 +27,102 @@ var (
 	_ execenv.Env  = (*environment)(nil)
 )
 
+// DefaultCapacity is a Config's capacity when it sets none: room for four
+// grants of execenv.DefaultGrant.
+var DefaultCapacity = execenv.DefaultGrant.Times(4)
+
 // Config constructs an in-memory host.
 type Config struct {
-	Images   []execenv.Image
-	Slots    int
+	Images []execenv.Image
+	// Capacity is the host's totals, Defaults what a Spec's zero Resources
+	// fields mean, and GrantMax the most one grant may ask for. Zero values
+	// use DefaultCapacity, execenv.DefaultGrant and Capacity.
+	Capacity execenv.Resources
+	Defaults execenv.Resources
+	GrantMax execenv.Resources
 	Unusable bool
-	// TerminalGrace is how long a detached shell keeps running. Zero uses
-	// execenv.DefaultTerminalGrace.
-	TerminalGrace time.Duration
+	// WorkDir holds each grant's workspace directory. Empty uses the
+	// system's temporary directory.
+	WorkDir string
 }
 
 // Host is an in-process execenv.Host. It is not isolated.
 type Host struct {
 	mu       sync.Mutex
 	images   []execenv.Image
-	slots    int
+	pool     *capacity.Pool
 	unusable bool
-	grace    time.Duration
+	workDir  string
+	seeds    *seed.Store
 	grants   map[execenv.ID]*environment
 	// lost holds grants whose environment ended without a revoke until the
 	// caller revokes them.
 	lost      map[execenv.ID]*environment
 	lostCount int
 	draining  bool
+	// hub follows the grants for the grant calls and watches.
+	hub *grants.Hub
 }
 
 type environment struct {
-	control         *control.State
-	projection      *projection.State
-	semantic        *observations.Log
-	guestTree       *guesttree.Snapshot
-	projectionFence execenv.ProjectionFence
-	mu              sync.Mutex
-	id              execenv.ID
-	image           execenv.Image
-	network         execenv.Network
-	host            *Host
-	frozen          bool
-	revoked         bool
-	lost            bool
-	terminal        *terminal.Manager
-	processes       *processLog
-	// files is the current projection. Paths are already-validated.
-	files tree.Snapshot
+	control   *control.State
+	mu        sync.Mutex
+	id        execenv.ID
+	spec      execenv.Spec
+	host      *Host
+	frozen    bool
+	revoked   bool
+	lost      bool
+	started   time.Time
+	procs     *procs.Manager
+	processes *processLog
+	limits    execenv.Limits
+	timer     *lifetime.Timer
+	// public is what callers hold: the environment, watched for activity.
+	public execenv.Env
+	// workspace is the grant's directory; journal projects into it.
+	// journalMu serializes journal calls; guestMu is the simulated guest,
+	// held by every guest write and by the journal's barrier.
+	grantDir  string
+	workspace string
+	journal   *journal.Journal
+	dirty     dirty
+	files     *files.FS
+	journalMu sync.Mutex
+	guestMu   sync.Mutex
 }
 
 // New returns an inert in-memory host.
 func New(cfg Config) (*Host, error) {
-	slots := cfg.Slots
-	if slots <= 0 {
-		slots = 1
+	total := cfg.Capacity
+	if total == (execenv.Resources{}) {
+		total = DefaultCapacity
 	}
-	return &Host{
+	pool, err := capacity.New(total, cfg.Defaults, cfg.GrantMax)
+	if err != nil {
+		return nil, execenv.Error("memory", err)
+	}
+	seedDir := filepath.Join(cfg.WorkDir, "seeds")
+	if cfg.WorkDir == "" {
+		if seedDir, err = os.MkdirTemp("", "execenv-seeds-"); err != nil {
+			return nil, execenv.Error("memory", err)
+		}
+	}
+	seeds, err := seed.Open(seedDir)
+	if err != nil {
+		return nil, execenv.Error("memory", err)
+	}
+	h := &Host{
 		images:   append([]execenv.Image(nil), cfg.Images...),
-		slots:    slots,
+		pool:     pool,
 		unusable: cfg.Unusable,
-		grace:    cfg.TerminalGrace,
+		workDir:  cfg.WorkDir,
+		seeds:    seeds,
 		grants:   make(map[execenv.ID]*environment),
 		lost:     make(map[execenv.ID]*environment),
-	}, nil
+	}
+	h.hub = grants.New(h.grantSnapshot)
+	return h, nil
 }
 
 // Capabilities reports adapter-kind facts.
@@ -99,9 +141,27 @@ func (h *Host) SetDraining(on bool) {
 	h.mu.Unlock()
 }
 
+// ImagesInUse are the images live grants were started from.
+func (h *Host) ImagesInUse() []execenv.Image {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	seen := map[execenv.Image]bool{}
+	var out []execenv.Image
+	for _, env := range h.grants {
+		if !seen[env.spec.Image] {
+			seen[env.spec.Image] = true
+			out = append(out, env.spec.Image)
+		}
+	}
+	return out
+}
+
+// DurableGrants is false: the in-memory host's grants end with its process.
+func (h *Host) DurableGrants() bool { return false }
+
 // Lose ends a grant's environment as if its machine had died, without a
-// revoke: the slot is freed and every call on the occupancy fails with
-// execenv.ErrLost until the grant is revoked. It reports whether a live
+// revoke: its resources are freed and every call on the occupancy fails
+// with execenv.ErrLost until the grant is revoked. It reports whether a live
 // grant was lost. It is a test hook; nothing else loses an in-memory grant.
 func (h *Host) Lose(id execenv.ID) bool {
 	h.mu.Lock()
@@ -117,20 +177,18 @@ func (h *Host) Lose(id execenv.ID) bool {
 	h.lostCount++
 	h.lost[id] = env
 	delete(h.grants, id)
+	h.hub.Poke()
+	h.pool.Release(id)
 	return true
 }
 
-// Ready reports configured images and remaining slots.
+// Ready reports configured images and free capacity.
 func (h *Host) Ready(ctx context.Context) (execenv.Report, error) {
 	if err := ctx.Err(); err != nil {
 		return execenv.Report{}, execenv.Error("ready", err)
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	free := h.slots - len(h.grants)
-	if free < 0 {
-		free = 0
-	}
 	usable, reason := !h.unusable, ""
 	switch {
 	case !usable:
@@ -138,17 +196,18 @@ func (h *Host) Ready(ctx context.Context) (execenv.Report, error) {
 	case h.draining:
 		usable, reason = false, execenv.ReasonDraining
 	}
-	return execenv.Report{
+	report := execenv.Report{
 		Usable:    usable,
 		Reason:    reason,
 		Grants:    len(h.grants),
 		Lost:      h.lostCount,
 		Images:    append([]execenv.Image(nil), h.images...),
 		Networks:  []execenv.Network{execenv.NetworkNone, execenv.NetworkAllowlist},
-		Slots:     free,
 		Release:   execenv.Release,
 		Isolation: execenv.IsolationNone,
-	}, nil
+	}
+	h.pool.Fill(&report)
+	return report, nil
 }
 
 // Ensure creates or returns the grant named by spec.
@@ -159,6 +218,7 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 	if err := execenv.ValidateSpec(spec); err != nil {
 		return nil, execenv.Error("ensure", err)
 	}
+	spec.Resources = h.pool.Resolve(spec.Resources)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.unusable {
@@ -168,10 +228,10 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		return nil, execenv.Error("ensure", execenv.ErrLost)
 	}
 	if env, ok := h.grants[spec.ID]; ok {
-		if env.image != spec.Image || env.network != spec.Network {
+		if !execenv.SameGrant(env.spec, spec) {
 			return nil, execenv.Error("ensure", execenv.ErrConflict)
 		}
-		return env, nil
+		return env.public, nil
 	}
 	if h.draining {
 		return nil, execenv.Error("ensure", execenv.ErrDraining)
@@ -179,29 +239,72 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 	if !h.hasImage(spec.Image) {
 		return nil, execenv.Error("ensure", execenv.ErrUnknownImage)
 	}
-	if len(h.grants) >= h.slots {
-		return nil, execenv.Error("ensure", execenv.ErrCapacity)
+	if spec.Seed != "" {
+		if _, err := h.seeds.Get(spec.Seed); err != nil {
+			return nil, execenv.Error("ensure", err)
+		}
+	}
+	if err := h.pool.Reserve(spec.ID, spec.Resources); err != nil {
+		return nil, execenv.Error("ensure", err)
+	}
+	grantDir, err := os.MkdirTemp(h.workDir, "execenv-grant-")
+	if err != nil {
+		h.pool.Release(spec.ID)
+		return nil, execenv.Error("ensure", execenv.ErrUnavailable)
+	}
+	workspace := filepath.Join(grantDir, "workspace")
+	store, err := content.Open(filepath.Join(grantDir, "content"))
+	if err == nil {
+		err = os.Mkdir(workspace, 0o755)
+	}
+	if err == nil && spec.Seed != "" {
+		err = h.plant(spec.Seed, workspace)
+	}
+	if err != nil {
+		_ = os.RemoveAll(grantDir)
+		h.pool.Release(spec.ID)
+		return nil, execenv.Error("ensure", execenv.ErrUnavailable)
 	}
 	env := &environment{
-		control:    control.New(spec.ID),
-		projection: projection.New(),
-		id:         spec.ID,
-		image:      spec.Image,
-		network:    spec.Network,
-		host:       h,
-		files:      make(tree.Snapshot),
-		processes:  newProcessLog(),
+		control:   control.New(spec.ID),
+		id:        spec.ID,
+		spec:      spec,
+		started:   time.Now(),
+		host:      h,
+		processes: newProcessLog(),
+		limits:    spec.Limits,
+		grantDir:  grantDir,
+		workspace: workspace,
 	}
-	// The in-memory shell is a stand-in, not a process; it starts with no
-	// window or isolation beyond the session machinery every adapter shares.
-	env.terminal = terminal.New(terminal.Config{
-		Grace: h.grace,
-		Start: func(_ context.Context, win execenv.Window) (terminal.Shell, error) {
-			return newShell(win, env.processes), nil
-		},
-	})
+	env.journal = journal.New(workspace, store, lockBarrier{&env.guestMu}, nil)
+	env.dirty.touch()
+	env.journal.Watch(&env.dirty)
+	if env.files, err = files.New(workspace, filepath.Join(grantDir, "staging")); err != nil {
+		_ = os.RemoveAll(grantDir)
+		h.pool.Release(spec.ID)
+		return nil, execenv.Error("ensure", execenv.ErrUnavailable)
+	}
+	// The in-memory processes are a stand-in shell, not processes; they run
+	// above the same process manager every adapter shares.
+	env.procs = procs.New(env.startProcess)
+	env.public = env
+	if spec.WallTimeout > 0 || spec.IdleTimeout > 0 {
+		env.timer = lifetime.Start(spec.WallTimeout, spec.IdleTimeout, func(r lifetime.Reason) { h.expire(env, r) })
+		env.public = lifetime.Watch(env, env.timer)
+	}
+	env.control.OnChange(h.hub.Poke)
 	h.grants[spec.ID] = env
-	return env, nil
+	h.hub.Poke()
+	return env.public, nil
+}
+
+// expire applies a grant's wall or idle timeout.
+func (h *Host) expire(env *environment, r lifetime.Reason) {
+	if r == lifetime.Idle && (env.spec.IdleAction == execenv.IdleFreeze || env.spec.IdleAction == execenv.IdleSuspend) {
+		_, _ = env.control.Idle(context.Background(), func(execenv.ControlReceipt) error { return env.freeze(context.Background()) })
+		return
+	}
+	_ = h.revokeExact(context.Background(), env)
 }
 
 // Revoke destroys the grant if it exists.
@@ -212,6 +315,7 @@ func (h *Host) Revoke(ctx context.Context, id execenv.ID) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	delete(h.lost, id)
+	h.hub.Poke()
 	env := h.grants[id]
 	if env == nil {
 		return nil
@@ -220,6 +324,8 @@ func (h *Host) Revoke(ctx context.Context, id execenv.ID) error {
 		return err
 	}
 	delete(h.grants, id)
+	h.hub.Poke()
+	h.pool.Release(id)
 	return nil
 }
 
@@ -231,6 +337,7 @@ func (h *Host) revokeExact(ctx context.Context, env *environment) error {
 	defer h.mu.Unlock()
 	if h.lost[env.id] == env {
 		delete(h.lost, env.id)
+		h.hub.Poke()
 	}
 	if h.grants[env.id] != env {
 		return nil
@@ -239,6 +346,8 @@ func (h *Host) revokeExact(ctx context.Context, env *environment) error {
 		return err
 	}
 	delete(h.grants, env.id)
+	h.hub.Poke()
+	h.pool.Release(env.id)
 	return nil
 }
 
@@ -248,17 +357,18 @@ func (h *Host) hasImage(want execenv.Image) bool {
 
 func (e *environment) ID() execenv.ID { return e.id }
 
-func (e *environment) Attach(ctx context.Context, request execenv.AttachRequest) (execenv.Terminal, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, execenv.Error("attach", err)
+// UpdateLimits records the limits. The in-memory host has no devices to
+// throttle.
+func (e *environment) UpdateLimits(ctx context.Context, fence execenv.ProjectionFence, limits execenv.Limits) error {
+	if err := execenv.ValidateLimits(limits); err != nil {
+		return execenv.Error("update_limits", err)
 	}
-	e.mu.Lock()
-	err := e.guard("attach")
-	e.mu.Unlock()
-	if err != nil {
-		return nil, err
-	}
-	return e.terminal.Attach(ctx, request)
+	return e.control.Run(ctx, fence, func() error {
+		e.mu.Lock()
+		e.limits = limits
+		e.mu.Unlock()
+		return nil
+	})
 }
 
 func (e *environment) freeze(ctx context.Context) error {
@@ -271,7 +381,7 @@ func (e *environment) freeze(ctx context.Context) error {
 		return e.guard("freeze")
 	}
 	e.frozen = true
-	e.terminal.Freeze()
+	e.procs.Freeze()
 	return nil
 }
 
@@ -285,7 +395,7 @@ func (e *environment) thaw(ctx context.Context) error {
 		return e.guard("thaw")
 	}
 	e.frozen = false
-	e.terminal.Thaw()
+	e.procs.Thaw()
 	return nil
 }
 
@@ -302,11 +412,16 @@ func (e *environment) revoke() error {
 
 // stop ends the environment for cause, ErrRevoked or ErrLost.
 func (e *environment) stop(cause error) error {
+	e.timer.Stop()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.revoked = true
 	e.lost = errors.Is(cause, execenv.ErrLost) || e.lost
 	e.frozen = false
-	e.terminal.End(cause)
+	e.procs.End(cause)
+	e.journalMu.Lock()
+	e.journal.Close()
+	e.journalMu.Unlock()
+	_ = os.RemoveAll(e.grantDir)
 	return nil
 }

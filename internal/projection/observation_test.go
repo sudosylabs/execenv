@@ -1,7 +1,6 @@
 package projection
 
 import (
-	"bytes"
 	"errors"
 	"testing"
 
@@ -12,7 +11,7 @@ import (
 func guestSnapshot(s *State) *guesttree.Snapshot {
 	result := &guesttree.Snapshot{Nodes: make(map[string]guesttree.Node)}
 	for name, node := range s.Nodes() {
-		result.Nodes[name] = guesttree.Node{Identity: node.Identity, Kind: node.Kind, Data: node.Data}
+		result.Nodes[name] = guesttree.Node{Identity: node.Identity, Kind: node.Kind, Content: node.Content}
 	}
 	return result
 }
@@ -20,9 +19,9 @@ func TestConfirmedGuestWriteAdvancesBaselineWithoutErasingLaterBytes(t *testing.
 	s, fence := testProjection(t)
 	actual := guestSnapshot(s)
 	node := actual.Nodes["dir/file"]
-	node.Data = []byte("later guest write")
+	node.Content = blob("later guest write")
 	actual.Nodes["dir/file"] = node
-	ref, err := s.Put([]byte("accepted first write"))
+	ref, err := s.Put(blob("accepted first write"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,14 +43,14 @@ func TestConfirmedGuestWriteAdvancesBaselineWithoutErasingLaterBytes(t *testing.
 		if err != nil {
 			return err
 		}
-		if len(prepared.Batch.Mutations) != 0 || !bytes.Equal(prepared.Tree["dir/file"].Data, []byte("later guest write")) {
+		if len(prepared.Batch.Mutations) != 0 || prepared.Tree["dir/file"].Content != blob("later guest write") {
 			t.Fatal("echo overwrote later guest bytes")
 		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if s.nodes["dir/file"].Version != "v2" || string(s.nodes["dir/file"].Data) != "accepted first write" || s.cursor != 6 {
+	if s.nodes["dir/file"].Version != "v2" || s.nodes["dir/file"].Content != blob("accepted first write") || s.cursor != 6 {
 		t.Fatal("accepted outcome did not advance baseline")
 	}
 	// The caller may reconnect/reupload after durable acknowledgement released
@@ -84,7 +83,7 @@ func TestConfirmedDirectoryMoveAndFollowingSavePrepareInJournalOrder(t *testing.
 	if err := s.GuestChanged(); err != nil {
 		t.Fatal(err)
 	}
-	ref, err := s.Put([]byte("save after move"))
+	ref, err := s.Put(blob("save after move"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +94,7 @@ func TestConfirmedDirectoryMoveAndFollowingSavePrepareInJournalOrder(t *testing.
 		if err != nil {
 			return err
 		}
-		if len(prepared.Batch.Mutations) != 1 || prepared.Batch.Mutations[0].Path != "moved/file" || string(prepared.Tree["moved/file"].Data) != "save after move" || prepared.Guest.Nodes["moved/file"].Identity != file.Identity {
+		if len(prepared.Batch.Mutations) != 1 || prepared.Batch.Mutations[0].Path != "moved/file" || prepared.Tree["moved/file"].Content != blob("save after move") || prepared.Guest.Nodes["moved/file"].Identity != file.Identity {
 			t.Fatal("mixed echo/save plan lost subtree identity or order")
 		}
 		return nil
@@ -107,14 +106,14 @@ func TestUnconfirmedOrDifferentGuestEffectCannotBecomeEcho(t *testing.T) {
 	s, fence := testProjection(t)
 	actual := guestSnapshot(s)
 	node := actual.Nodes["dir/file"]
-	node.Data = []byte("guest")
+	node.Content = blob("guest")
 	actual.Nodes["dir/file"] = node
-	ref, err := s.Put([]byte("different server bytes"))
+	ref, err := s.Put(blob("different server bytes"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	mutation := execenv.ProjectionMutation{JournalCursor: 6, EntryID: "file-id", Kind: execenv.ProjectionFile, Operation: execenv.ProjectionWrite, Path: "dir/file", ExpectedContentVersion: "v1", ResultingContentVersion: "v2", Content: &ref}
-	observed, err := s.Put([]byte("guest"))
+	observed, err := s.Put(blob("guest"))
 	if err != nil {
 		t.Fatal(err)
 	}

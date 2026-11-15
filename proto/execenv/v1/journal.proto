@@ -1,0 +1,153 @@
+syntax = "proto3";
+
+package execenv.v1;
+
+import "execenv/v1/common.proto";
+
+option go_package = "github.com/sudosylabs/execenv/internal/gen/execenv/v1;execenvv1";
+
+// JournalService projects the caller's tree into a grant and reports the
+// guest's changes back, acknowledged by the caller.
+service JournalService {
+  // UploadContent streams one body. The first message is the header; the
+  // rest are chunks.
+  rpc UploadContent(stream UploadContentRequest) returns (ContentReference);
+  rpc InitializeProjection(InitializeProjectionRequest) returns (ProjectionReceipt);
+  rpc ApplyProjection(ApplyProjectionRequest) returns (ProjectionReceipt);
+  rpc Observe(ObserveRequest) returns (ObservationPage);
+  rpc ReadObservationContent(ReadObservationContentRequest) returns (stream ContentChunk);
+  rpc ConfirmObservationProjection(ConfirmObservationProjectionRequest) returns (ConfirmObservationProjectionResponse);
+  rpc AcknowledgeObservations(AcknowledgeObservationsRequest) returns (AcknowledgeObservationsResponse);
+}
+
+message UploadContentRequest {
+  oneof part {
+    Fence fence = 1;
+    bytes chunk = 2;
+  }
+}
+
+message ContentChunk {
+  bytes data = 1;
+}
+
+enum ProjectionKind {
+  PROJECTION_KIND_UNSPECIFIED = 0;
+  PROJECTION_KIND_FILE = 1;
+  PROJECTION_KIND_DIRECTORY = 2;
+}
+
+enum ProjectionOperation {
+  PROJECTION_OPERATION_UNSPECIFIED = 0;
+  PROJECTION_OPERATION_CREATE = 1;
+  PROJECTION_OPERATION_WRITE = 2;
+  PROJECTION_OPERATION_RENAME = 3;
+  PROJECTION_OPERATION_MOVE = 4;
+  PROJECTION_OPERATION_DELETE = 5;
+}
+
+message ProjectionMutation {
+  uint64 journal_cursor = 1;
+  string entry_id = 2;
+  ProjectionOperation operation = 3;
+  ProjectionKind kind = 4;
+  string path = 5;
+  string destination_path = 6;
+  string expected_content_version = 7;
+  string resulting_content_version = 8;
+  optional bool recursive = 9;
+  ContentReference content = 10;
+}
+
+message ProjectionEntry {
+  string entry_id = 1;
+  ProjectionKind kind = 2;
+  string path = 3;
+  string content_version = 4;
+  ContentReference content = 5;
+}
+
+message IgnoreRules {
+  string file = 1;
+  repeated string fallback = 2;
+}
+
+message InitializeProjectionRequest {
+  Fence fence = 1;
+  string mutation_id = 2;
+  uint64 workspace_cursor = 3;
+  repeated ProjectionEntry entries = 4;
+  IgnoreRules ignore = 5;
+}
+
+message ApplyProjectionRequest {
+  Fence fence = 1;
+  string mutation_id = 2;
+  uint64 from_workspace_cursor = 3;
+  uint64 through_workspace_cursor = 4;
+  uint64 expected_host_cursor = 5;
+  repeated ProjectionMutation mutations = 6;
+}
+
+message ProjectionReceipt {
+  Fence fence = 1;
+  string mutation_id = 2;
+  uint64 applied_workspace_cursor = 3;
+  uint64 host_cursor = 4;
+}
+
+enum ObservationOperation {
+  OBSERVATION_OPERATION_UNSPECIFIED = 0;
+  OBSERVATION_OPERATION_CREATE_FILE = 1;
+  OBSERVATION_OPERATION_CREATE_DIRECTORY = 2;
+  OBSERVATION_OPERATION_WRITE_FILE = 3;
+  OBSERVATION_OPERATION_MOVE = 4;
+  OBSERVATION_OPERATION_DELETE = 5;
+}
+
+message Observation {
+  Fence fence = 1;
+  uint64 host_sequence = 2;
+  uint64 based_on_workspace_cursor = 3;
+  ObservationOperation operation = 4;
+  string node_identity = 5;
+  ProjectionKind kind = 6;
+  string path = 7;
+  string destination_path = 8;
+  string expected_content_version = 9;
+  optional bool recursive = 10;
+  ContentReference content = 11;
+  string origin_projection_mutation_id = 12;
+}
+
+message ObserveRequest {
+  Fence fence = 1;
+  uint64 after = 2;
+  int32 limit = 3;
+}
+
+message ObservationPage {
+  uint64 host_cursor = 1;
+  uint64 acknowledged_host_cursor = 2;
+  repeated Observation observations = 3;
+}
+
+message ReadObservationContentRequest {
+  Fence fence = 1;
+  ContentReference content = 2;
+}
+
+message ConfirmObservationProjectionRequest {
+  Fence fence = 1;
+  uint64 host_sequence = 2;
+  ProjectionMutation mutation = 3;
+}
+
+message ConfirmObservationProjectionResponse {}
+
+message AcknowledgeObservationsRequest {
+  Fence fence = 1;
+  uint64 through = 2;
+}
+
+message AcknowledgeObservationsResponse {}

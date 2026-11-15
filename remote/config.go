@@ -37,21 +37,11 @@ type ServerConfig struct {
 	Security Security
 	TLS      *tls.Config
 	Token    []byte
-	// AuthTimeout bounds TLS handshake plus the auth frame. Zero uses 10s.
+	// AuthTimeout bounds the TLS handshake and each request's headers. Zero
+	// uses 10s.
 	AuthTimeout time.Duration
-	// OperationTimeout caps every host operation. Zero uses 30s.
+	// OperationTimeout caps every unary host operation. Zero uses 30s.
 	OperationTimeout time.Duration
-	// claim is the process stamp this listener will accept. Empty uses
-	// execenv.Release. Tests set it to force a mismatch without racing
-	// the global stamp.
-	claim string
-}
-
-func (cfg ServerConfig) claimed() string {
-	if cfg.claim != "" {
-		return cfg.claim
-	}
-	return execenv.Release
 }
 
 func validateClient(cfg Config) error {

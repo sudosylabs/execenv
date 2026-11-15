@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/execenvtest"
 	"github.com/sudosylabs/execenv/memory"
 	"github.com/sudosylabs/execenv/remote"
 )
@@ -21,7 +22,7 @@ func TestRunServesMemoryLocally(t *testing.T) {
 		"security": "insecure_local",
 		"adapter": "memory",
 		"images": [{"id": "default"}, {"id": "alt"}],
-		"slots": 2,
+		"capacity": {"cpu_millis": 2000, "memory_bytes": 1073741824, "disk_bytes": 4294967296},
 		"network": "none"
 	}`))
 	if err != nil {
@@ -66,7 +67,7 @@ func TestLoadTLSRefusesMemory(t *testing.T) {
 		"tls_cert": "cert.pem",
 		"tls_key": "key.pem",
 		"images": [{"id": "default"}],
-		"slots": 1
+		"capacity": {"cpu_millis": 1000, "memory_bytes": 536870912, "disk_bytes": 2147483648}
 	}`))
 	if !errors.Is(err, execenv.ErrInvalid) {
 		t.Fatalf("Load() error = %v, want ErrInvalid", err)
@@ -112,7 +113,7 @@ func TestOrdinaryLogsOmitSecrets(t *testing.T) {
 		"security": "insecure_local",
 		"adapter": "memory",
 		"images": [{"id": "default"}, {"id": "alt"}],
-		"slots": 2
+		"capacity": {"cpu_millis": 2000, "memory_bytes": 1073741824, "disk_bytes": 4294967296}
 	}`))
 	if err != nil {
 		t.Fatal(err)
@@ -147,11 +148,7 @@ func TestOrdinaryLogsOmitSecrets(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	term, err := env.Attach(t.Context(), execenv.AttachRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = term.Close() })
+	term := execenvtest.OpenShell(t, env, fence, "sh")
 	if _, err := term.Write([]byte(pty)); err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +181,7 @@ func TestRedactedOmitsToken(t *testing.T) {
 		"security": "insecure_local",
 		"adapter": "memory",
 		"images": [{"id": "default"}],
-		"slots": 1
+		"capacity": {"cpu_millis": 1000, "memory_bytes": 536870912, "disk_bytes": 2147483648}
 	}`))
 	if err != nil {
 		t.Fatal(err)

@@ -1,7 +1,6 @@
 package projection
 
 import (
-	"bytes"
 	"maps"
 	"strings"
 
@@ -12,7 +11,7 @@ import (
 
 type step struct {
 	before, after map[string]Node
-	mutation      execenv.Mutation
+	mutation      tree.Mutation
 	echo          bool
 }
 
@@ -22,7 +21,7 @@ type Plan struct{ steps []step }
 type Prepared struct {
 	Tree  tree.Snapshot
 	Guest *guesttree.Snapshot
-	Batch execenv.Batch
+	Batch tree.Batch
 }
 
 func (p Plan) Prepare(actual *guesttree.Snapshot) (Prepared, error) {
@@ -30,7 +29,7 @@ func (p Plan) Prepare(actual *guesttree.Snapshot) (Prepared, error) {
 		return Prepared{}, execenv.ErrConflict
 	}
 	current := maps.Clone(actual.Nodes)
-	batch := execenv.Batch{}
+	batch := tree.Batch{}
 	for _, step := range p.steps {
 		if step.echo {
 			continue
@@ -39,13 +38,13 @@ func (p Plan) Prepare(actual *guesttree.Snapshot) (Prepared, error) {
 			return Prepared{}, err
 		}
 		before := physicalTree(current, step.before)
-		next, err := tree.Apply(before, execenv.Batch{Mutations: []execenv.Mutation{step.mutation}})
+		next, err := tree.Apply(before, tree.Batch{Mutations: []tree.Mutation{step.mutation}})
 		if err != nil {
 			return Prepared{}, err
 		}
 		identities := maps.Clone(current)
 		m := step.mutation
-		if m.Op == execenv.OpMove {
+		if m.Op == tree.OpMove {
 			for name, node := range current {
 				if name == m.From || strings.HasPrefix(name, m.From+"/") {
 					delete(identities, name)
@@ -56,17 +55,17 @@ func (p Plan) Prepare(actual *guesttree.Snapshot) (Prepared, error) {
 		current = make(map[string]guesttree.Node, len(next))
 		for name, node := range next {
 			identity := identities[name].Identity
-			if name == m.Path && (m.Op == execenv.OpCreate || m.Op == execenv.OpReplace) {
+			if name == m.Path && (m.Op == tree.OpCreate || m.Op == tree.OpReplace) {
 				identity = step.after[name].Identity
 			}
 			if identity == "" {
 				return Prepared{}, execenv.ErrLagged
 			}
 			kind := execenv.ProjectionFile
-			if node.Kind == execenv.KindDirectory {
+			if node.Kind == tree.KindDirectory {
 				kind = execenv.ProjectionDirectory
 			}
-			current[name] = guesttree.Node{Identity: identity, Kind: kind, Data: bytes.Clone(node.Data)}
+			current[name] = guesttree.Node{Identity: identity, Kind: kind, Content: node.Content}
 		}
 		batch.Mutations = append(batch.Mutations, m)
 	}
@@ -81,20 +80,20 @@ func physicalTree(nodes map[string]guesttree.Node, baseline map[string]Node) tre
 	for name, node := range nodes {
 		kind := nodeKind(node.Kind)
 		version := execenv.Version("")
-		if kind == execenv.KindFile {
+		if kind == tree.KindFile {
 			version = "guest"
 			if expected, ok := baseline[name]; ok && sameActual(node, expected) {
 				version = expected.Version
 			}
 		}
-		result[name] = tree.Node{Kind: kind, Version: version, Data: bytes.Clone(node.Data)}
+		result[name] = tree.Node{Kind: kind, Version: version, Content: node.Content}
 	}
 	return result
 }
 func sameActual(actual guesttree.Node, expected Node) bool {
-	return actual.Identity == expected.Identity && actual.Kind == expected.Kind && bytes.Equal(actual.Data, expected.Data)
+	return actual.Identity == expected.Identity && actual.Kind == expected.Kind && actual.Content == expected.Content
 }
-func checkActual(actual map[string]guesttree.Node, baseline map[string]Node, m execenv.Mutation) error {
+func checkActual(actual map[string]guesttree.Node, baseline map[string]Node, m tree.Mutation) error {
 	affected := func(name string) bool {
 		for _, root := range []string{m.Path, m.From} {
 			if root != "" && (name == root || strings.HasPrefix(name, root+"/")) {

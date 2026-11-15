@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/execenvtest"
 )
 
 // This path requires the installed daemon, TLS remote client and a real guest
@@ -41,11 +42,7 @@ func TestCertifyRemoteJournalPreservesLiveWork(t *testing.T) {
 	if _, err := journal.InitializeProjection(t.Context(), execenv.ProjectionInitialization{Fence: fence, MutationID: "init", WorkspaceCursor: 10, Entries: []execenv.ProjectionEntry{{EntryID: "dir", Kind: execenv.ProjectionDirectory, Path: "dir"}, {EntryID: "file", Kind: execenv.ProjectionFile, Path: "dir/file", ContentVersion: "v1", Content: &reference}}}); err != nil {
 		t.Fatal(err)
 	}
-	term, err := env.Attach(t.Context(), execenv.AttachRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer term.Close()
+	term := execenvtest.OpenShell(t, env, fence, "sh")
 	shell := newCertifiedShell(t, term)
 	before := shell.state(t, "kept=survives")
 	page, err := journal.Observe(t.Context(), fence, 0, 128)
@@ -72,7 +69,6 @@ func TestCertifyRemoteJournalPreservesLiveWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	shell.run(t, `test "$(cat dir/file)" = saved`)
-	shell.run(t, "printf 'guest-later' > guest")
 	reader, err := journal.OpenObservationContent(t.Context(), fence, *guest.Content)
 	if err != nil {
 		t.Fatal(err)
@@ -80,7 +76,19 @@ func TestCertifyRemoteJournalPreservesLiveWork(t *testing.T) {
 	captured, err := io.ReadAll(reader)
 	_ = reader.Close()
 	if err != nil || string(captured) != "guest-first" {
-		t.Fatalf("observation used later live bytes: %q %v", captured, err)
+		t.Fatalf("observed content: %q %v", captured, err)
+	}
+	// Content is read live: once the guest changes the file, the older
+	// observation is stale rather than passing off later bytes as its own.
+	shell.run(t, "printf 'guest-later' > guest")
+	if reader, err := journal.OpenObservationContent(t.Context(), fence, *guest.Content); err == nil {
+		_, err = io.ReadAll(reader)
+		_ = reader.Close()
+		if !errors.Is(err, execenv.ErrStale) {
+			t.Fatalf("changed content read = %v, want ErrStale", err)
+		}
+	} else if !errors.Is(err, execenv.ErrStale) {
+		t.Fatalf("changed content = %v, want ErrStale", err)
 	}
 	reference, err = journal.UploadProjectionContent(t.Context(), fence, bytes.NewReader(captured))
 	if err != nil {
@@ -121,6 +129,7 @@ func TestCertifyRemoteJournalPreservesLiveWork(t *testing.T) {
 	if _, err := journal.Control(t.Context(), execenv.ControlRequest{Fence: recovered, State: execenv.ControlRunning}); err != nil {
 		t.Fatal(err)
 	}
+	term.SetFence(recovered)
 	after := shell.state(t, "true")
 	if before != after || journal.Epoch() != fence.EnvironmentEpoch {
 		t.Fatal("save/freeze replaced the healthy shell or epoch")
@@ -129,15 +138,15 @@ func TestCertifyRemoteJournalPreservesLiveWork(t *testing.T) {
 
 // certifiedShell drives the guest shell and reads its PTY output. A command
 // is complete when its marker appears; the marker is split in the typed line
-// so the terminal echo of the command never matches it.
+// so the terminal's echo of the command never matches it.
 type certifiedShell struct {
-	term execenv.Terminal
+	term *execenvtest.ShellConn
 	mu   sync.Mutex
 	out  bytes.Buffer
 	step int
 }
 
-func newCertifiedShell(t *testing.T, term execenv.Terminal) *certifiedShell {
+func newCertifiedShell(t *testing.T, term *execenvtest.ShellConn) *certifiedShell {
 	t.Helper()
 	shell := &certifiedShell{term: term}
 	go func() {

@@ -61,12 +61,12 @@ Generate isolated test fixtures where possible.
 Reports are especially useful when they involve:
 
 - Escaping a grant into the host, other grants, or the caller's network
-- Occupying a grant without a valid token, or with a mismatched process stamp
+- Occupying a grant without a valid token or client certificate
 - Selecting the in-memory adapter where production TLS must refuse it
 - Serving grants when the isolation device is missing or unusable
 - Bypassing catalog hash verification, or fetching images at Ensure time
-- Forging, leaking, or logging host tokens, TLS keys, tree bodies, or PTY
-  octets
+- Forging, leaking, or logging host tokens, TLS keys, file bodies, or process
+  input and output
 - Path traversal, symlink escape, or unbounded tree writes in the projection
 - Guest traffic reaching destinations outside the host allowlist, or adding
   destinations from the grant caller

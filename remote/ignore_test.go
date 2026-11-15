@@ -32,7 +32,7 @@ func (g innerGuest) Remove(ctx context.Context, path string) error {
 func TestIgnoreConformance(t *testing.T) {
 	execenvtest.RunIgnore(t, func(t *testing.T) execenvtest.Observed {
 		t.Helper()
-		inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Slots: 1})
+		inner, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Capacity: execenv.DefaultGrant.Times(1)})
 		if err != nil {
 			t.Fatal(err)
 		}

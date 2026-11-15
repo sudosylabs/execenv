@@ -27,11 +27,12 @@ func (p *processLog) nextPID() int {
 	return p.pid
 }
 
-// start records a started program and returns its PID.
-func (p *processLog) start(parent int, args []string) int {
+// start records a started program and returns its PID. tag is the
+// process's own when Start created it, else "".
+func (p *processLog) start(parent int, args []string, tag string) int {
 	pid := p.nextPID()
 	argv, truncated := processes.Argv(args)
-	p.log.Append(execenv.ProcessEvent{Kind: execenv.ProcessStarted, PID: pid, ParentPID: parent, Argv: argv, Truncated: truncated, Dir: execenv.GuestWorkspace, At: time.Now()})
+	p.log.Append(execenv.ProcessEvent{Kind: execenv.ProcessStarted, PID: pid, ParentPID: parent, Argv: argv, Truncated: truncated, Dir: execenv.GuestWorkspace, Tag: tag, At: time.Now()})
 	return pid
 }
 
