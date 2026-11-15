@@ -7,9 +7,11 @@ package journal
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/sudosylabs/execenv"
@@ -50,6 +52,25 @@ func New(home string, store *content.Store, barrier Barrier, own func(string) er
 // Receive stores a body. It needs no lock: Upload then registers it.
 func (j *Journal) Receive(body io.Reader) (content.Blob, error) {
 	return j.store.Put(body)
+}
+
+// missing lists the files next names that are neither in the workspace
+// already, with the same body, nor in the store.
+func (j *Journal) missing(current *guesttree.Snapshot, next tree.Snapshot) []string {
+	var out []string
+	for name, node := range next {
+		if node.Kind != tree.KindFile {
+			continue
+		}
+		if have, ok := current.Nodes[name]; ok && have.Kind == execenv.ProjectionFile && have.Content == node.Content {
+			continue
+		}
+		if !j.store.Has(node.Content) {
+			out = append(out, name)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // sweep drops every stored body nothing references any more.
@@ -107,20 +128,21 @@ func (j *Journal) Initialize(ctx context.Context, request execenv.ProjectionInit
 	err := j.barrier.Stopped(ctx, func() error {
 		touched := false
 		receipt, resultErr = j.state.Initialize(request, func(snapshot tree.Tree) error {
+			// The workspace is empty, or holds the grant's seed.
 			current, err := guesttree.Capture(j.home, nil, nil)
 			if err != nil {
 				return err
 			}
 			defer current.Close()
-			if len(current.Nodes) != 0 {
-				return execenv.ErrConflict
-			}
 			next, err := tree.FromTree(snapshot)
 			if err != nil {
 				return err
 			}
+			if missing := j.missing(current, next); len(missing) > 0 {
+				return &execenv.MissingContentError{Paths: missing}
+			}
 			touched = true
-			if err := rewriteHome(j.store, j.home, next); err != nil {
+			if err := reconcileHome(j.store, j.home, current, next); err != nil {
 				return err
 			}
 			return j.ownTree(nil)
@@ -215,7 +237,16 @@ func (j *Journal) Observe(ctx context.Context, fence execenv.ProjectionFence, af
 	return j.log.Page(after, limit)
 }
 func (j *Journal) observeCaptured() error {
-	next, err := guesttree.CaptureInto(j.home, j.snapshot, j.observePolicy(), j.store)
+	// A capture that raced a writer is tried again: the barrier normally
+	// stops every writer, so this happens only without one.
+	var next *guesttree.Snapshot
+	var err error
+	for range 5 {
+		next, err = guesttree.CaptureInto(j.home, j.snapshot, j.observePolicy(), j.store)
+		if !errors.Is(err, guesttree.ErrChanged) {
+			break
+		}
+	}
 	if err != nil {
 		j.log.Lagged()
 		return err

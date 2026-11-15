@@ -42,10 +42,12 @@ type Client struct {
 	cancel       context.CancelFunc
 	transports   []*http.Transport
 
-	host     execenvv1connect.HostServiceClient
-	control  execenvv1connect.ControlServiceClient
-	journal  execenvv1connect.JournalServiceClient
-	content  execenvv1connect.JournalServiceClient
+	host    execenvv1connect.HostServiceClient
+	control execenvv1connect.ControlServiceClient
+	journal execenvv1connect.JournalServiceClient
+	content execenvv1connect.JournalServiceClient
+	// bulkHost carries seed archives on the content connection.
+	bulkHost execenvv1connect.HostServiceClient
 	terminal execenvv1connect.TerminalServiceClient
 	process  execenvv1connect.ProcessLogServiceClient
 }
@@ -73,6 +75,7 @@ func New(cfg Config) (*Client, error) {
 		control:    execenvv1connect.NewControlServiceClient(interactive, base),
 		journal:    execenvv1connect.NewJournalServiceClient(interactive, base),
 		content:    execenvv1connect.NewJournalServiceClient(bulk, base),
+		bulkHost:   execenvv1connect.NewHostServiceClient(bulk, base),
 		terminal:   execenvv1connect.NewTerminalServiceClient(interactive, base),
 		process:    execenvv1connect.NewProcessLogServiceClient(interactive, base),
 	}

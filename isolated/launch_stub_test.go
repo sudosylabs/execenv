@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -222,6 +223,12 @@ func (quiescentBarrier) Stopped(ctx context.Context, fn func() error) error {
 func startStubAgent(_ context.Context, req startRequest, journal, processLog bool) (*stubInstance, error) {
 	if err := os.MkdirAll(req.TreeDir, 0o700); err != nil {
 		return nil, err
+	}
+	// The stub has no disk image: it plants the seed's tree directly.
+	if req.Seed != "" {
+		if err := os.CopyFS(req.TreeDir, os.DirFS(filepath.Join(req.Seed, "tree"))); err != nil {
+			return nil, err
+		}
 	}
 	f, err := os.CreateTemp("", "e*.sock")
 	if err != nil {

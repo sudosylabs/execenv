@@ -149,7 +149,11 @@ func (l *processLauncher) Start(ctx context.Context, req startRequest) (instance
 	// The guest formats nothing: the host creates the empty writable disk
 	// and the guest mounts it. The host never mounts this disk, because its
 	// blocks are written by the guest kernel.
-	if err := createWorkspaceDisk(ctx, mkfs, req.Disk, req.Resources.DiskBytes); err != nil {
+	if req.Seed != "" {
+		if err := cloneSeedDisk(ctx, filepath.Join(req.Seed, seedDiskName), req.Disk, req.Resources.DiskBytes); err != nil {
+			return fail(err)
+		}
+	} else if err := createWorkspaceDisk(ctx, mkfs, req.Disk, req.Resources.DiskBytes); err != nil {
 		return fail(err)
 	}
 	jail := newJailLayout(l.jailBase(), runtimeBin, req.ID, uid, uid)

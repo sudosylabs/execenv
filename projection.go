@@ -231,6 +231,16 @@ func ValidateProjectionFence(fence ProjectionFence) error {
 	return ValidateControl(ControlRequest{Fence: fence, State: ControlRunning})
 }
 
+// ValidateSeededReference checks a reference to a seeded body: a size and
+// digest with no transfer id.
+func ValidateSeededReference(content ContentReference) error {
+	if content.TransferID != "" {
+		return ErrInvalid
+	}
+	content.TransferID = "seeded"
+	return ValidateContentReference(content)
+}
+
 func ValidateContentReference(content ContentReference) error {
 	if content.Size < 0 || validateName(content.TransferID) != nil || len(content.Digest) != 64 || strings.ToLower(content.Digest) != content.Digest {
 		return ErrInvalid
@@ -343,6 +353,16 @@ func ValidateProjectionInitialization(request ProjectionInitialization) error {
 	}
 	for _, entry := range request.Entries {
 		m := ProjectionMutation{EntryID: entry.EntryID, Path: entry.Path, Kind: entry.Kind, Operation: ProjectionCreate, ResultingContentVersion: entry.ContentVersion, Content: entry.Content}
+		if entry.Content != nil && entry.Content.TransferID == "" {
+			// A reference with no transfer id names a body the grant's seed
+			// already holds at this path.
+			if ValidateSeededReference(*entry.Content) != nil {
+				return ErrInvalid
+			}
+			seeded := *entry.Content
+			seeded.TransferID = "seeded"
+			m.Content = &seeded
+		}
 		if err := validateProjectionMutation(m); err != nil {
 			return err
 		}

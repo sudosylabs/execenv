@@ -68,6 +68,10 @@ var (
 	// ErrQuota indicates the grant's workspace disk is full. Nothing is
 	// truncated: the call that hit it changes nothing.
 	ErrQuota = errors.New("execenv: disk quota exceeded")
+	// ErrMissingContent indicates an initialization names file bodies that
+	// were neither uploaded nor in the grant's seed. errors.As a
+	// *MissingContentError for the paths.
+	ErrMissingContent = errors.New("execenv: missing content")
 )
 
 // OpError adds operation context while preserving errors.Is matching.

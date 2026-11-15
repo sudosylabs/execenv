@@ -18,7 +18,37 @@ service HostService {
   // exists with the same spec.
   rpc EnsureGrant(EnsureGrantRequest) returns (EnsureGrantResponse);
   rpc RevokeGrant(RevokeGrantRequest) returns (RevokeGrantResponse);
+  // PutSeed builds a seed from an archive. The first message names its
+  // digest; the rest are the archive's bytes.
+  rpc PutSeed(stream PutSeedRequest) returns (Seed);
+  rpc ListSeeds(ListSeedsRequest) returns (ListSeedsResponse);
+  rpc DeleteSeed(DeleteSeedRequest) returns (DeleteSeedResponse);
 }
+
+message Seed {
+  string digest = 1;
+  int64 bytes = 2;
+  int64 entries = 3;
+}
+
+message PutSeedRequest {
+  oneof part {
+    string digest = 1;
+    bytes chunk = 2;
+  }
+}
+
+message ListSeedsRequest {}
+
+message ListSeedsResponse {
+  repeated Seed seeds = 1;
+}
+
+message DeleteSeedRequest {
+  string digest = 1;
+}
+
+message DeleteSeedResponse {}
 
 message HelloRequest {
   repeated string required_features = 1;
@@ -81,6 +111,8 @@ message Spec {
   IdleAction idle_action = 7;
   map<string, string> labels = 8;
   Limits limits = 9;
+  // seed, when set, is the digest of a seed the host holds.
+  string seed = 10;
 }
 
 message EnsureGrantRequest {

@@ -36,6 +36,7 @@ var sentinels = []struct {
 	{execenv.ErrNetwork, "network", connect.CodeFailedPrecondition},
 	{execenv.ErrFeature, "feature", connect.CodeFailedPrecondition},
 	{execenv.ErrQuota, "quota", connect.CodeResourceExhausted},
+	{execenv.ErrMissingContent, "missing_content", connect.CodeFailedPrecondition},
 }
 
 // wireError turns a host error into a Connect error. Its message is the
@@ -57,6 +58,10 @@ func Error(err error) error {
 			var short *execenv.CapacityError
 			if errors.As(err, &short) {
 				detail.Shortfall = &execenvv1.Shortfall{Resource: resources[short.Resource], Requested: short.Requested, Free: short.Free}
+			}
+			var missing *execenv.MissingContentError
+			if errors.As(err, &missing) {
+				detail.MissingPaths = missing.Paths
 			}
 			return WithDetail(connect.NewError(s.code, s.err), detail)
 		}
@@ -107,6 +112,9 @@ func HostError(op string, err error) error {
 		}
 		if detail.GetSentinel() == "capacity" && detail.GetShortfall() != nil {
 			return execenv.Error(op, shortfallFrom(detail.GetShortfall()))
+		}
+		if detail.GetSentinel() == "missing_content" && len(detail.GetMissingPaths()) > 0 {
+			return execenv.Error(op, &execenv.MissingContentError{Paths: detail.GetMissingPaths()})
 		}
 		for _, s := range sentinels {
 			if s.name == detail.GetSentinel() {

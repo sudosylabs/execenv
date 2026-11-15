@@ -65,4 +65,6 @@ message ErrorDetail {
   string feature = 2;
   // shortfall explains a "capacity" refusal.
   Shortfall shortfall = 3;
+  // missing_paths are the files a "missing_content" refusal names.
+  repeated string missing_paths = 4;
 }

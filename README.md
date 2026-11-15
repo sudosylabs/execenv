@@ -326,6 +326,46 @@ captured epoch and cannot destroy a replacement. Remote attach requests bind
 their captured epoch; input, resize and hangup name the attachment by an
 unguessable id the host hands only to the client that attached.
 
+### Seeds
+
+When many grants start from the same tree, send it to each host once, as a
+seed, instead of to every grant. Build an archive with package `archive`;
+its digest names the tree, whatever order or compression it was written in:
+
+```go
+var buf bytes.Buffer
+w, err := archive.NewWriter(&buf, archive.CodecZstd)
+if err != nil {
+	return err
+}
+_ = w.Dir("src")
+_ = w.File("src/main.py", false, int64(len(main)), bytes.NewReader(main))
+digest, err := w.Close()
+if err != nil {
+	return err
+}
+if _, err := host.PutSeed(ctx, digest, &buf); err != nil {
+	return err
+}
+env, err := host.Ensure(ctx, execenv.Spec{ID: "job-7f3a", Image: "python", Seed: digest})
+```
+
+The host unpacks the archive once, refusing anything but directories and
+regular files and any tree whose digest is not the one named, and keeps it as
+a ready workspace disk. A grant created with the seed gets its own copy of
+that disk: a reflink where the host's filesystem shares blocks, a local
+block copy elsewhere, and nothing over the network. Putting a seed the host
+already has returns at once. `Seeds` lists them and `DeleteSeed` removes one;
+grants already created keep their copy. An unknown seed in a Spec is
+`ErrNotFound`.
+
+Initialize a seeded grant with its full manifest as usual. For a file the
+seed already holds, give a reference with its size and digest and no
+transfer id; upload only what differs. Paths the seed holds and the manifest
+does not name are removed. A file neither seeded nor uploaded fails the whole
+initialization with a `*MissingContentError` naming its paths, and changes
+nothing.
+
 ### Project the workspace
 
 Your application owns a journal of the workspace. The grant receives it as
@@ -755,7 +795,8 @@ nothing and `Ready` reports unusable. There is no container fallback.
 - A usable isolation device at `/dev/kvm` (readable and writable by the
   host process, typically the `kvm` group)
 - The microVM runtime and supervisor pair (bootstrap installs them)
-- `mkfs.ext4` (e2fsprogs): every grant gets a sparse ext4 workspace disk
+- `mkfs.ext4` and `resize2fs` (e2fsprogs): every grant gets a sparse ext4
+  workspace disk, and every seed is kept as one
 - `ip` and `iptables` if you configure an allowlist
 - Network reachability from the application on port **8443** (or the
   listen address you choose)

@@ -13,6 +13,9 @@ func ValidateSpec(spec Spec) error {
 	if ValidateResources(spec.Resources) != nil || ValidateLimits(spec.Limits) != nil || validateLifetime(spec) != nil || validateLabels(spec.Labels) != nil {
 		return ErrInvalid
 	}
+	if spec.Seed != "" && ValidateSeedDigest(spec.Seed) != nil {
+		return ErrInvalid
+	}
 	if err := validateName(string(spec.ID)); err != nil {
 		return err
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/sudosylabs/execenv/internal/control"
 	"github.com/sudosylabs/execenv/internal/journal"
 	"github.com/sudosylabs/execenv/internal/lifetime"
+	"github.com/sudosylabs/execenv/internal/seed"
 	"github.com/sudosylabs/execenv/internal/terminal"
 )
 
@@ -54,6 +55,7 @@ type Host struct {
 	unusable bool
 	grace    time.Duration
 	workDir  string
+	seeds    *seed.Store
 	grants   map[execenv.ID]*environment
 	// lost holds grants whose environment ended without a revoke until the
 	// caller revokes them.
@@ -97,12 +99,23 @@ func New(cfg Config) (*Host, error) {
 	if err != nil {
 		return nil, execenv.Error("memory", err)
 	}
+	seedDir := filepath.Join(cfg.WorkDir, "seeds")
+	if cfg.WorkDir == "" {
+		if seedDir, err = os.MkdirTemp("", "execenv-seeds-"); err != nil {
+			return nil, execenv.Error("memory", err)
+		}
+	}
+	seeds, err := seed.Open(seedDir)
+	if err != nil {
+		return nil, execenv.Error("memory", err)
+	}
 	return &Host{
 		images:   append([]execenv.Image(nil), cfg.Images...),
 		pool:     pool,
 		unusable: cfg.Unusable,
 		grace:    cfg.TerminalGrace,
 		workDir:  cfg.WorkDir,
+		seeds:    seeds,
 		grants:   make(map[execenv.ID]*environment),
 		lost:     make(map[execenv.ID]*environment),
 	}, nil
@@ -203,6 +216,11 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 	if !h.hasImage(spec.Image) {
 		return nil, execenv.Error("ensure", execenv.ErrUnknownImage)
 	}
+	if spec.Seed != "" {
+		if _, err := h.seeds.Get(spec.Seed); err != nil {
+			return nil, execenv.Error("ensure", err)
+		}
+	}
 	if err := h.pool.Reserve(spec.ID, spec.Resources); err != nil {
 		return nil, execenv.Error("ensure", err)
 	}
@@ -215,6 +233,9 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 	store, err := content.Open(filepath.Join(grantDir, "content"))
 	if err == nil {
 		err = os.Mkdir(workspace, 0o755)
+	}
+	if err == nil && spec.Seed != "" {
+		err = h.plant(spec.Seed, workspace)
 	}
 	if err != nil {
 		_ = os.RemoveAll(grantDir)

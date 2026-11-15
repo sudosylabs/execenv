@@ -122,6 +122,9 @@ type Spec struct {
 	Labels map[string]string
 	// Limits throttle the grant's devices from its start.
 	Limits Limits
+	// Seed, when set, is the digest of a seed this host holds: the grant's
+	// workspace starts as a copy of it. An unknown seed is ErrNotFound.
+	Seed string
 }
 
 // Window is a terminal size. Zero Cols or Rows means 80 by 24.
@@ -141,6 +144,7 @@ type Host interface {
 	Ready(ctx context.Context) (Report, error)
 	Ensure(ctx context.Context, spec Spec) (Env, error)
 	Revoke(ctx context.Context, id ID) error
+	Seeder
 }
 
 // Env is one grant's occupancy for one epoch.

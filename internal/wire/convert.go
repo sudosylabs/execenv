@@ -152,6 +152,7 @@ func SpecTo(s execenv.Spec) *execenvv1.Spec {
 		IdleAction: idleActions[s.IdleAction],
 		Labels:     s.Labels,
 		Limits:     LimitsTo(s.Limits),
+		Seed:       s.Seed,
 	}
 	if s.WallTimeout != 0 {
 		out.WallTimeout = durationpb.New(s.WallTimeout)
@@ -172,6 +173,7 @@ func SpecFrom(s *execenvv1.Spec) (execenv.Spec, bool) {
 		Resources: ResourcesFrom(s.GetResources()),
 		Labels:    s.GetLabels(),
 		Limits:    LimitsFrom(s.GetLimits()),
+		Seed:      s.GetSeed(),
 	}
 	if len(out.Labels) == 0 {
 		out.Labels = nil

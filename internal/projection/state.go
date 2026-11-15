@@ -43,11 +43,14 @@ type receipt struct {
 // Commit callbacks must atomically install the supplied disk mutations while
 // holding the backend's guest-write barrier. Memory commits need no disk I/O.
 type State struct {
-	initialized         bool
-	nodes               map[string]Node
-	cursor              uint64
-	hostCursor          uint64
-	uploads             map[string]upload
+	initialized bool
+	nodes       map[string]Node
+	cursor      uint64
+	hostCursor  uint64
+	uploads     map[string]upload
+	// seeding is set while an initialization resolves its entries, the only
+	// time a reference may name a seeded body.
+	seeding             bool
 	receipts            map[string]receipt
 	proofs              map[uint64]observationProof
 	observationBindings map[uint64]observationProof
@@ -95,6 +98,11 @@ func (s *State) content(ref *execenv.ContentReference) (content.Blob, error) {
 	if ref == nil {
 		return content.Blob{}, execenv.ErrInvalid
 	}
+	if ref.TransferID == "" && s.seeding {
+		// A seeded body: the workspace already holds it. Initialization's
+		// commit checks that it does.
+		return content.Blob{Digest: ref.Digest, Size: ref.Size}, nil
+	}
 	upload, ok := s.uploads[ref.TransferID]
 	if !ok || upload.reference != *ref || !time.Now().Before(upload.expires) {
 		return content.Blob{}, execenv.ErrConflict
@@ -128,6 +136,8 @@ func (s *State) Initialize(request execenv.ProjectionInitialization, commit func
 	if err := execenv.ValidateProjectionInitialization(request); err != nil {
 		return execenv.ProjectionReceipt{}, err
 	}
+	s.seeding = true
+	defer func() { s.seeding = false }()
 	raw, _ := json.Marshal(request)
 	digest := sha256.Sum256(append([]byte("initialize:"), raw...))
 	if old, ok, err := s.replay(request.MutationID, digest); ok {

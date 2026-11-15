@@ -5,6 +5,7 @@ package guesttree
 
 import (
 	"crypto/rand"
+	"fmt"
 	"io"
 	"os"
 	"path"
@@ -55,6 +56,10 @@ func (s *Snapshot) Close() {
 // node. A directory left out is never descended into. A nil Observe admits
 // everything.
 type Observe func(name string, dir, held bool) bool
+
+// ErrChanged is a capture that raced a writer: a file changed while it was
+// read. It is ErrLagged, but a fresh capture may succeed.
+var ErrChanged = fmt.Errorf("%w: changed while captured", execenv.ErrLagged)
 
 // admitted reads every entry of one directory and keeps only those observe
 // admits. A left-out entry costs its name, plus one Lstat when its path is
@@ -206,7 +211,7 @@ func CaptureInto(home string, previous *Snapshot, observe Observe, store *conten
 				}
 				final, err := file.Stat()
 				if err != nil || final.Size() != blob.Size || stampOf(final) != st {
-					return execenv.ErrLagged
+					return ErrChanged
 				}
 				node.Content, node.stamp = blob, st
 				result.Nodes[name] = node

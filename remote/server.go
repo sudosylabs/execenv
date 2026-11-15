@@ -34,7 +34,7 @@ const (
 	FeatureProcessLog = "process_log"
 )
 
-var features = []string{FeatureControl, FeatureJournal, FeatureTerminal, FeatureProcessLog}
+var features = []string{FeatureControl, FeatureJournal, FeatureTerminal, FeatureProcessLog, FeatureSeed}
 
 // Window sizes for HTTP/2 flow control. The host receives uploads and
 // keystrokes; uploads need the large window.

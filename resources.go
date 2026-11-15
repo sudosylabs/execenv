@@ -178,7 +178,7 @@ func (r Resources) Resolve(defaults Resources) Resources {
 // SameGrant reports whether two specs name the same grant: everything but
 // Limits, which UpdateLimits changes in place.
 func SameGrant(a, b Spec) bool {
-	if a.ID != b.ID || a.Image != b.Image || a.Network != b.Network || a.Resources != b.Resources ||
+	if a.ID != b.ID || a.Image != b.Image || a.Network != b.Network || a.Resources != b.Resources || a.Seed != b.Seed ||
 		a.WallTimeout != b.WallTimeout || a.IdleTimeout != b.IdleTimeout || a.IdleAction != b.IdleAction ||
 		len(a.Labels) != len(b.Labels) {
 		return false

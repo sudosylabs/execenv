@@ -41,6 +41,12 @@ const (
 	HostServiceEnsureGrantProcedure = "/execenv.v1.HostService/EnsureGrant"
 	// HostServiceRevokeGrantProcedure is the fully-qualified name of the HostService's RevokeGrant RPC.
 	HostServiceRevokeGrantProcedure = "/execenv.v1.HostService/RevokeGrant"
+	// HostServicePutSeedProcedure is the fully-qualified name of the HostService's PutSeed RPC.
+	HostServicePutSeedProcedure = "/execenv.v1.HostService/PutSeed"
+	// HostServiceListSeedsProcedure is the fully-qualified name of the HostService's ListSeeds RPC.
+	HostServiceListSeedsProcedure = "/execenv.v1.HostService/ListSeeds"
+	// HostServiceDeleteSeedProcedure is the fully-qualified name of the HostService's DeleteSeed RPC.
+	HostServiceDeleteSeedProcedure = "/execenv.v1.HostService/DeleteSeed"
 )
 
 // HostServiceClient is a client for the execenv.v1.HostService service.
@@ -54,6 +60,11 @@ type HostServiceClient interface {
 	// exists with the same spec.
 	EnsureGrant(context.Context, *connect.Request[v1.EnsureGrantRequest]) (*connect.Response[v1.EnsureGrantResponse], error)
 	RevokeGrant(context.Context, *connect.Request[v1.RevokeGrantRequest]) (*connect.Response[v1.RevokeGrantResponse], error)
+	// PutSeed builds a seed from an archive. The first message names its
+	// digest; the rest are the archive's bytes.
+	PutSeed(context.Context) *connect.ClientStreamForClient[v1.PutSeedRequest, v1.Seed]
+	ListSeeds(context.Context, *connect.Request[v1.ListSeedsRequest]) (*connect.Response[v1.ListSeedsResponse], error)
+	DeleteSeed(context.Context, *connect.Request[v1.DeleteSeedRequest]) (*connect.Response[v1.DeleteSeedResponse], error)
 }
 
 // NewHostServiceClient constructs a client for the execenv.v1.HostService service. By default, it
@@ -91,6 +102,24 @@ func NewHostServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(hostServiceMethods.ByName("RevokeGrant")),
 			connect.WithClientOptions(opts...),
 		),
+		putSeed: connect.NewClient[v1.PutSeedRequest, v1.Seed](
+			httpClient,
+			baseURL+HostServicePutSeedProcedure,
+			connect.WithSchema(hostServiceMethods.ByName("PutSeed")),
+			connect.WithClientOptions(opts...),
+		),
+		listSeeds: connect.NewClient[v1.ListSeedsRequest, v1.ListSeedsResponse](
+			httpClient,
+			baseURL+HostServiceListSeedsProcedure,
+			connect.WithSchema(hostServiceMethods.ByName("ListSeeds")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteSeed: connect.NewClient[v1.DeleteSeedRequest, v1.DeleteSeedResponse](
+			httpClient,
+			baseURL+HostServiceDeleteSeedProcedure,
+			connect.WithSchema(hostServiceMethods.ByName("DeleteSeed")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -100,6 +129,9 @@ type hostServiceClient struct {
 	getReport   *connect.Client[v1.GetReportRequest, v1.Report]
 	ensureGrant *connect.Client[v1.EnsureGrantRequest, v1.EnsureGrantResponse]
 	revokeGrant *connect.Client[v1.RevokeGrantRequest, v1.RevokeGrantResponse]
+	putSeed     *connect.Client[v1.PutSeedRequest, v1.Seed]
+	listSeeds   *connect.Client[v1.ListSeedsRequest, v1.ListSeedsResponse]
+	deleteSeed  *connect.Client[v1.DeleteSeedRequest, v1.DeleteSeedResponse]
 }
 
 // Hello calls execenv.v1.HostService.Hello.
@@ -122,6 +154,21 @@ func (c *hostServiceClient) RevokeGrant(ctx context.Context, req *connect.Reques
 	return c.revokeGrant.CallUnary(ctx, req)
 }
 
+// PutSeed calls execenv.v1.HostService.PutSeed.
+func (c *hostServiceClient) PutSeed(ctx context.Context) *connect.ClientStreamForClient[v1.PutSeedRequest, v1.Seed] {
+	return c.putSeed.CallClientStream(ctx)
+}
+
+// ListSeeds calls execenv.v1.HostService.ListSeeds.
+func (c *hostServiceClient) ListSeeds(ctx context.Context, req *connect.Request[v1.ListSeedsRequest]) (*connect.Response[v1.ListSeedsResponse], error) {
+	return c.listSeeds.CallUnary(ctx, req)
+}
+
+// DeleteSeed calls execenv.v1.HostService.DeleteSeed.
+func (c *hostServiceClient) DeleteSeed(ctx context.Context, req *connect.Request[v1.DeleteSeedRequest]) (*connect.Response[v1.DeleteSeedResponse], error) {
+	return c.deleteSeed.CallUnary(ctx, req)
+}
+
 // HostServiceHandler is an implementation of the execenv.v1.HostService service.
 type HostServiceHandler interface {
 	// Hello is the first call a client makes. It names the features the
@@ -133,6 +180,11 @@ type HostServiceHandler interface {
 	// exists with the same spec.
 	EnsureGrant(context.Context, *connect.Request[v1.EnsureGrantRequest]) (*connect.Response[v1.EnsureGrantResponse], error)
 	RevokeGrant(context.Context, *connect.Request[v1.RevokeGrantRequest]) (*connect.Response[v1.RevokeGrantResponse], error)
+	// PutSeed builds a seed from an archive. The first message names its
+	// digest; the rest are the archive's bytes.
+	PutSeed(context.Context, *connect.ClientStream[v1.PutSeedRequest]) (*connect.Response[v1.Seed], error)
+	ListSeeds(context.Context, *connect.Request[v1.ListSeedsRequest]) (*connect.Response[v1.ListSeedsResponse], error)
+	DeleteSeed(context.Context, *connect.Request[v1.DeleteSeedRequest]) (*connect.Response[v1.DeleteSeedResponse], error)
 }
 
 // NewHostServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -166,6 +218,24 @@ func NewHostServiceHandler(svc HostServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(hostServiceMethods.ByName("RevokeGrant")),
 		connect.WithHandlerOptions(opts...),
 	)
+	hostServicePutSeedHandler := connect.NewClientStreamHandler(
+		HostServicePutSeedProcedure,
+		svc.PutSeed,
+		connect.WithSchema(hostServiceMethods.ByName("PutSeed")),
+		connect.WithHandlerOptions(opts...),
+	)
+	hostServiceListSeedsHandler := connect.NewUnaryHandler(
+		HostServiceListSeedsProcedure,
+		svc.ListSeeds,
+		connect.WithSchema(hostServiceMethods.ByName("ListSeeds")),
+		connect.WithHandlerOptions(opts...),
+	)
+	hostServiceDeleteSeedHandler := connect.NewUnaryHandler(
+		HostServiceDeleteSeedProcedure,
+		svc.DeleteSeed,
+		connect.WithSchema(hostServiceMethods.ByName("DeleteSeed")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/execenv.v1.HostService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case HostServiceHelloProcedure:
@@ -176,6 +246,12 @@ func NewHostServiceHandler(svc HostServiceHandler, opts ...connect.HandlerOption
 			hostServiceEnsureGrantHandler.ServeHTTP(w, r)
 		case HostServiceRevokeGrantProcedure:
 			hostServiceRevokeGrantHandler.ServeHTTP(w, r)
+		case HostServicePutSeedProcedure:
+			hostServicePutSeedHandler.ServeHTTP(w, r)
+		case HostServiceListSeedsProcedure:
+			hostServiceListSeedsHandler.ServeHTTP(w, r)
+		case HostServiceDeleteSeedProcedure:
+			hostServiceDeleteSeedHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -199,4 +275,16 @@ func (UnimplementedHostServiceHandler) EnsureGrant(context.Context, *connect.Req
 
 func (UnimplementedHostServiceHandler) RevokeGrant(context.Context, *connect.Request[v1.RevokeGrantRequest]) (*connect.Response[v1.RevokeGrantResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.v1.HostService.RevokeGrant is not implemented"))
+}
+
+func (UnimplementedHostServiceHandler) PutSeed(context.Context, *connect.ClientStream[v1.PutSeedRequest]) (*connect.Response[v1.Seed], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.v1.HostService.PutSeed is not implemented"))
+}
+
+func (UnimplementedHostServiceHandler) ListSeeds(context.Context, *connect.Request[v1.ListSeedsRequest]) (*connect.Response[v1.ListSeedsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.v1.HostService.ListSeeds is not implemented"))
+}
+
+func (UnimplementedHostServiceHandler) DeleteSeed(context.Context, *connect.Request[v1.DeleteSeedRequest]) (*connect.Response[v1.DeleteSeedResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.v1.HostService.DeleteSeed is not implemented"))
 }

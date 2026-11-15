@@ -13,6 +13,7 @@ import (
 	"github.com/sudosylabs/execenv/internal/capacity"
 	"github.com/sudosylabs/execenv/internal/control"
 	"github.com/sudosylabs/execenv/internal/lifetime"
+	"github.com/sudosylabs/execenv/internal/seed"
 	"github.com/sudosylabs/execenv/internal/terminal"
 )
 
@@ -76,6 +77,7 @@ type Host struct {
 	cfg     Config
 	images  map[execenv.Image]*imageRecord
 	pool    *capacity.Pool
+	seeds   *seed.Store
 	probe   func() error
 	launch  launcher
 	attach  attacher
@@ -145,6 +147,20 @@ func New(cfg Config) (*Host, error) {
 		lost:    make(map[execenv.ID]*environment),
 		lock:    lock,
 	}
+	seeds, err := seed.Open(filepath.Join(cfg.WorkDir, "seeds"))
+	if err != nil {
+		_ = lock.Close()
+		return nil, execenv.Error("isolated", err)
+	}
+	// The launcher is read when a seed is put, not now, so the one serving
+	// grants is the one that builds their seeds.
+	seeds.Prepare = func(stage string) error {
+		if p, ok := h.launch.(seedPreparer); ok {
+			return p.prepareSeed(stage)
+		}
+		return nil
+	}
+	h.seeds = seeds
 	return h, nil
 }
 
@@ -252,6 +268,14 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		h.mu.Unlock()
 		return nil, execenv.Error("ensure", execenv.ErrNetwork)
 	}
+	seedDir := ""
+	if spec.Seed != "" {
+		if _, err := h.seeds.Get(spec.Seed); err != nil {
+			h.mu.Unlock()
+			return nil, execenv.Error("ensure", err)
+		}
+		seedDir = h.seeds.Dir(spec.Seed)
+	}
 	if err := h.pool.Reserve(spec.ID, spec.Resources); err != nil {
 		h.mu.Unlock()
 		return nil, execenv.Error("ensure", err)
@@ -283,6 +307,7 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		Rootfs:    image.Rootfs,
 		TreeDir:   treeDir,
 		Disk:      filepath.Join(filepath.Dir(treeDir), diskName),
+		Seed:      seedDir,
 		Resources: spec.Resources,
 		Limits:    spec.Limits,
 		Attach:    att,

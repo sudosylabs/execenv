@@ -22,6 +22,10 @@ type startRequest struct {
 	// Disk is the host path of the grant's sparse writable workspace disk,
 	// created by the launcher and removed with the grant directory.
 	Disk string
+	// Seed, when set, is the directory of the seed the workspace starts as
+	// a copy of, as the launcher's prepareSeed left it; otherwise the
+	// workspace starts empty.
+	Seed string
 	// Resources size the machine: virtual CPUs enough for CPUMillis,
 	// throttled to it; MemoryBytes of guest memory; a DiskBytes workspace
 	// disk.
@@ -50,6 +54,12 @@ type instance interface {
 
 type launcher interface {
 	Start(ctx context.Context, req startRequest) (instance, error)
+}
+
+// seedPreparer turns a freshly unpacked seed into what the launcher clones
+// for each grant. A launcher without one starts grants from the seed's tree.
+type seedPreparer interface {
+	prepareSeed(stage string) error
 }
 
 // staleCleaner releases host resources a crashed daemon left behind. It

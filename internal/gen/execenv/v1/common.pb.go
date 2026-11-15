@@ -487,7 +487,9 @@ type ErrorDetail struct {
 	// feature is the missing feature of a refused Hello.
 	Feature string `protobuf:"bytes,2,opt,name=feature,proto3" json:"feature,omitempty"`
 	// shortfall explains a "capacity" refusal.
-	Shortfall     *Shortfall `protobuf:"bytes,3,opt,name=shortfall,proto3" json:"shortfall,omitempty"`
+	Shortfall *Shortfall `protobuf:"bytes,3,opt,name=shortfall,proto3" json:"shortfall,omitempty"`
+	// missing_paths are the files a "missing_content" refusal names.
+	MissingPaths  []string `protobuf:"bytes,4,rep,name=missing_paths,json=missingPaths,proto3" json:"missing_paths,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -543,6 +545,13 @@ func (x *ErrorDetail) GetShortfall() *Shortfall {
 	return nil
 }
 
+func (x *ErrorDetail) GetMissingPaths() []string {
+	if x != nil {
+		return x.MissingPaths
+	}
+	return nil
+}
+
 var File_execenv_v1_common_proto protoreflect.FileDescriptor
 
 const file_execenv_v1_common_proto_rawDesc = "" +
@@ -575,11 +584,12 @@ const file_execenv_v1_common_proto_rawDesc = "" +
 	"\tShortfall\x120\n" +
 	"\bresource\x18\x01 \x01(\x0e2\x14.execenv.v1.ResourceR\bresource\x12\x1c\n" +
 	"\trequested\x18\x02 \x01(\x03R\trequested\x12\x12\n" +
-	"\x04free\x18\x03 \x01(\x03R\x04free\"x\n" +
+	"\x04free\x18\x03 \x01(\x03R\x04free\"\x9d\x01\n" +
 	"\vErrorDetail\x12\x1a\n" +
 	"\bsentinel\x18\x01 \x01(\tR\bsentinel\x12\x18\n" +
 	"\afeature\x18\x02 \x01(\tR\afeature\x123\n" +
-	"\tshortfall\x18\x03 \x01(\v2\x15.execenv.v1.ShortfallR\tshortfall*K\n" +
+	"\tshortfall\x18\x03 \x01(\v2\x15.execenv.v1.ShortfallR\tshortfall\x12#\n" +
+	"\rmissing_paths\x18\x04 \x03(\tR\fmissingPaths*K\n" +
 	"\aNetwork\x12\x17\n" +
 	"\x13NETWORK_UNSPECIFIED\x10\x00\x12\x10\n" +
 	"\fNETWORK_NONE\x10\x01\x12\x15\n" +
