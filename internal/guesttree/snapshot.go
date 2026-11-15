@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/internal/content"
@@ -174,6 +175,13 @@ func CaptureDirty(home string, previous *Snapshot, observe Observe, paths []stri
 	return c.result, nil
 }
 
+// gone reports an error that means the path is not what was listed any
+// more: removed, or a parent replaced by something that is not a
+// directory.
+func gone(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
+}
+
 // dirtyRoots is the smallest set of paths that covers every dirty one,
 // sorted; whole is set when one of them is the tree itself.
 func dirtyRoots(paths []string) (roots []string, whole bool) {
@@ -247,13 +255,18 @@ func newCapturer(home string, previous *Snapshot, observe Observe, kept map[stri
 // visit reads one directory's admitted entries.
 func (c *capturer) visit(directory string) error {
 	parent, err := c.root.Open(directory)
-	if errors.Is(err, fs.ErrNotExist) {
-		// Moved or removed since it was listed.
+	if gone(err) {
+		// Moved, removed or replaced since it was listed.
 		c.result.Unsettled = true
 		return nil
 	}
 	if err != nil {
 		return execenv.ErrLagged
+	}
+	if st, err := parent.Stat(); err != nil || !st.IsDir() {
+		_ = parent.Close()
+		c.result.Unsettled = true
+		return nil
 	}
 	entries, err := admitted(c.home, c.root, parent, directory, c.previous, c.identities, c.observe)
 	_ = parent.Close()
@@ -275,7 +288,7 @@ func (c *capturer) entry(name string) error {
 		return execenv.ErrLagged
 	}
 	info, err := c.root.Lstat(name)
-	if errors.Is(err, fs.ErrNotExist) {
+	if gone(err) {
 		c.result.Unsettled = true
 		return nil
 	}
@@ -296,15 +309,11 @@ func (c *capturer) entry(name string) error {
 			return execenv.ErrLagged
 		}
 	}
-	if err == nil && c.seen[key] != "" {
-		// One file under two names is a hard link, which a tree cannot
-		// hold, unless the first name is gone: then a move ran while the
-		// walk did, or its old name's change is still to come.
-		if first, ferr := c.root.Lstat(c.seen[key]); ferr == nil && os.SameFile(first, info) {
-			return execenv.ErrLagged
-		}
-	}
 	if err != nil || c.seen[key] != "" {
+		// Gone, or met again under another name: a move ran while the walk
+		// did, and the next capture sees where it went. A hard link is not
+		// this: physicalIdentity refuses a file with more than one link,
+		// and a directory has only one name.
 		c.result.Unsettled = true
 		return nil
 	}
