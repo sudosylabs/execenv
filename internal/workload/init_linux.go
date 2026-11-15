@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"unsafe"
 
 	"github.com/sudosylabs/execenv"
@@ -72,7 +73,16 @@ func RunInit(args []string) error {
 	command := exec.Command(executable, append([]string{"agent"}, args...)...)
 	command.Dir = execenv.GuestWorkspace
 	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if err := command.Start(); err != nil {
+	// The helper runs ahead of the workload: it must read a process's
+	// command line between its exec and its exit, and a short command on
+	// one virtual CPU otherwise ends first. Every thread it starts inherits
+	// this from the thread that forks it; workload processes drop it again
+	// in Exec.
+	runtime.LockOSThread()
+	_ = unix.Setpriority(unix.PRIO_PROCESS, 0, helperNice)
+	err = command.Start()
+	runtime.UnlockOSThread()
+	if err != nil {
 		return err
 	}
 	defer command.Process.Release()
@@ -129,6 +139,9 @@ func applyStart(m start.Message) error {
 	}
 	return nil
 }
+
+// helperNice is the guest helper's scheduling priority, the highest.
+const helperNice = -20
 
 // mountWorkspace mounts the grant's writable disk and binds the projected
 // tree and the scratch home from it, so neither lives in guest memory.

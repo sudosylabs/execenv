@@ -8,3 +8,6 @@ import "github.com/sudosylabs/execenv"
 func openKernelProcesses(string, string, string) (ProcessSource, error) {
 	return nil, execenv.ErrUnavailable
 }
+
+// runAhead has nothing to raise where there are no kernel process events.
+func runAhead() {}

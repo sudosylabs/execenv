@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/sudosylabs/execenv"
@@ -31,6 +32,8 @@ const (
 	procAckTimeout    = 2 * time.Second
 	procReceiveBuffer = 4 << 20
 	cmdlineReadBytes  = 8 << 10
+	// procReceivePoll is how often a blocked read checks for close.
+	procReceivePoll = 250 * time.Millisecond
 )
 
 // openKernelProcesses subscribes to the guest kernel's process events and
@@ -52,6 +55,10 @@ type connector struct {
 	f       *os.File
 	buf     []byte
 	pending []kernelEvent
+	// blocking is set once subscribed: reads then block in the reading
+	// thread itself, so the kernel wakes that thread directly.
+	blocking bool
+	closed   atomic.Bool
 }
 
 func openConnector() (*connector, error) {
@@ -107,9 +114,29 @@ func (c *connector) listen() error {
 		}
 		c.pending = append(c.pending, events...)
 		if ack == ackAccepted {
-			return nil
+			return c.block()
 		}
 	}
+}
+
+// block makes later reads block in the reader's own thread, waking every
+// procReceivePoll to notice a close.
+func (c *connector) block() error {
+	raw, err := c.f.SyscallConn()
+	if err != nil {
+		return execenv.ErrUnavailable
+	}
+	var setErr error
+	if err := raw.Control(func(fd uintptr) {
+		if setErr = unix.SetNonblock(int(fd), false); setErr == nil {
+			tv := unix.NsecToTimeval(procReceivePoll.Nanoseconds())
+			setErr = unix.SetsockoptTimeval(int(fd), unix.SOL_SOCKET, unix.SO_RCVTIMEO, &tv)
+		}
+	}); err != nil || setErr != nil {
+		return execenv.ErrUnavailable
+	}
+	c.blocking = true
+	return nil
 }
 
 func (c *connector) next() (kernelEvent, error) {
@@ -125,7 +152,10 @@ func (c *connector) next() (kernelEvent, error) {
 	return event, nil
 }
 
-func (c *connector) close() error { return c.f.Close() }
+func (c *connector) close() error {
+	c.closed.Store(true)
+	return c.f.Close()
+}
 
 // procAck is a subscription acknowledgement in one datagram.
 type procAck uint8
@@ -144,11 +174,19 @@ func (c *connector) receive() ([]kernelEvent, procAck, error) {
 	}
 	var n int
 	var recvErr error
-	if err := raw.Read(func(fd uintptr) bool {
-		n, _, recvErr = unix.Recvfrom(int(fd), c.buf, 0)
-		return !errors.Is(recvErr, unix.EAGAIN)
-	}); err != nil {
-		return nil, ackNone, err
+	for {
+		if err := raw.Read(func(fd uintptr) bool {
+			n, _, recvErr = unix.Recvfrom(int(fd), c.buf, 0)
+			return c.blocking || !errors.Is(recvErr, unix.EAGAIN)
+		}); err != nil {
+			return nil, ackNone, err
+		}
+		if !c.blocking || !errors.Is(recvErr, unix.EAGAIN) && !errors.Is(recvErr, unix.EINTR) {
+			break
+		}
+		if c.closed.Load() {
+			return nil, ackNone, os.ErrClosed
+		}
 	}
 	if errors.Is(recvErr, unix.ENOBUFS) {
 		return []kernelEvent{{Kind: kernelLost, At: time.Now()}}, ackNone, nil
@@ -254,4 +292,11 @@ func (procfs) cmdline(pid int) ([]byte, error) {
 
 func (procfs) cwd(pid int) (string, error) {
 	return os.Readlink("/proc/" + strconv.Itoa(pid) + "/cwd")
+}
+
+// runAhead moves the calling thread to the lowest real-time priority, above
+// every workload process, so the kernel runs it as soon as an event wakes
+// it. The kernel still keeps a share of each second for everything else.
+func runAhead() {
+	_ = unix.SchedSetAttr(0, &unix.SchedAttr{Size: unix.SizeofSchedAttr, Policy: unix.SCHED_FIFO, Priority: 1}, 0)
 }

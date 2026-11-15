@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -250,9 +251,18 @@ func (t *tracker) under(dir string) bool {
 type kernelProcesses struct {
 	reader  kernelReader
 	tracker *tracker
+	pinned  bool
 }
 
 func (k *kernelProcesses) Next() (execenv.ProcessEvent, error) {
+	if !k.pinned {
+		// Next is always called from one goroutine. Its thread reads each
+		// process's command line between that process's exec and its exit;
+		// it runs ahead of the workload so a short command cannot end first.
+		k.pinned = true
+		runtime.LockOSThread()
+		runAhead()
+	}
 	for {
 		raw, err := k.reader.next()
 		if err != nil {

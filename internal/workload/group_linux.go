@@ -168,6 +168,10 @@ func Exec(argv []string) error {
 	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
 		return err
 	}
+	// The helper's raised priority is not the workload's.
+	if err := unix.Setpriority(unix.PRIO_PROCESS, 0, 0); err != nil {
+		return err
+	}
 	path, err := exec.LookPath(argv[0])
 	if err != nil {
 		return execenv.ErrNotFound

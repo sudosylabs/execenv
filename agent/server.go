@@ -34,6 +34,11 @@ type Config struct {
 	// tool caches and virtual environments are neither observed nor
 	// harvested. Empty uses Home (local development only).
 	Scratch string
+	// DiskHome is Home reached through its disk's own mount, where the file
+	// API works: a write staged on the disk is renamed into place, and a
+	// rename never crosses mounts. A guest's Home is a bind mount of it.
+	// Empty uses Home.
+	DiskHome string
 	// Content is where file bodies are kept: uploads waiting for the
 	// projection and the bodies observations report. It must not be under
 	// Home and should be on the same disk. Empty uses a temporary directory
@@ -141,7 +146,11 @@ func New(cfg Config) (*Agent, error) {
 		s.journal = journal.New(cfg.Home, store, cfg.Barrier, nil)
 	}
 	// File API writes stage beside the content store, on the same disk.
-	fs, err := files.New(cfg.Home, filepath.Join(contentDir, ".files"))
+	fileHome := cfg.Home
+	if cfg.DiskHome != "" {
+		fileHome = cfg.DiskHome
+	}
+	fs, err := files.New(fileHome, filepath.Join(contentDir, ".files"))
 	if err != nil {
 		return nil, execenv.Error("agent", err)
 	}
