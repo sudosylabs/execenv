@@ -1,0 +1,104 @@
+syntax = "proto3";
+
+package execenv.guest.v1;
+
+import "execenv/v1/common.proto";
+import "execenv/v1/journal.proto";
+import "execenv/v1/process_log.proto";
+import "execenv/v1/terminal.proto";
+
+option go_package = "github.com/sudosylabs/execenv/internal/gen/execenv/guest/v1;guestv1";
+
+// AgentService is the guest helper, served on the per-grant guest link.
+// It is internal: the host speaks it, no caller does, and it is versioned
+// with the helper baked into each image.
+service AgentService {
+  // Hello says what this helper serves. The host refuses a helper on
+  // another protocol, or without the journal or the process log.
+  rpc Hello(HelloRequest) returns (HelloResponse);
+
+  // Attach starts the login shell. The first message is Started; the rest
+  // are output. A clean end is the shell's exit.
+  rpc Attach(AttachRequest) returns (stream AttachResponse);
+  // Input carries keystrokes for one shell. The first message names it.
+  rpc Input(stream InputRequest) returns (InputResponse);
+  rpc Resize(ResizeRequest) returns (ResizeResponse);
+  // Detach ends the shell.
+  rpc Detach(DetachRequest) returns (DetachResponse);
+
+  // Freeze closes I/O before the host pauses the machine; Thaw reopens it.
+  rpc Freeze(FreezeRequest) returns (FreezeResponse);
+  rpc Thaw(ThawRequest) returns (ThawResponse);
+
+  // ProcessEvents streams the workload's process log as it happens. The
+  // helper holds a bounded queue while no stream is open.
+  rpc ProcessEvents(ProcessEventsRequest) returns (stream ProcessEventsResponse);
+
+  rpc UploadContent(stream execenv.v1.UploadContentRequest) returns (execenv.v1.ContentReference);
+  rpc InitializeProjection(execenv.v1.InitializeProjectionRequest) returns (execenv.v1.ProjectionReceipt);
+  rpc ApplyProjection(execenv.v1.ApplyProjectionRequest) returns (execenv.v1.ProjectionReceipt);
+  rpc Observe(execenv.v1.ObserveRequest) returns (execenv.v1.ObservationPage);
+  rpc ReadObservationContent(execenv.v1.ReadObservationContentRequest) returns (stream execenv.v1.ContentChunk);
+  rpc ConfirmObservationProjection(execenv.v1.ConfirmObservationProjectionRequest) returns (execenv.v1.ConfirmObservationProjectionResponse);
+  rpc AcknowledgeObservations(execenv.v1.AcknowledgeObservationsRequest) returns (execenv.v1.AcknowledgeObservationsResponse);
+}
+
+message HelloRequest {}
+
+message HelloResponse {
+  uint32 protocol = 1;
+  bool journal = 2;
+  bool processes = 3;
+}
+
+message AttachRequest {
+  execenv.v1.Window window = 1;
+}
+
+message AttachResponse {
+  oneof event {
+    Started started = 1;
+    bytes output = 2;
+  }
+}
+
+message Started {
+  // shell_id names this shell for Input, Resize and Detach.
+  uint64 shell_id = 1;
+}
+
+message InputRequest {
+  oneof part {
+    uint64 shell_id = 1;
+    bytes data = 2;
+  }
+}
+
+message InputResponse {}
+
+message ResizeRequest {
+  uint64 shell_id = 1;
+  execenv.v1.Window window = 2;
+}
+
+message ResizeResponse {}
+
+message DetachRequest {
+  uint64 shell_id = 1;
+}
+
+message DetachResponse {}
+
+message FreezeRequest {}
+
+message FreezeResponse {}
+
+message ThawRequest {}
+
+message ThawResponse {}
+
+message ProcessEventsRequest {}
+
+message ProcessEventsResponse {
+  repeated execenv.v1.ProcessEvent events = 1;
+}

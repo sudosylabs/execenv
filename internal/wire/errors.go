@@ -1,4 +1,4 @@
-package remote
+package wire
 
 import (
 	"context"
@@ -40,7 +40,7 @@ var sentinels = []struct {
 // wireError turns a host error into a Connect error. Its message is the
 // sentinel's own text: host errors never carry file bodies, PTY bytes or
 // tokens, and nothing else of the inner error crosses the wire.
-func wireError(err error) error {
+func Error(err error) error {
 	if err == nil {
 		return nil
 	}
@@ -52,13 +52,13 @@ func wireError(err error) error {
 	}
 	for _, s := range sentinels {
 		if errors.Is(err, s.err) {
-			return withDetail(connect.NewError(s.code, s.err), &execenvv1.ErrorDetail{Sentinel: s.name})
+			return WithDetail(connect.NewError(s.code, s.err), &execenvv1.ErrorDetail{Sentinel: s.name})
 		}
 	}
-	return withDetail(connect.NewError(connect.CodeUnavailable, execenv.ErrUnavailable), &execenvv1.ErrorDetail{Sentinel: "unavailable"})
+	return WithDetail(connect.NewError(connect.CodeUnavailable, execenv.ErrUnavailable), &execenvv1.ErrorDetail{Sentinel: "unavailable"})
 }
 
-func withDetail(err *connect.Error, detail *execenvv1.ErrorDetail) *connect.Error {
+func WithDetail(err *connect.Error, detail *execenvv1.ErrorDetail) *connect.Error {
 	if d, derr := connect.NewErrorDetail(detail); derr == nil {
 		err.AddDetail(d)
 	}
@@ -67,7 +67,7 @@ func withDetail(err *connect.Error, detail *execenvv1.ErrorDetail) *connect.Erro
 
 // hostError turns a wire error back into the execenv sentinel. A response
 // without a detail is not from an execenv host, or the connection failed.
-func hostError(op string, err error) error {
+func HostError(op string, err error) error {
 	if err == nil {
 		return nil
 	}

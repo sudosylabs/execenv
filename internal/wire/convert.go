@@ -1,4 +1,7 @@
-package remote
+// Package wire converts between the execenv contract and its protobuf
+// schema, and between execenv errors and Connect errors. Both the remote
+// link and the guest link use it.
+package wire
 
 import (
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -10,7 +13,7 @@ import (
 // Conversions between the contract and its schema. An enum value outside
 // the schema converts to its zero value, which every validator refuses.
 
-func networkTo(n execenv.Network) execenvv1.Network {
+func NetworkTo(n execenv.Network) execenvv1.Network {
 	switch n {
 	case execenv.NetworkNone:
 		return execenvv1.Network_NETWORK_NONE
@@ -21,7 +24,7 @@ func networkTo(n execenv.Network) execenvv1.Network {
 	}
 }
 
-func networkFrom(n execenvv1.Network) (execenv.Network, bool) {
+func NetworkFrom(n execenvv1.Network) (execenv.Network, bool) {
 	switch n {
 	case execenvv1.Network_NETWORK_NONE:
 		return execenv.NetworkNone, true
@@ -32,7 +35,7 @@ func networkFrom(n execenvv1.Network) (execenv.Network, bool) {
 	}
 }
 
-func isolationTo(i execenv.Isolation) execenvv1.Isolation {
+func IsolationTo(i execenv.Isolation) execenvv1.Isolation {
 	switch i {
 	case execenv.IsolationNone:
 		return execenvv1.Isolation_ISOLATION_NONE
@@ -43,7 +46,7 @@ func isolationTo(i execenv.Isolation) execenvv1.Isolation {
 	}
 }
 
-func isolationFrom(i execenvv1.Isolation) execenv.Isolation {
+func IsolationFrom(i execenvv1.Isolation) execenv.Isolation {
 	switch i {
 	case execenvv1.Isolation_ISOLATION_NONE:
 		return execenv.IsolationNone
@@ -54,7 +57,7 @@ func isolationFrom(i execenvv1.Isolation) execenv.Isolation {
 	}
 }
 
-func reportTo(r execenv.Report) *execenvv1.Report {
+func ReportTo(r execenv.Report) *execenvv1.Report {
 	out := &execenvv1.Report{
 		Usable:    r.Usable,
 		Reason:    r.Reason,
@@ -62,18 +65,18 @@ func reportTo(r execenv.Report) *execenvv1.Report {
 		Grants:    int64(r.Grants),
 		Lost:      int64(r.Lost),
 		Release:   r.Release,
-		Isolation: isolationTo(r.Isolation),
+		Isolation: IsolationTo(r.Isolation),
 	}
 	for _, image := range r.Images {
 		out.Images = append(out.Images, string(image))
 	}
 	for _, n := range r.Networks {
-		out.Networks = append(out.Networks, networkTo(n))
+		out.Networks = append(out.Networks, NetworkTo(n))
 	}
 	return out
 }
 
-func reportFrom(r *execenvv1.Report) execenv.Report {
+func ReportFrom(r *execenvv1.Report) execenv.Report {
 	out := execenv.Report{
 		Usable:    r.GetUsable(),
 		Reason:    r.GetReason(),
@@ -81,33 +84,33 @@ func reportFrom(r *execenvv1.Report) execenv.Report {
 		Grants:    int(r.GetGrants()),
 		Lost:      int(r.GetLost()),
 		Release:   r.GetRelease(),
-		Isolation: isolationFrom(r.GetIsolation()),
+		Isolation: IsolationFrom(r.GetIsolation()),
 	}
 	for _, image := range r.GetImages() {
 		out.Images = append(out.Images, execenv.Image(image))
 	}
 	for _, n := range r.GetNetworks() {
-		if network, ok := networkFrom(n); ok {
+		if network, ok := NetworkFrom(n); ok {
 			out.Networks = append(out.Networks, network)
 		}
 	}
 	return out
 }
 
-func specTo(s execenv.Spec) *execenvv1.Spec {
-	return &execenvv1.Spec{Id: string(s.ID), Image: string(s.Image), Network: networkTo(s.Network)}
+func SpecTo(s execenv.Spec) *execenvv1.Spec {
+	return &execenvv1.Spec{Id: string(s.ID), Image: string(s.Image), Network: NetworkTo(s.Network)}
 }
 
-func specFrom(s *execenvv1.Spec) (execenv.Spec, bool) {
-	network, ok := networkFrom(s.GetNetwork())
+func SpecFrom(s *execenvv1.Spec) (execenv.Spec, bool) {
+	network, ok := NetworkFrom(s.GetNetwork())
 	return execenv.Spec{ID: execenv.ID(s.GetId()), Image: execenv.Image(s.GetImage()), Network: network}, ok
 }
 
-func fenceTo(f execenv.ProjectionFence) *execenvv1.Fence {
+func FenceTo(f execenv.ProjectionFence) *execenvv1.Fence {
 	return &execenvv1.Fence{GrantId: string(f.ExecutionGrantID), Epoch: f.EnvironmentEpoch, Revision: f.FenceRevision}
 }
 
-func fenceFrom(f *execenvv1.Fence) execenv.ProjectionFence {
+func FenceFrom(f *execenvv1.Fence) execenv.ProjectionFence {
 	return execenv.ProjectionFence{
 		ExecutionGrantID: execenv.ID(f.GetGrantId()),
 		EnvironmentEpoch: f.GetEpoch(),
@@ -121,9 +124,9 @@ var controlStates = map[execenv.ControlState]execenvv1.ControlState{
 	execenv.ControlRevoked: execenvv1.ControlState_CONTROL_STATE_REVOKED,
 }
 
-func controlStateTo(s execenv.ControlState) execenvv1.ControlState { return controlStates[s] }
+func ControlStateTo(s execenv.ControlState) execenvv1.ControlState { return controlStates[s] }
 
-func controlStateFrom(s execenvv1.ControlState) execenv.ControlState {
+func ControlStateFrom(s execenvv1.ControlState) execenv.ControlState {
 	for k, v := range controlStates {
 		if v == s {
 			return k
@@ -132,22 +135,22 @@ func controlStateFrom(s execenvv1.ControlState) execenv.ControlState {
 	return ""
 }
 
-func receiptTo(r execenv.ControlReceipt) *execenvv1.ControlReceipt {
-	return &execenvv1.ControlReceipt{Fence: fenceTo(r.Fence), State: controlStateTo(r.State), Confirmed: r.Confirmed}
+func ReceiptTo(r execenv.ControlReceipt) *execenvv1.ControlReceipt {
+	return &execenvv1.ControlReceipt{Fence: FenceTo(r.Fence), State: ControlStateTo(r.State), Confirmed: r.Confirmed}
 }
 
-func receiptFrom(r *execenvv1.ControlReceipt) execenv.ControlReceipt {
-	return execenv.ControlReceipt{Fence: fenceFrom(r.GetFence()), State: controlStateFrom(r.GetState()), Confirmed: r.GetConfirmed()}
+func ReceiptFrom(r *execenvv1.ControlReceipt) execenv.ControlReceipt {
+	return execenv.ControlReceipt{Fence: FenceFrom(r.GetFence()), State: ControlStateFrom(r.GetState()), Confirmed: r.GetConfirmed()}
 }
 
-func contentTo(c *execenv.ContentReference) *execenvv1.ContentReference {
+func ContentTo(c *execenv.ContentReference) *execenvv1.ContentReference {
 	if c == nil {
 		return nil
 	}
 	return &execenvv1.ContentReference{Size: c.Size, Sha256: c.Digest, TransferId: c.TransferID}
 }
 
-func contentFrom(c *execenvv1.ContentReference) *execenv.ContentReference {
+func ContentFrom(c *execenvv1.ContentReference) *execenv.ContentReference {
 	if c == nil {
 		return nil
 	}
@@ -159,9 +162,9 @@ var projectionKinds = map[execenv.ProjectionKind]execenvv1.ProjectionKind{
 	execenv.ProjectionDirectory: execenvv1.ProjectionKind_PROJECTION_KIND_DIRECTORY,
 }
 
-func kindTo(k execenv.ProjectionKind) execenvv1.ProjectionKind { return projectionKinds[k] }
+func KindTo(k execenv.ProjectionKind) execenvv1.ProjectionKind { return projectionKinds[k] }
 
-func kindFrom(k execenvv1.ProjectionKind) execenv.ProjectionKind {
+func KindFrom(k execenvv1.ProjectionKind) execenv.ProjectionKind {
 	for key, v := range projectionKinds {
 		if v == k {
 			return key
@@ -178,7 +181,7 @@ var projectionOperations = map[execenv.ProjectionOperation]execenvv1.ProjectionO
 	execenv.ProjectionDelete: execenvv1.ProjectionOperation_PROJECTION_OPERATION_DELETE,
 }
 
-func operationFrom(o execenvv1.ProjectionOperation) execenv.ProjectionOperation {
+func OperationFrom(o execenvv1.ProjectionOperation) execenv.ProjectionOperation {
 	for key, v := range projectionOperations {
 		if v == o {
 			return key
@@ -187,65 +190,65 @@ func operationFrom(o execenvv1.ProjectionOperation) execenv.ProjectionOperation 
 	return ""
 }
 
-func mutationTo(m execenv.ProjectionMutation) *execenvv1.ProjectionMutation {
+func MutationTo(m execenv.ProjectionMutation) *execenvv1.ProjectionMutation {
 	return &execenvv1.ProjectionMutation{
 		JournalCursor:           m.JournalCursor,
 		EntryId:                 m.EntryID,
 		Operation:               projectionOperations[m.Operation],
-		Kind:                    kindTo(m.Kind),
+		Kind:                    KindTo(m.Kind),
 		Path:                    m.Path,
 		DestinationPath:         m.DestinationPath,
 		ExpectedContentVersion:  string(m.ExpectedContentVersion),
 		ResultingContentVersion: string(m.ResultingContentVersion),
 		Recursive:               m.Recursive,
-		Content:                 contentTo(m.Content),
+		Content:                 ContentTo(m.Content),
 	}
 }
 
-func mutationFrom(m *execenvv1.ProjectionMutation) execenv.ProjectionMutation {
+func MutationFrom(m *execenvv1.ProjectionMutation) execenv.ProjectionMutation {
 	return execenv.ProjectionMutation{
 		JournalCursor:           m.GetJournalCursor(),
 		EntryID:                 m.GetEntryId(),
-		Operation:               operationFrom(m.GetOperation()),
-		Kind:                    kindFrom(m.GetKind()),
+		Operation:               OperationFrom(m.GetOperation()),
+		Kind:                    KindFrom(m.GetKind()),
 		Path:                    m.GetPath(),
 		DestinationPath:         m.GetDestinationPath(),
 		ExpectedContentVersion:  execenv.Version(m.GetExpectedContentVersion()),
 		ResultingContentVersion: execenv.Version(m.GetResultingContentVersion()),
 		Recursive:               m.Recursive,
-		Content:                 contentFrom(m.GetContent()),
+		Content:                 ContentFrom(m.GetContent()),
 	}
 }
 
-func mutationsTo(ms []execenv.ProjectionMutation) []*execenvv1.ProjectionMutation {
+func MutationsTo(ms []execenv.ProjectionMutation) []*execenvv1.ProjectionMutation {
 	out := make([]*execenvv1.ProjectionMutation, 0, len(ms))
 	for _, m := range ms {
-		out = append(out, mutationTo(m))
+		out = append(out, MutationTo(m))
 	}
 	return out
 }
 
-func mutationsFrom(ms []*execenvv1.ProjectionMutation) []execenv.ProjectionMutation {
+func MutationsFrom(ms []*execenvv1.ProjectionMutation) []execenv.ProjectionMutation {
 	out := make([]execenv.ProjectionMutation, 0, len(ms))
 	for _, m := range ms {
-		out = append(out, mutationFrom(m))
+		out = append(out, MutationFrom(m))
 	}
 	return out
 }
 
-func initializationTo(r execenv.ProjectionInitialization) *execenvv1.InitializeProjectionRequest {
+func InitializationTo(r execenv.ProjectionInitialization) *execenvv1.InitializeProjectionRequest {
 	out := &execenvv1.InitializeProjectionRequest{
-		Fence:           fenceTo(r.Fence),
+		Fence:           FenceTo(r.Fence),
 		MutationId:      r.MutationID,
 		WorkspaceCursor: r.WorkspaceCursor,
 	}
 	for _, e := range r.Entries {
 		out.Entries = append(out.Entries, &execenvv1.ProjectionEntry{
 			EntryId:        e.EntryID,
-			Kind:           kindTo(e.Kind),
+			Kind:           KindTo(e.Kind),
 			Path:           e.Path,
 			ContentVersion: string(e.ContentVersion),
-			Content:        contentTo(e.Content),
+			Content:        ContentTo(e.Content),
 		})
 	}
 	if r.Ignore != nil {
@@ -254,9 +257,9 @@ func initializationTo(r execenv.ProjectionInitialization) *execenvv1.InitializeP
 	return out
 }
 
-func initializationFrom(r *execenvv1.InitializeProjectionRequest) execenv.ProjectionInitialization {
+func InitializationFrom(r *execenvv1.InitializeProjectionRequest) execenv.ProjectionInitialization {
 	out := execenv.ProjectionInitialization{
-		Fence:           fenceFrom(r.GetFence()),
+		Fence:           FenceFrom(r.GetFence()),
 		MutationID:      r.GetMutationId(),
 		WorkspaceCursor: r.GetWorkspaceCursor(),
 		Entries:         make([]execenv.ProjectionEntry, 0, len(r.GetEntries())),
@@ -264,10 +267,10 @@ func initializationFrom(r *execenvv1.InitializeProjectionRequest) execenv.Projec
 	for _, e := range r.GetEntries() {
 		out.Entries = append(out.Entries, execenv.ProjectionEntry{
 			EntryID:        e.GetEntryId(),
-			Kind:           kindFrom(e.GetKind()),
+			Kind:           KindFrom(e.GetKind()),
 			Path:           e.GetPath(),
 			ContentVersion: execenv.Version(e.GetContentVersion()),
-			Content:        contentFrom(e.GetContent()),
+			Content:        ContentFrom(e.GetContent()),
 		})
 	}
 	if ignore := r.GetIgnore(); ignore != nil {
@@ -276,40 +279,40 @@ func initializationFrom(r *execenvv1.InitializeProjectionRequest) execenv.Projec
 	return out
 }
 
-func applyTo(r execenv.ProjectionApply) *execenvv1.ApplyProjectionRequest {
+func ApplyTo(r execenv.ProjectionApply) *execenvv1.ApplyProjectionRequest {
 	return &execenvv1.ApplyProjectionRequest{
-		Fence:                  fenceTo(r.Fence),
+		Fence:                  FenceTo(r.Fence),
 		MutationId:             r.MutationID,
 		FromWorkspaceCursor:    r.FromWorkspaceCursor,
 		ThroughWorkspaceCursor: r.ThroughWorkspaceCursor,
 		ExpectedHostCursor:     r.ExpectedHostCursor,
-		Mutations:              mutationsTo(r.Mutations),
+		Mutations:              MutationsTo(r.Mutations),
 	}
 }
 
-func applyFrom(r *execenvv1.ApplyProjectionRequest) execenv.ProjectionApply {
+func ApplyFrom(r *execenvv1.ApplyProjectionRequest) execenv.ProjectionApply {
 	return execenv.ProjectionApply{
-		Fence:                  fenceFrom(r.GetFence()),
+		Fence:                  FenceFrom(r.GetFence()),
 		MutationID:             r.GetMutationId(),
 		FromWorkspaceCursor:    r.GetFromWorkspaceCursor(),
 		ThroughWorkspaceCursor: r.GetThroughWorkspaceCursor(),
 		ExpectedHostCursor:     r.GetExpectedHostCursor(),
-		Mutations:              mutationsFrom(r.GetMutations()),
+		Mutations:              MutationsFrom(r.GetMutations()),
 	}
 }
 
-func projectionReceiptTo(r execenv.ProjectionReceipt) *execenvv1.ProjectionReceipt {
+func ProjectionReceiptTo(r execenv.ProjectionReceipt) *execenvv1.ProjectionReceipt {
 	return &execenvv1.ProjectionReceipt{
-		Fence:                  fenceTo(r.Fence),
+		Fence:                  FenceTo(r.Fence),
 		MutationId:             r.MutationID,
 		AppliedWorkspaceCursor: r.AppliedWorkspaceCursor,
 		HostCursor:             r.HostCursor,
 	}
 }
 
-func projectionReceiptFrom(r *execenvv1.ProjectionReceipt) execenv.ProjectionReceipt {
+func ProjectionReceiptFrom(r *execenvv1.ProjectionReceipt) execenv.ProjectionReceipt {
 	return execenv.ProjectionReceipt{
-		Fence:                  fenceFrom(r.GetFence()),
+		Fence:                  FenceFrom(r.GetFence()),
 		MutationID:             r.GetMutationId(),
 		AppliedWorkspaceCursor: r.GetAppliedWorkspaceCursor(),
 		HostCursor:             r.GetHostCursor(),
@@ -324,7 +327,7 @@ var observationOperations = map[execenv.ObservationOperation]execenvv1.Observati
 	execenv.ObservationDelete:          execenvv1.ObservationOperation_OBSERVATION_OPERATION_DELETE,
 }
 
-func observationOperationFrom(o execenvv1.ObservationOperation) execenv.ObservationOperation {
+func ObservationOperationFrom(o execenvv1.ObservationOperation) execenv.ObservationOperation {
 	for key, v := range observationOperations {
 		if v == o {
 			return key
@@ -333,28 +336,28 @@ func observationOperationFrom(o execenvv1.ObservationOperation) execenv.Observat
 	return ""
 }
 
-func observationPageTo(p execenv.ObservationPage) *execenvv1.ObservationPage {
+func ObservationPageTo(p execenv.ObservationPage) *execenvv1.ObservationPage {
 	out := &execenvv1.ObservationPage{HostCursor: p.HostCursor, AcknowledgedHostCursor: p.AcknowledgedHostCursor}
 	for _, o := range p.Observations {
 		out.Observations = append(out.Observations, &execenvv1.Observation{
-			Fence:                      fenceTo(o.Fence),
+			Fence:                      FenceTo(o.Fence),
 			HostSequence:               o.HostSequence,
 			BasedOnWorkspaceCursor:     o.BasedOnWorkspaceCursor,
 			Operation:                  observationOperations[o.Operation],
 			NodeIdentity:               o.NodeIdentity,
-			Kind:                       kindTo(o.Kind),
+			Kind:                       KindTo(o.Kind),
 			Path:                       o.Path,
 			DestinationPath:            o.DestinationPath,
 			ExpectedContentVersion:     string(o.ExpectedContentVersion),
 			Recursive:                  o.Recursive,
-			Content:                    contentTo(o.Content),
+			Content:                    ContentTo(o.Content),
 			OriginProjectionMutationId: o.OriginProjectionMutationID,
 		})
 	}
 	return out
 }
 
-func observationPageFrom(p *execenvv1.ObservationPage) execenv.ObservationPage {
+func ObservationPageFrom(p *execenvv1.ObservationPage) execenv.ObservationPage {
 	out := execenv.ObservationPage{
 		HostCursor:             p.GetHostCursor(),
 		AcknowledgedHostCursor: p.GetAcknowledgedHostCursor(),
@@ -362,17 +365,17 @@ func observationPageFrom(p *execenvv1.ObservationPage) execenv.ObservationPage {
 	}
 	for _, o := range p.GetObservations() {
 		out.Observations = append(out.Observations, execenv.ExecutionObservation{
-			Fence:                      fenceFrom(o.GetFence()),
+			Fence:                      FenceFrom(o.GetFence()),
 			HostSequence:               o.GetHostSequence(),
 			BasedOnWorkspaceCursor:     o.GetBasedOnWorkspaceCursor(),
-			Operation:                  observationOperationFrom(o.GetOperation()),
+			Operation:                  ObservationOperationFrom(o.GetOperation()),
 			NodeIdentity:               o.GetNodeIdentity(),
-			Kind:                       kindFrom(o.GetKind()),
+			Kind:                       KindFrom(o.GetKind()),
 			Path:                       o.GetPath(),
 			DestinationPath:            o.GetDestinationPath(),
 			ExpectedContentVersion:     execenv.Version(o.GetExpectedContentVersion()),
 			Recursive:                  o.Recursive,
-			Content:                    contentFrom(o.GetContent()),
+			Content:                    ContentFrom(o.GetContent()),
 			OriginProjectionMutationID: o.GetOriginProjectionMutationId(),
 		})
 	}
@@ -385,7 +388,7 @@ var processKinds = map[execenv.ProcessKind]execenvv1.ProcessKind{
 	execenv.ProcessDropped: execenvv1.ProcessKind_PROCESS_KIND_DROPPED,
 }
 
-func processKindFrom(k execenvv1.ProcessKind) execenv.ProcessKind {
+func ProcessKindFrom(k execenvv1.ProcessKind) execenv.ProcessKind {
 	for key, v := range processKinds {
 		if v == k {
 			return key
@@ -394,7 +397,7 @@ func processKindFrom(k execenvv1.ProcessKind) execenv.ProcessKind {
 	return ""
 }
 
-func processPageTo(p execenv.ProcessPage) *execenvv1.ProcessPage {
+func ProcessPageTo(p execenv.ProcessPage) *execenvv1.ProcessPage {
 	out := &execenvv1.ProcessPage{Next: p.Next}
 	for _, e := range p.Events {
 		event := &execenvv1.ProcessEvent{
@@ -419,12 +422,12 @@ func processPageTo(p execenv.ProcessPage) *execenvv1.ProcessPage {
 	return out
 }
 
-func processPageFrom(p *execenvv1.ProcessPage) execenv.ProcessPage {
+func ProcessPageFrom(p *execenvv1.ProcessPage) execenv.ProcessPage {
 	out := execenv.ProcessPage{Next: p.GetNext(), Events: make([]execenv.ProcessEvent, 0, len(p.GetEvents()))}
 	for _, e := range p.GetEvents() {
 		event := execenv.ProcessEvent{
 			Sequence:  e.GetSequence(),
-			Kind:      processKindFrom(e.GetKind()),
+			Kind:      ProcessKindFrom(e.GetKind()),
 			PID:       int(e.GetPid()),
 			ParentPID: int(e.GetParentPid()),
 			Argv:      e.GetArgv(),
@@ -444,11 +447,11 @@ func processPageFrom(p *execenvv1.ProcessPage) execenv.ProcessPage {
 	return out
 }
 
-func windowTo(w execenv.Window) *execenvv1.Window {
+func WindowTo(w execenv.Window) *execenvv1.Window {
 	return &execenvv1.Window{Cols: uint32(w.Cols), Rows: uint32(w.Rows)}
 }
 
-func windowFrom(w *execenvv1.Window) (execenv.Window, bool) {
+func WindowFrom(w *execenvv1.Window) (execenv.Window, bool) {
 	if w.GetCols() > 0xffff || w.GetRows() > 0xffff {
 		return execenv.Window{}, false
 	}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/sudosylabs/execenv"
 	execenvv1 "github.com/sudosylabs/execenv/internal/gen/execenv/v1"
+	"github.com/sudosylabs/execenv/internal/wire"
 )
 
 // Attach opens the terminal's output stream and waits for the host to
@@ -19,7 +20,7 @@ func (e *remoteEnv) Attach(ctx context.Context, request execenv.AttachRequest) (
 	if err := e.alive(); err != nil {
 		return nil, err
 	}
-	msg := &execenvv1.AttachRequest{GrantId: string(e.id), Epoch: e.epoch, Window: windowTo(request.Window), Takeover: request.Takeover}
+	msg := &execenvv1.AttachRequest{GrantId: string(e.id), Epoch: e.epoch, Window: wire.WindowTo(request.Window), Takeover: request.Takeover}
 	if request.Resume != nil {
 		msg.Resume = &execenvv1.TerminalPosition{TerminalId: string(request.Resume.Terminal), Offset: request.Resume.Offset}
 	}
@@ -27,7 +28,7 @@ func (e *remoteEnv) Attach(ctx context.Context, request execenv.AttachRequest) (
 	stream, err := e.client.terminal.Attach(sctx, connect.NewRequest(msg))
 	if err != nil {
 		cancel()
-		return nil, hostError("attach", err)
+		return nil, wire.HostError("attach", err)
 	}
 	attached := make(chan error, 1)
 	var first *execenvv1.Attached
@@ -81,7 +82,7 @@ func streamEnd(err error) error {
 	if err == nil {
 		return io.EOF
 	}
-	return hostError("read", err)
+	return wire.HostError("read", err)
 }
 
 // streamEndFor is streamEnd, except that a stream ended by the client's own
@@ -265,7 +266,7 @@ func (t *remoteTerminal) Write(p []byte) (int, error) {
 	}
 	written := 0
 	for len(p) > 0 {
-		n := min(len(p), chunkBytes)
+		n := min(len(p), wire.ChunkSize)
 		if err := t.input.Send(&execenvv1.InputRequest{Part: &execenvv1.InputRequest_Data{Data: p[:n]}}); err != nil {
 			input := t.input
 			t.input = nil
@@ -285,7 +286,7 @@ func (t *remoteTerminal) inputFailed(input *connect.ClientStreamForClient[execen
 	if err == nil {
 		err = execenv.ErrClosed
 	}
-	return hostError("write", err)
+	return wire.HostError("write", err)
 }
 
 // drainInput closes the input stream and waits until the host has written
@@ -308,8 +309,8 @@ func (t *remoteTerminal) Resize(ctx context.Context, win execenv.Window) error {
 	}
 	ctx, cancel := t.env.client.call(ctx)
 	defer cancel()
-	_, err = t.env.client.terminal.Resize(ctx, connect.NewRequest(&execenvv1.ResizeRequest{AttachmentId: t.key, Window: windowTo(win)}))
-	return hostError("resize", err)
+	_, err = t.env.client.terminal.Resize(ctx, connect.NewRequest(&execenvv1.ResizeRequest{AttachmentId: t.key, Window: wire.WindowTo(win)}))
+	return wire.HostError("resize", err)
 }
 
 // Close detaches. The shell keeps running on the host for its grace.
@@ -343,7 +344,7 @@ func (t *remoteTerminal) Hangup(ctx context.Context) error {
 	cctx, cancel := t.env.client.call(ctx)
 	defer cancel()
 	if _, err := t.env.client.terminal.Hangup(cctx, connect.NewRequest(&execenvv1.HangupRequest{AttachmentId: t.key})); err != nil {
-		return hostError("hangup", err)
+		return wire.HostError("hangup", err)
 	}
 	t.end(execenv.ErrClosed)
 	return nil

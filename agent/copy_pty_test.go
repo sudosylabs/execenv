@@ -10,20 +10,20 @@ import (
 	"github.com/sudosylabs/execenv"
 )
 
-func TestPtyEndStatusFrozenWinsOverHangup(t *testing.T) {
+func TestPtyEndFrozenWinsOverHangup(t *testing.T) {
 	t.Parallel()
 	eio := &os.PathError{Op: "read", Path: "ptmx", Err: syscall.EIO}
-	if got := ptyEndStatus(true, eio); got != "frozen" {
-		t.Fatalf("ptyEndStatus(frozen, EIO) = %q, want frozen", got)
+	if got := ptyEnd(true, eio); !errors.Is(got, execenv.ErrFrozen) {
+		t.Fatalf("ptyEnd(frozen, EIO) = %v, want ErrFrozen", got)
 	}
-	if got := ptyEndStatus(false, eio); got != "" {
-		t.Fatalf("ptyEndStatus(EIO) = %q, want empty hangup", got)
+	if got := ptyEnd(false, eio); got != nil {
+		t.Fatalf("ptyEnd(EIO) = %v, want a clean hangup", got)
 	}
-	if got := ptyEndStatus(false, io.EOF); got != "" {
-		t.Fatalf("ptyEndStatus(EOF) = %q, want empty hangup", got)
+	if got := ptyEnd(false, io.EOF); got != nil {
+		t.Fatalf("ptyEnd(EOF) = %v, want a clean hangup", got)
 	}
-	if got := ptyEndStatus(false, execenv.ErrBusy); got != "busy" {
-		t.Fatalf("ptyEndStatus(ErrBusy) = %q, want busy", got)
+	if got := ptyEnd(false, execenv.ErrBusy); !errors.Is(got, execenv.ErrBusy) {
+		t.Fatalf("ptyEnd(ErrBusy) = %v, want ErrBusy", got)
 	}
 	if !errors.Is(eio, syscall.EIO) {
 		t.Fatal("PathError EIO must match syscall.EIO")

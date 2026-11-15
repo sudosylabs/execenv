@@ -18,6 +18,7 @@ import (
 	"github.com/sudosylabs/execenv"
 	execenvv1 "github.com/sudosylabs/execenv/internal/gen/execenv/v1"
 	"github.com/sudosylabs/execenv/internal/gen/execenv/v1/execenvv1connect"
+	"github.com/sudosylabs/execenv/internal/wire"
 )
 
 var _ execenv.Host = (*Client)(nil)
@@ -80,7 +81,7 @@ func New(cfg Config) (*Client, error) {
 	hello, err := c.host.Hello(hctx, connect.NewRequest(&execenvv1.HelloRequest{RequiredFeatures: features}))
 	if err != nil {
 		_ = c.Close()
-		return nil, hostError("dial", err)
+		return nil, wire.HostError("dial", err)
 	}
 	if hello.Msg.GetProtocol() != protocol {
 		_ = c.Close()
@@ -162,9 +163,9 @@ func (c *Client) Ready(ctx context.Context) (execenv.Report, error) {
 	defer cancel()
 	resp, err := c.host.GetReport(ctx, connect.NewRequest(&execenvv1.GetReportRequest{}))
 	if err != nil {
-		return execenv.Report{}, hostError("ready", err)
+		return execenv.Report{}, wire.HostError("ready", err)
 	}
-	return reportFrom(resp.Msg), nil
+	return wire.ReportFrom(resp.Msg), nil
 }
 
 func (c *Client) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, error) {
@@ -173,9 +174,9 @@ func (c *Client) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, er
 	}
 	ctx, cancel := c.call(ctx)
 	defer cancel()
-	resp, err := c.host.EnsureGrant(ctx, connect.NewRequest(&execenvv1.EnsureGrantRequest{Spec: specTo(spec)}))
+	resp, err := c.host.EnsureGrant(ctx, connect.NewRequest(&execenvv1.EnsureGrantRequest{Spec: wire.SpecTo(spec)}))
 	if err != nil {
-		return nil, hostError("ensure", err)
+		return nil, wire.HostError("ensure", err)
 	}
 	if resp.Msg.GetEpoch() == "" {
 		return nil, execenv.Error("ensure", execenv.ErrUnavailable)
@@ -187,7 +188,7 @@ func (c *Client) Revoke(ctx context.Context, id execenv.ID) error {
 	ctx, cancel := c.call(ctx)
 	defer cancel()
 	_, err := c.host.RevokeGrant(ctx, connect.NewRequest(&execenvv1.RevokeGrantRequest{GrantId: string(id)}))
-	return hostError("revoke", err)
+	return wire.HostError("revoke", err)
 }
 
 type remoteEnv struct {
@@ -224,7 +225,7 @@ func (e *remoteEnv) Revoke(ctx context.Context) error {
 	defer cancel()
 	_, err := e.client.host.RevokeGrant(ctx, connect.NewRequest(&execenvv1.RevokeGrantRequest{GrantId: string(e.id), Epoch: e.epoch}))
 	if err != nil {
-		return hostError("revoke", err)
+		return wire.HostError("revoke", err)
 	}
 	e.revoked.Store(true)
 	e.endTerminals(execenv.ErrRevoked)
@@ -243,11 +244,11 @@ func (e *remoteEnv) Control(ctx context.Context, request execenv.ControlRequest)
 	}
 	cctx, cancel := e.client.call(ctx)
 	defer cancel()
-	resp, err := e.client.control.Control(cctx, connect.NewRequest(&execenvv1.ControlRequest{Fence: fenceTo(request.Fence), State: controlStateTo(request.State)}))
+	resp, err := e.client.control.Control(cctx, connect.NewRequest(&execenvv1.ControlRequest{Fence: wire.FenceTo(request.Fence), State: wire.ControlStateTo(request.State)}))
 	if err != nil {
-		return execenv.ControlReceipt{}, hostError("control", err)
+		return execenv.ControlReceipt{}, wire.HostError("control", err)
 	}
-	receipt := receiptFrom(resp.Msg)
+	receipt := wire.ReceiptFrom(resp.Msg)
 	if receipt.Fence != request.Fence || receipt.State != request.State || !receipt.Confirmed {
 		return execenv.ControlReceipt{}, execenv.ErrUnavailable
 	}
@@ -265,9 +266,9 @@ func (e *remoteEnv) ControlStatus(ctx context.Context) (execenv.ControlReceipt, 
 	defer cancel()
 	resp, err := e.client.control.ControlStatus(ctx, connect.NewRequest(&execenvv1.ControlStatusRequest{GrantId: string(e.id), Epoch: e.epoch}))
 	if err != nil {
-		return execenv.ControlReceipt{}, hostError("control_status", err)
+		return execenv.ControlReceipt{}, wire.HostError("control_status", err)
 	}
-	receipt := receiptFrom(resp.Msg)
+	receipt := wire.ReceiptFrom(resp.Msg)
 	if receipt.Fence.ExecutionGrantID != e.id || receipt.Fence.EnvironmentEpoch != e.epoch {
 		return execenv.ControlReceipt{}, execenv.ErrUnavailable
 	}
@@ -289,12 +290,12 @@ func (e *remoteEnv) UploadProjectionContent(ctx context.Context, fence execenv.P
 	stop := context.AfterFunc(e.client.ctx, cancel)
 	defer stop()
 	stream := e.client.content.UploadContent(ctx)
-	if err := stream.Send(&execenvv1.UploadContentRequest{Part: &execenvv1.UploadContentRequest_Fence{Fence: fenceTo(fence)}}); err != nil {
+	if err := stream.Send(&execenvv1.UploadContentRequest{Part: &execenvv1.UploadContentRequest_Fence{Fence: wire.FenceTo(fence)}}); err != nil {
 		return execenv.ContentReference{}, uploadError(stream)
 	}
 	sum := sha256.New()
 	var size int64
-	buf := make([]byte, chunkBytes)
+	buf := make([]byte, wire.ChunkSize)
 	for {
 		n, err := body.Read(buf)
 		if n > 0 {
@@ -316,9 +317,9 @@ func (e *remoteEnv) UploadProjectionContent(ctx context.Context, fence execenv.P
 	}
 	resp, err := stream.CloseAndReceive()
 	if err != nil {
-		return execenv.ContentReference{}, hostError("upload", err)
+		return execenv.ContentReference{}, wire.HostError("upload", err)
 	}
-	ref := contentFrom(resp.Msg)
+	ref := wire.ContentFrom(resp.Msg)
 	if ref == nil || execenv.ValidateContentReference(*ref) != nil || ref.Size != size || ref.Digest != hex.EncodeToString(sum.Sum(nil)) {
 		return execenv.ContentReference{}, execenv.ErrUnavailable
 	}
@@ -330,7 +331,7 @@ func uploadError(stream *connect.ClientStreamForClient[execenvv1.UploadContentRe
 	if err == nil {
 		err = execenv.ErrUnavailable
 	}
-	return hostError("upload", err)
+	return wire.HostError("upload", err)
 }
 
 func (e *remoteEnv) InitializeProjection(ctx context.Context, request execenv.ProjectionInitialization) (execenv.ProjectionReceipt, error) {
@@ -342,11 +343,11 @@ func (e *remoteEnv) InitializeProjection(ctx context.Context, request execenv.Pr
 	}
 	ctx, cancel := e.client.call(ctx)
 	defer cancel()
-	resp, err := e.client.journal.InitializeProjection(ctx, connect.NewRequest(initializationTo(request)))
+	resp, err := e.client.journal.InitializeProjection(ctx, connect.NewRequest(wire.InitializationTo(request)))
 	if err != nil {
-		return execenv.ProjectionReceipt{}, hostError("projection_initialize", err)
+		return execenv.ProjectionReceipt{}, wire.HostError("projection_initialize", err)
 	}
-	return e.receipt(projectionReceiptFrom(resp.Msg), request.Fence, request.MutationID)
+	return e.receipt(wire.ProjectionReceiptFrom(resp.Msg), request.Fence, request.MutationID)
 }
 
 func (e *remoteEnv) ApplyProjection(ctx context.Context, request execenv.ProjectionApply) (execenv.ProjectionReceipt, error) {
@@ -358,11 +359,11 @@ func (e *remoteEnv) ApplyProjection(ctx context.Context, request execenv.Project
 	}
 	ctx, cancel := e.client.call(ctx)
 	defer cancel()
-	resp, err := e.client.journal.ApplyProjection(ctx, connect.NewRequest(applyTo(request)))
+	resp, err := e.client.journal.ApplyProjection(ctx, connect.NewRequest(wire.ApplyTo(request)))
 	if err != nil {
-		return execenv.ProjectionReceipt{}, hostError("projection_apply", err)
+		return execenv.ProjectionReceipt{}, wire.HostError("projection_apply", err)
 	}
-	return e.receipt(projectionReceiptFrom(resp.Msg), request.Fence, request.MutationID)
+	return e.receipt(wire.ProjectionReceiptFrom(resp.Msg), request.Fence, request.MutationID)
 }
 
 func (e *remoteEnv) receipt(r execenv.ProjectionReceipt, fence execenv.ProjectionFence, mutation string) (execenv.ProjectionReceipt, error) {
@@ -378,11 +379,11 @@ func (e *remoteEnv) Observe(ctx context.Context, fence execenv.ProjectionFence, 
 	}
 	ctx, cancel := e.client.call(ctx)
 	defer cancel()
-	resp, err := e.client.journal.Observe(ctx, connect.NewRequest(&execenvv1.ObserveRequest{Fence: fenceTo(fence), After: after, Limit: int32(limit)}))
+	resp, err := e.client.journal.Observe(ctx, connect.NewRequest(&execenvv1.ObserveRequest{Fence: wire.FenceTo(fence), After: after, Limit: int32(limit)}))
 	if err != nil {
-		return execenv.ObservationPage{}, hostError("observe", err)
+		return execenv.ObservationPage{}, wire.HostError("observe", err)
 	}
-	page := observationPageFrom(resp.Msg)
+	page := wire.ObservationPageFrom(resp.Msg)
 	for _, o := range page.Observations {
 		if execenv.ValidateExecutionObservation(o) != nil || o.Fence.ExecutionGrantID != e.id || o.Fence.EnvironmentEpoch != e.epoch {
 			return execenv.ObservationPage{}, execenv.ErrUnavailable
@@ -403,82 +404,18 @@ func (e *remoteEnv) OpenObservationContent(ctx context.Context, fence execenv.Pr
 	}
 	sctx, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(e.client.ctx, cancel)
-	stream, err := e.client.content.ReadObservationContent(sctx, connect.NewRequest(&execenvv1.ReadObservationContentRequest{Fence: fenceTo(fence), Content: contentTo(&ref)}))
+	stream, err := e.client.content.ReadObservationContent(sctx, connect.NewRequest(&execenvv1.ReadObservationContentRequest{Fence: wire.FenceTo(fence), Content: wire.ContentTo(&ref)}))
 	if err != nil {
 		stop()
 		cancel()
-		return nil, hostError("observation_content", err)
+		return nil, wire.HostError("observation_content", err)
 	}
-	r := &contentReader{stream: stream, ref: ref, sum: sha256.New(), close: func() { stop(); cancel() }}
-	// The host refuses an unknown or retired body before it sends any; read
-	// the first message so that refusal is Open's error, not Read's.
-	if err := r.fill(); err != nil && !errors.Is(err, io.EOF) {
-		r.close()
+	r := wire.NewContentReader(stream, ref, "observation_content", func() { stop(); cancel() })
+	if err := r.Prime(); err != nil {
+		_ = r.Close()
 		return nil, err
 	}
 	return r, nil
-}
-
-type contentReader struct {
-	stream *connect.ServerStreamForClient[execenvv1.ContentChunk]
-	ref    execenv.ContentReference
-	sum    interface {
-		Write([]byte) (int, error)
-		Sum([]byte) []byte
-	}
-	size    int64
-	pending []byte
-	err     error
-	close   func()
-}
-
-func (r *contentReader) Read(p []byte) (int, error) {
-	if err := r.fill(); err != nil {
-		return 0, err
-	}
-	n := copy(p, r.pending)
-	r.pending = r.pending[n:]
-	return n, nil
-}
-
-// fill receives until there is something to read or the stream has ended.
-func (r *contentReader) fill() error {
-	for len(r.pending) == 0 {
-		if r.err != nil {
-			return r.err
-		}
-		if !r.stream.Receive() {
-			if err := r.stream.Err(); err != nil {
-				r.err = hostError("observation_content", err)
-			} else if r.size != r.ref.Size || hex.EncodeToString(r.sum.Sum(nil)) != r.ref.Digest {
-				r.err = execenv.ErrUnavailable
-			} else {
-				r.err = io.EOF
-			}
-			continue
-		}
-		data := r.stream.Msg().GetData()
-		r.size += int64(len(data))
-		if r.size > r.ref.Size {
-			r.err = execenv.ErrUnavailable
-			continue
-		}
-		_, _ = r.sum.Write(data)
-		r.pending = data
-	}
-	return nil
-}
-
-func (r *contentReader) Close() error {
-	err := r.stream.Close()
-	r.close()
-	if err != nil && !errors.Is(err, context.Canceled) {
-		var cerr *connect.Error
-		if errors.As(err, &cerr) && cerr.Code() == connect.CodeCanceled {
-			return nil
-		}
-	}
-	return nil
 }
 
 func (e *remoteEnv) ConfirmObservationProjection(ctx context.Context, binding execenv.ObservationProjection) error {
@@ -491,11 +428,11 @@ func (e *remoteEnv) ConfirmObservationProjection(ctx context.Context, binding ex
 	ctx, cancel := e.client.call(ctx)
 	defer cancel()
 	_, err := e.client.journal.ConfirmObservationProjection(ctx, connect.NewRequest(&execenvv1.ConfirmObservationProjectionRequest{
-		Fence:        fenceTo(binding.Fence),
+		Fence:        wire.FenceTo(binding.Fence),
 		HostSequence: binding.HostSequence,
-		Mutation:     mutationTo(binding.Mutation),
+		Mutation:     wire.MutationTo(binding.Mutation),
 	}))
-	return hostError("observation_confirm", err)
+	return wire.HostError("observation_confirm", err)
 }
 
 func (e *remoteEnv) AcknowledgeObservations(ctx context.Context, fence execenv.ProjectionFence, through uint64) error {
@@ -504,8 +441,8 @@ func (e *remoteEnv) AcknowledgeObservations(ctx context.Context, fence execenv.P
 	}
 	ctx, cancel := e.client.call(ctx)
 	defer cancel()
-	_, err := e.client.journal.AcknowledgeObservations(ctx, connect.NewRequest(&execenvv1.AcknowledgeObservationsRequest{Fence: fenceTo(fence), Through: through}))
-	return hostError("observation_acknowledge", err)
+	_, err := e.client.journal.AcknowledgeObservations(ctx, connect.NewRequest(&execenvv1.AcknowledgeObservationsRequest{Fence: wire.FenceTo(fence), Through: through}))
+	return wire.HostError("observation_acknowledge", err)
 }
 
 func (e *remoteEnv) ObserveProcesses(ctx context.Context, fence execenv.ProjectionFence, after uint64, limit int) (execenv.ProcessPage, error) {
@@ -514,11 +451,11 @@ func (e *remoteEnv) ObserveProcesses(ctx context.Context, fence execenv.Projecti
 	}
 	ctx, cancel := e.client.call(ctx)
 	defer cancel()
-	resp, err := e.client.process.ObserveProcesses(ctx, connect.NewRequest(&execenvv1.ObserveProcessesRequest{Fence: fenceTo(fence), After: after, Limit: int32(limit)}))
+	resp, err := e.client.process.ObserveProcesses(ctx, connect.NewRequest(&execenvv1.ObserveProcessesRequest{Fence: wire.FenceTo(fence), After: after, Limit: int32(limit)}))
 	if err != nil {
-		return execenv.ProcessPage{}, hostError("process_observe", err)
+		return execenv.ProcessPage{}, wire.HostError("process_observe", err)
 	}
-	page := processPageFrom(resp.Msg)
+	page := wire.ProcessPageFrom(resp.Msg)
 	for _, event := range page.Events {
 		if execenv.ValidateProcessEvent(event) != nil {
 			return execenv.ProcessPage{}, execenv.ErrUnavailable
@@ -533,6 +470,6 @@ func (e *remoteEnv) AcknowledgeProcesses(ctx context.Context, fence execenv.Proj
 	}
 	ctx, cancel := e.client.call(ctx)
 	defer cancel()
-	_, err := e.client.process.AcknowledgeProcesses(ctx, connect.NewRequest(&execenvv1.AcknowledgeProcessesRequest{Fence: fenceTo(fence), Through: through}))
-	return hostError("process_acknowledge", err)
+	_, err := e.client.process.AcknowledgeProcesses(ctx, connect.NewRequest(&execenvv1.AcknowledgeProcessesRequest{Fence: wire.FenceTo(fence), Through: through}))
+	return wire.HostError("process_acknowledge", err)
 }

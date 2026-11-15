@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/sudosylabs/execenv"
-	"github.com/sudosylabs/execenv/internal/mux"
 	"github.com/sudosylabs/execenv/internal/processes"
 )
 
@@ -24,7 +23,6 @@ type ProcessSource interface {
 }
 
 const (
-	methodProcessEvents = "process_events"
 	// processQueueEvents bounds the events the helper holds while the host
 	// link is slow. Beyond it events are counted, never waited for.
 	processQueueEvents = execenv.MaxProcessEvents
@@ -59,11 +57,11 @@ func (s *server) pumpProcesses(ctx context.Context, source ProcessSource) {
 			if !ok {
 				return
 			}
-			extra, err := encodeExtra(batch)
-			if err != nil {
-				continue
-			}
-			if err := s.sess.Send(frame{Kind: mux.KindEvent, Method: methodProcessEvents, Extra: extra}); err != nil {
+			// The host's ProcessEvents stream takes it; until one is open
+			// the queue keeps absorbing, and counts what it cannot hold.
+			select {
+			case s.events <- batch:
+			case <-ctx.Done():
 				return
 			}
 		}
@@ -155,22 +153,6 @@ func (q *processQueue) close() {
 
 func dropped(count uint64) execenv.ProcessEvent {
 	return execenv.ProcessEvent{Kind: execenv.ProcessDropped, Dropped: count, At: time.Now()}
-}
-
-// deliverProcesses retains one batch from the guest. A batch that does not
-// decode counts as one lost event.
-func (c *Client) deliverProcesses(f frame) {
-	if f.Method != methodProcessEvents {
-		return
-	}
-	var batch []execenv.ProcessEvent
-	if decodeExtra(f.Extra, &batch) != nil || len(batch) == 0 {
-		c.processes.Lost(1)
-		return
-	}
-	for _, event := range batch {
-		c.processes.Append(event)
-	}
 }
 
 // ObserveProcesses pages the process log the host retains for this guest.

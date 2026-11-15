@@ -4,14 +4,20 @@ import (
 	"context"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"connectrpc.com/connect"
+
 	"github.com/sudosylabs/execenv"
-	"github.com/sudosylabs/execenv/internal/mux"
+	guestv1 "github.com/sudosylabs/execenv/internal/gen/execenv/guest/v1"
+	"github.com/sudosylabs/execenv/internal/gen/execenv/guest/v1/guestv1connect"
+	execenvv1 "github.com/sudosylabs/execenv/internal/gen/execenv/v1"
+	"github.com/sudosylabs/execenv/internal/wire"
 	"github.com/sudosylabs/execenv/internal/workload"
 )
 
@@ -49,8 +55,8 @@ type WriteBarrier interface {
 	Stopped(ctx context.Context, fn func() error) error
 }
 
-// Serve handles one host connection. Closing the PTY or the connection is
-// hangup: Home stays. The caller tears the machine down separately.
+// Serve handles one host connection until it ends. Losing the connection
+// is hangup: Home stays. The caller tears the machine down separately.
 func Serve(ctx context.Context, conn net.Conn, cfg Config) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -86,7 +92,7 @@ func Serve(ctx context.Context, conn net.Conn, cfg Config) error {
 		workload: group,
 		home:     cfg.Home,
 		scratch:  scratch,
-		sess:     newSession(conn),
+		events:   make(chan []execenv.ProcessEvent),
 	}
 	switch {
 	case group != nil:
@@ -111,93 +117,52 @@ func Serve(ctx context.Context, conn net.Conn, cfg Config) error {
 		s.pumpProcesses(ctx, source)
 	}
 	defer s.shutdown()
-	go func() {
-		<-ctx.Done()
-		_ = s.sess.Close()
-	}()
-	return s.serveFrames(ctx)
+	s.serveLink(ctx, conn, s)
+	return nil
 }
 
-func (s *server) serveFrames(ctx context.Context) error {
-	for {
-		f, err := s.sess.Recv()
-		if err != nil {
-			return nil
-		}
-		switch f.Kind {
-		case kindPty:
-			s.writePty(f)
-		case kindRequest:
-			s.handle(ctx, f)
-		}
+// serveLink serves handler on conn until either ends.
+func (s *server) serveLink(ctx context.Context, conn net.Conn, handler guestv1connect.AgentServiceHandler) {
+	link := watch(conn)
+	mux := http.NewServeMux()
+	mux.Handle(guestv1connect.NewAgentServiceHandler(handler))
+	srv := linkServer(mux)
+	served := make(chan struct{})
+	go func() {
+		_ = srv.Serve(&oneConn{conn: link})
+		close(served)
+	}()
+	select {
+	case <-ctx.Done():
+	case <-link.done:
 	}
+	_ = srv.Close()
+	_ = link.Close()
+	<-served
 }
 
 type server struct {
-	home          string
-	scratch       string
-	workload      *workload.Group
-	workloadErr   error
-	journal       *diskJournal
-	journalUpload *journalUpload
-	sess          *mux.Session
-	// processes is whether the process log source is recording.
+	home        string
+	scratch     string
+	workload    *workload.Group
+	workloadErr error
+	journal     *diskJournal
+	// processes is whether the process log source is recording; events
+	// carries its batches to the host's ProcessEvents stream.
 	processes atomic.Bool
+	events    chan []execenv.ProcessEvent
 
-	mu         sync.Mutex
-	frozen     bool
-	term       *shell
-	termStream uint64
+	mu     sync.Mutex
+	frozen bool
+	term   *shell
+	termID uint64
+	nextID uint64
 }
 
 func (s *server) shutdown() {
 	s.mu.Lock()
 	s.killShell()
 	s.mu.Unlock()
-	_ = s.sess.Close()
-}
-
-func (s *server) handle(ctx context.Context, f frame) {
-	if f.Deadline > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithDeadline(ctx, time.Unix(0, f.Deadline))
-		defer cancel()
-	}
-	if err := ctx.Err(); err != nil {
-		_ = s.reply(f, err, nil)
-		return
-	}
-	var extra []byte
-	var err error
-	switch f.Method {
-	case methodJournalUploadBegin, methodJournalUploadChunk, methodJournalUploadFinish, methodJournalUploadAbort, methodJournalInitialize, methodJournalApply, methodJournalObserve, methodJournalContent, methodJournalAcknowledge, methodJournalConfirm:
-		extra, err = s.journalCall(ctx, f)
-	case methodHello:
-		extra, err = encodeExtra(helloResult{Version: protocolVersion, Journal: s.journal != nil, Processes: s.processes.Load()})
-	case methodAttach:
-		err = s.attach(ctx, f)
-	case methodDetach:
-		err = s.detach(f)
-	case methodResize:
-		err = s.resize(ctx, f)
-	case methodFreeze:
-		err = s.freeze(ctx)
-	case methodThaw:
-		err = s.thaw(ctx)
-	default:
-		err = execenv.ErrInvalid
-	}
-	_ = s.reply(f, err, extra)
-}
-
-func (s *server) reply(req frame, err error, extra []byte) error {
-	return s.sess.Send(frame{
-		Seq:    req.Seq,
-		Kind:   kindResponse,
-		Method: req.Method,
-		Status: statusOf(err),
-		Extra:  extra,
-	})
 }
 
 func (s *server) guard() error {
@@ -215,144 +180,336 @@ func (s *server) guard() error {
 	return nil
 }
 
-func (s *server) attach(ctx context.Context, f frame) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	var args attachArgs
-	if err := decodeExtra(f.Extra, &args); err != nil || args.Stream == 0 {
-		return execenv.ErrInvalid
+func (s *server) Hello(context.Context, *connect.Request[guestv1.HelloRequest]) (*connect.Response[guestv1.HelloResponse], error) {
+	return connect.NewResponse(&guestv1.HelloResponse{
+		Protocol:  protocol,
+		Journal:   s.journal != nil,
+		Processes: s.processes.Load(),
+	}), nil
+}
+
+// Attach starts the login shell and streams its output. The shell ends with
+// Detach, with the stream, or with the link.
+func (s *server) Attach(ctx context.Context, req *connect.Request[guestv1.AttachRequest], stream *connect.ServerStream[guestv1.AttachResponse]) error {
+	window, ok := wire.WindowFrom(req.Msg.GetWindow())
+	if !ok {
+		return wire.Error(execenv.ErrInvalid)
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if err := s.guard(); err != nil {
-		return err
+		s.mu.Unlock()
+		return wire.Error(err)
 	}
 	if s.term != nil && !s.term.done() {
-		return execenv.ErrBusy
+		s.mu.Unlock()
+		return wire.Error(execenv.ErrBusy)
 	}
 	if s.workload != nil {
 		if err := s.workload.Kill(ctx); err != nil {
 			s.workloadErr = err
-			return err
+			s.mu.Unlock()
+			return wire.Error(err)
 		}
 	}
-	sh, err := startShell(s.home, s.scratch, args.Window, s.workload)
+	sh, err := startShell(s.home, s.scratch, window, s.workload)
 	if err != nil {
-		return execenv.ErrUnavailable
+		s.mu.Unlock()
+		return wire.Error(execenv.ErrUnavailable)
 	}
-	s.term = sh
-	s.termStream = args.Stream
-	go s.copyPty(args.Stream, sh)
-	return nil
-}
+	s.nextID++
+	id := s.nextID
+	s.term, s.termID = sh, id
+	s.mu.Unlock()
+	// A stream the host abandons takes its shell with it, unless the guest
+	// is frozen: then the host detaches once it has thawed.
+	stop := context.AfterFunc(ctx, func() {
+		s.mu.Lock()
+		if s.termID == id && !s.frozen {
+			s.killShell()
+		}
+		s.mu.Unlock()
+	})
+	defer stop()
 
-func (s *server) copyPty(stream uint64, sh *shell) {
-	buf := make([]byte, 32*1024)
+	if err := stream.Send(&guestv1.AttachResponse{Event: &guestv1.AttachResponse_Started{Started: &guestv1.Started{ShellId: id}}}); err != nil {
+		return err
+	}
+	buf := make([]byte, 32<<10)
 	for {
 		n, err := sh.master.Read(buf)
 		if n > 0 {
-			_ = s.sess.Send(frame{
-				Kind:   kindPty,
-				Stream: stream,
-				Extra:  append([]byte(nil), buf[:n]...),
-			})
+			if serr := stream.Send(&guestv1.AttachResponse{Event: &guestv1.AttachResponse_Output{Output: buf[:n]}}); serr != nil {
+				return serr
+			}
 		}
 		if err != nil {
 			s.mu.Lock()
 			frozen := s.frozen
 			if s.term == sh {
-				s.term = nil
-				s.termStream = 0
+				s.term, s.termID = nil, 0
 			}
 			s.mu.Unlock()
-			_ = s.sess.Send(frame{Kind: kindPty, Stream: stream, Status: ptyEndStatus(frozen, err)})
-			return
+			return wire.Error(ptyEnd(frozen, err))
 		}
 	}
 }
 
-func ptyEndStatus(frozen bool, err error) string {
+// ptyEnd is why a shell's output ended: nil for its exit or hangup. A
+// guest frozen under it reports that instead, so the host keeps the shell.
+func ptyEnd(frozen bool, err error) error {
 	switch {
 	case frozen:
-		return statusOf(execenv.ErrFrozen)
+		return execenv.ErrFrozen
 	case err == nil || err == io.EOF || isPtyHangup(err):
-		return ""
+		return nil
 	default:
-		return statusOf(err)
-	}
-}
-
-func (s *server) writePty(f frame) {
-	s.mu.Lock()
-	term := s.term
-	stream := s.termStream
-	frozen := s.frozen
-	s.mu.Unlock()
-	if term == nil || frozen || stream != f.Stream {
-		return
-	}
-	_, _ = term.master.Write(f.Extra)
-}
-
-func (s *server) detach(f frame) error {
-	var args streamArgs
-	if err := decodeExtra(f.Extra, &args); err != nil || args.Stream == 0 {
-		return execenv.ErrInvalid
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.termStream == args.Stream {
-		s.killShell()
-	}
-	return nil
-}
-
-func (s *server) resize(ctx context.Context, f frame) error {
-	if err := ctx.Err(); err != nil {
 		return err
 	}
-	var args resizeArgs
-	if err := decodeExtra(f.Extra, &args); err != nil || args.Stream == 0 {
-		return execenv.ErrInvalid
+}
+
+func (s *server) current(id uint64) (*shell, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.term, s.term != nil && s.termID == id && !s.frozen
+}
+
+// Input writes keystrokes to the shell it names. Input for a shell that has
+// gone, or arriving while frozen, is dropped.
+func (s *server) Input(_ context.Context, stream *connect.ClientStream[guestv1.InputRequest]) (*connect.Response[guestv1.InputResponse], error) {
+	if !stream.Receive() {
+		return nil, wire.Error(execenv.ErrInvalid)
+	}
+	id := stream.Msg().GetShellId()
+	for stream.Receive() {
+		data := stream.Msg().GetData()
+		if sh, ok := s.current(id); ok {
+			_, _ = sh.master.Write(data)
+		}
+	}
+	if err := stream.Err(); err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&guestv1.InputResponse{}), nil
+}
+
+func (s *server) Resize(_ context.Context, req *connect.Request[guestv1.ResizeRequest]) (*connect.Response[guestv1.ResizeResponse], error) {
+	window, ok := wire.WindowFrom(req.Msg.GetWindow())
+	if !ok {
+		return nil, wire.Error(execenv.ErrInvalid)
 	}
 	s.mu.Lock()
-	term := s.term
-	stream := s.termStream
-	frozen := s.frozen
+	term, id, frozen := s.term, s.termID, s.frozen
 	s.mu.Unlock()
 	if frozen {
-		return execenv.ErrFrozen
+		return nil, wire.Error(execenv.ErrFrozen)
 	}
-	if term == nil || stream != args.Stream {
-		return execenv.ErrClosed
+	if term == nil || id != req.Msg.GetShellId() {
+		return nil, wire.Error(execenv.ErrClosed)
 	}
-	return setWindow(term.master, args.Window)
+	if err := setWindow(term.master, window); err != nil {
+		return nil, wire.Error(err)
+	}
+	return connect.NewResponse(&guestv1.ResizeResponse{}), nil
 }
 
-func (s *server) freeze(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+func (s *server) Detach(_ context.Context, req *connect.Request[guestv1.DetachRequest]) (*connect.Response[guestv1.DetachResponse], error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.frozen = true
-	return nil
+	if s.termID == req.Msg.GetShellId() {
+		s.killShell()
+	}
+	s.mu.Unlock()
+	return connect.NewResponse(&guestv1.DetachResponse{}), nil
 }
 
-func (s *server) thaw(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+func (s *server) Freeze(context.Context, *connect.Request[guestv1.FreezeRequest]) (*connect.Response[guestv1.FreezeResponse], error) {
+	s.mu.Lock()
+	s.frozen = true
+	s.mu.Unlock()
+	return connect.NewResponse(&guestv1.FreezeResponse{}), nil
+}
+
+func (s *server) Thaw(context.Context, *connect.Request[guestv1.ThawRequest]) (*connect.Response[guestv1.ThawResponse], error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.workload != nil {
 		if err := s.workload.Check(); err != nil {
-			return err
+			return nil, wire.Error(err)
 		}
 	}
 	s.frozen = false
-	return nil
+	return connect.NewResponse(&guestv1.ThawResponse{}), nil
+}
+
+// ProcessEvents forwards the process log as it is recorded.
+func (s *server) ProcessEvents(ctx context.Context, _ *connect.Request[guestv1.ProcessEventsRequest], stream *connect.ServerStream[guestv1.ProcessEventsResponse]) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case batch := <-s.events:
+			page := wire.ProcessPageTo(execenv.ProcessPage{Events: batch})
+			if err := stream.Send(&guestv1.ProcessEventsResponse{Events: page.GetEvents()}); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func (s *server) journalGuard() error {
+	if s.journal == nil {
+		return execenv.ErrUnavailable
+	}
+	return s.guard()
+}
+
+func (s *server) UploadContent(_ context.Context, stream *connect.ClientStream[execenvv1.UploadContentRequest]) (*connect.Response[execenvv1.ContentReference], error) {
+	if !stream.Receive() || stream.Msg().GetFence() == nil {
+		return nil, wire.Error(execenv.ErrInvalid)
+	}
+	fence := wire.FenceFrom(stream.Msg().GetFence())
+	if execenv.ValidateProjectionFence(fence) != nil {
+		return nil, wire.Error(execenv.ErrInvalid)
+	}
+	var data []byte
+	for stream.Receive() {
+		chunk := stream.Msg().GetChunk()
+		if len(data)+len(chunk) > execenv.MaxFileBytes {
+			return nil, wire.Error(execenv.ErrTooLarge)
+		}
+		data = append(data, chunk...)
+	}
+	if err := stream.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.journalGuard(); err != nil {
+		return nil, wire.Error(err)
+	}
+	if err := s.journal.bind(fence); err != nil {
+		return nil, wire.Error(err)
+	}
+	ref, err := s.journal.upload(fence, data)
+	if err != nil {
+		return nil, wire.Error(err)
+	}
+	return connect.NewResponse(wire.ContentTo(&ref)), nil
+}
+
+func (s *server) InitializeProjection(ctx context.Context, req *connect.Request[execenvv1.InitializeProjectionRequest]) (*connect.Response[execenvv1.ProjectionReceipt], error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.journalGuard(); err != nil {
+		return nil, wire.Error(err)
+	}
+	if s.term != nil && !s.journal.state.Initialized() {
+		return nil, wire.Error(execenv.ErrConflict)
+	}
+	receipt, err := s.journal.initialize(ctx, wire.InitializationFrom(req.Msg))
+	if err != nil {
+		return nil, wire.Error(err)
+	}
+	return connect.NewResponse(wire.ProjectionReceiptTo(receipt)), nil
+}
+
+func (s *server) ApplyProjection(ctx context.Context, req *connect.Request[execenvv1.ApplyProjectionRequest]) (*connect.Response[execenvv1.ProjectionReceipt], error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.journalGuard(); err != nil {
+		return nil, wire.Error(err)
+	}
+	receipt, err := s.journal.apply(ctx, wire.ApplyFrom(req.Msg))
+	if err != nil {
+		return nil, wire.Error(err)
+	}
+	return connect.NewResponse(wire.ProjectionReceiptTo(receipt)), nil
+}
+
+// bound checks the journal is served and binds the fence's epoch.
+func (s *server) bound(fence *execenvv1.Fence) (execenv.ProjectionFence, error) {
+	f := wire.FenceFrom(fence)
+	if err := s.journalGuard(); err != nil {
+		return f, err
+	}
+	if execenv.ValidateProjectionFence(f) != nil {
+		return f, execenv.ErrInvalid
+	}
+	return f, s.journal.bind(f)
+}
+
+func (s *server) Observe(ctx context.Context, req *connect.Request[execenvv1.ObserveRequest]) (*connect.Response[execenvv1.ObservationPage], error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fence, err := s.bound(req.Msg.GetFence())
+	if err != nil {
+		return nil, wire.Error(err)
+	}
+	page, err := s.journal.observe(ctx, fence, req.Msg.GetAfter(), int(req.Msg.GetLimit()))
+	if err != nil {
+		return nil, wire.Error(err)
+	}
+	return connect.NewResponse(wire.ObservationPageTo(page)), nil
+}
+
+// ReadObservationContent streams a retained body. An unknown or retired one
+// is refused before anything is sent.
+func (s *server) ReadObservationContent(_ context.Context, req *connect.Request[execenvv1.ReadObservationContentRequest], stream *connect.ServerStream[execenvv1.ContentChunk]) error {
+	ref := wire.ContentFrom(req.Msg.GetContent())
+	if ref == nil || execenv.ValidateContentReference(*ref) != nil {
+		return wire.Error(execenv.ErrInvalid)
+	}
+	chunk := func(offset int64) ([]byte, error) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if _, err := s.bound(req.Msg.GetFence()); err != nil {
+			return nil, err
+		}
+		return s.journal.log.Chunk(*ref, offset, wire.ChunkSize)
+	}
+	var offset int64
+	for {
+		body, err := chunk(offset)
+		if err != nil {
+			return wire.Error(err)
+		}
+		if len(body) == 0 {
+			return nil
+		}
+		if err := stream.Send(&execenvv1.ContentChunk{Data: body}); err != nil {
+			return err
+		}
+		offset += int64(len(body))
+	}
+}
+
+func (s *server) ConfirmObservationProjection(_ context.Context, req *connect.Request[execenvv1.ConfirmObservationProjectionRequest]) (*connect.Response[execenvv1.ConfirmObservationProjectionResponse], error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.journalGuard(); err != nil {
+		return nil, wire.Error(err)
+	}
+	binding := execenv.ObservationProjection{
+		Fence:        wire.FenceFrom(req.Msg.GetFence()),
+		HostSequence: req.Msg.GetHostSequence(),
+		Mutation:     wire.MutationFrom(req.Msg.GetMutation()),
+	}
+	if err := s.journal.confirm(binding); err != nil {
+		return nil, wire.Error(err)
+	}
+	return connect.NewResponse(&execenvv1.ConfirmObservationProjectionResponse{}), nil
+}
+
+func (s *server) AcknowledgeObservations(_ context.Context, req *connect.Request[execenvv1.AcknowledgeObservationsRequest]) (*connect.Response[execenvv1.AcknowledgeObservationsResponse], error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fence, err := s.bound(req.Msg.GetFence())
+	if err != nil {
+		return nil, wire.Error(err)
+	}
+	if err := s.journal.acknowledge(fence, req.Msg.GetThrough()); err != nil {
+		return nil, wire.Error(err)
+	}
+	return connect.NewResponse(&execenvv1.AcknowledgeObservationsResponse{}), nil
 }
 
 func (s *server) killShell() {
@@ -365,8 +522,7 @@ func (s *server) killShell() {
 		s.workloadErr = s.workload.Kill(ctx)
 		cancel()
 	}
-	s.term = nil
-	s.termStream = 0
+	s.term, s.termID = nil, 0
 }
 
 type shell struct {

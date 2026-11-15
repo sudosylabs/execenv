@@ -12,6 +12,7 @@ import (
 	"github.com/sudosylabs/execenv"
 	execenvv1 "github.com/sudosylabs/execenv/internal/gen/execenv/v1"
 	"github.com/sudosylabs/execenv/internal/gen/execenv/v1/execenvv1connect"
+	"github.com/sudosylabs/execenv/internal/wire"
 	"github.com/sudosylabs/execenv/memory"
 )
 
@@ -46,7 +47,7 @@ func TestHelloRefusesAFeatureTheHostDoesNotOffer(t *testing.T) {
 	client, _ := httpClient(Config{Address: addr, Security: SecurityInsecureLocal, Token: []byte("secret")}, interactiveStreamWindow)
 	host := execenvv1connect.NewHostServiceClient(client, "http://"+addr)
 	_, err := host.Hello(context.Background(), connect.NewRequest(&execenvv1.HelloRequest{RequiredFeatures: []string{FeatureJournal, "teleport"}}))
-	if !errors.Is(hostError("hello", err), execenv.ErrFeature) {
+	if !errors.Is(wire.HostError("hello", err), execenv.ErrFeature) {
 		t.Fatalf("Hello() error = %v, want ErrFeature", err)
 	}
 	var cerr *connect.Error

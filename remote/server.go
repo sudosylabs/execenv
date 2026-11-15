@@ -20,6 +20,7 @@ import (
 	"github.com/sudosylabs/execenv"
 	execenvv1 "github.com/sudosylabs/execenv/internal/gen/execenv/v1"
 	"github.com/sudosylabs/execenv/internal/gen/execenv/v1/execenvv1connect"
+	"github.com/sudosylabs/execenv/internal/wire"
 )
 
 // protocol is the major version of the schema in proto/execenv/v1.
@@ -34,9 +35,6 @@ const (
 )
 
 var features = []string{FeatureControl, FeatureJournal, FeatureTerminal, FeatureProcessLog}
-
-// chunkBytes bounds one message of file content or terminal output.
-const chunkBytes = 64 << 10
 
 // Window sizes for HTTP/2 flow control. The host receives uploads and
 // keystrokes; uploads need the large window.
@@ -189,7 +187,7 @@ func (h *server) env(id execenv.ID, epoch string) (execenv.Env, error) {
 }
 
 func (h *server) fenced(fence *execenvv1.Fence) (execenv.Env, execenv.ProjectionFence, error) {
-	f := fenceFrom(fence)
+	f := wire.FenceFrom(fence)
 	env, err := h.env(f.ExecutionGrantID, f.EnvironmentEpoch)
 	return env, f, err
 }
@@ -215,7 +213,7 @@ func (h *server) forget(id execenv.ID) {
 func (h *server) Hello(_ context.Context, req *connect.Request[execenvv1.HelloRequest]) (*connect.Response[execenvv1.HelloResponse], error) {
 	for _, want := range req.Msg.GetRequiredFeatures() {
 		if !offered(want) {
-			return nil, withDetail(connect.NewError(connect.CodeFailedPrecondition, execenv.ErrFeature), &execenvv1.ErrorDetail{Sentinel: "feature", Feature: want})
+			return nil, wire.WithDetail(connect.NewError(connect.CodeFailedPrecondition, execenv.ErrFeature), &execenvv1.ErrorDetail{Sentinel: "feature", Feature: want})
 		}
 	}
 	return connect.NewResponse(&execenvv1.HelloResponse{
@@ -238,19 +236,19 @@ func offered(feature string) bool {
 func (h *server) GetReport(ctx context.Context, _ *connect.Request[execenvv1.GetReportRequest]) (*connect.Response[execenvv1.Report], error) {
 	report, err := h.inner.Ready(ctx)
 	if err != nil {
-		return nil, wireError(err)
+		return nil, wire.Error(err)
 	}
-	return connect.NewResponse(reportTo(report)), nil
+	return connect.NewResponse(wire.ReportTo(report)), nil
 }
 
 func (h *server) EnsureGrant(ctx context.Context, req *connect.Request[execenvv1.EnsureGrantRequest]) (*connect.Response[execenvv1.EnsureGrantResponse], error) {
-	spec, ok := specFrom(req.Msg.GetSpec())
+	spec, ok := wire.SpecFrom(req.Msg.GetSpec())
 	if !ok {
-		return nil, wireError(execenv.ErrInvalid)
+		return nil, wire.Error(execenv.ErrInvalid)
 	}
 	env, err := h.inner.Ensure(ctx, spec)
 	if err != nil {
-		return nil, wireError(err)
+		return nil, wire.Error(err)
 	}
 	h.mu.Lock()
 	h.envs[spec.ID] = env
@@ -263,13 +261,13 @@ func (h *server) RevokeGrant(ctx context.Context, req *connect.Request[execenvv1
 	if epoch := req.Msg.GetEpoch(); epoch != "" {
 		env, err := h.env(id, epoch)
 		if err != nil {
-			return nil, wireError(err)
+			return nil, wire.Error(err)
 		}
 		if err := env.Revoke(ctx); err != nil {
-			return nil, wireError(err)
+			return nil, wire.Error(err)
 		}
 	} else if err := h.inner.Revoke(ctx, id); err != nil {
-		return nil, wireError(err)
+		return nil, wire.Error(err)
 	}
 	h.forget(id)
 	return connect.NewResponse(&execenvv1.RevokeGrantResponse{}), nil
@@ -280,42 +278,42 @@ func (h *server) RevokeGrant(ctx context.Context, req *connect.Request[execenvv1
 func (h *server) Control(ctx context.Context, req *connect.Request[execenvv1.ControlRequest]) (*connect.Response[execenvv1.ControlReceipt], error) {
 	env, fence, err := h.fenced(req.Msg.GetFence())
 	if err != nil {
-		return nil, wireError(err)
+		return nil, wire.Error(err)
 	}
-	receipt, err := env.Control(ctx, execenv.ControlRequest{Fence: fence, State: controlStateFrom(req.Msg.GetState())})
+	receipt, err := env.Control(ctx, execenv.ControlRequest{Fence: fence, State: wire.ControlStateFrom(req.Msg.GetState())})
 	if err != nil {
-		return nil, wireError(err)
+		return nil, wire.Error(err)
 	}
-	return connect.NewResponse(receiptTo(receipt)), nil
+	return connect.NewResponse(wire.ReceiptTo(receipt)), nil
 }
 
 func (h *server) ControlStatus(ctx context.Context, req *connect.Request[execenvv1.ControlStatusRequest]) (*connect.Response[execenvv1.ControlReceipt], error) {
 	env, err := h.env(execenv.ID(req.Msg.GetGrantId()), req.Msg.GetEpoch())
 	if err != nil {
-		return nil, wireError(err)
+		return nil, wire.Error(err)
 	}
 	receipt, err := env.ControlStatus(ctx)
 	if err != nil {
-		return nil, wireError(err)
+		return nil, wire.Error(err)
 	}
-	return connect.NewResponse(receiptTo(receipt)), nil
+	return connect.NewResponse(wire.ReceiptTo(receipt)), nil
 }
 
 // JournalService
 
 func (h *server) UploadContent(ctx context.Context, stream *connect.ClientStream[execenvv1.UploadContentRequest]) (*connect.Response[execenvv1.ContentReference], error) {
 	if !stream.Receive() {
-		return nil, wireError(execenv.ErrInvalid)
+		return nil, wire.Error(execenv.ErrInvalid)
 	}
 	header := stream.Msg().GetFence()
 	if header == nil {
-		return nil, wireError(execenv.ErrInvalid)
+		return nil, wire.Error(execenv.ErrInvalid)
 	}
 	env, fence, err := h.fenced(header)
 	if err != nil {
-		return nil, wireError(err)
+		return nil, wire.Error(err)
 	}
-	body := &streamReader{next: func() ([]byte, bool, error) {
+	body := &wire.ChunkReader{Next: func() ([]byte, bool, error) {
 		if !stream.Receive() {
 			return nil, false, stream.Err()
 		}
@@ -327,62 +325,62 @@ func (h *server) UploadContent(ctx context.Context, stream *connect.ClientStream
 	}}
 	ref, err := env.UploadProjectionContent(ctx, fence, body)
 	if err != nil {
-		return nil, wireError(err)
+		return nil, wire.Error(err)
 	}
-	return connect.NewResponse(contentTo(&ref)), nil
+	return connect.NewResponse(wire.ContentTo(&ref)), nil
 }
 
 func (h *server) InitializeProjection(ctx context.Context, req *connect.Request[execenvv1.InitializeProjectionRequest]) (*connect.Response[execenvv1.ProjectionReceipt], error) {
 	env, _, err := h.fenced(req.Msg.GetFence())
 	if err != nil {
-		return nil, wireError(err)
+		return nil, wire.Error(err)
 	}
-	receipt, err := env.InitializeProjection(ctx, initializationFrom(req.Msg))
+	receipt, err := env.InitializeProjection(ctx, wire.InitializationFrom(req.Msg))
 	if err != nil {
-		return nil, wireError(err)
+		return nil, wire.Error(err)
 	}
-	return connect.NewResponse(projectionReceiptTo(receipt)), nil
+	return connect.NewResponse(wire.ProjectionReceiptTo(receipt)), nil
 }
 
 func (h *server) ApplyProjection(ctx context.Context, req *connect.Request[execenvv1.ApplyProjectionRequest]) (*connect.Response[execenvv1.ProjectionReceipt], error) {
 	env, _, err := h.fenced(req.Msg.GetFence())
 	if err != nil {
-		return nil, wireError(err)
+		return nil, wire.Error(err)
 	}
-	receipt, err := env.ApplyProjection(ctx, applyFrom(req.Msg))
+	receipt, err := env.ApplyProjection(ctx, wire.ApplyFrom(req.Msg))
 	if err != nil {
-		return nil, wireError(err)
+		return nil, wire.Error(err)
 	}
-	return connect.NewResponse(projectionReceiptTo(receipt)), nil
+	return connect.NewResponse(wire.ProjectionReceiptTo(receipt)), nil
 }
 
 func (h *server) Observe(ctx context.Context, req *connect.Request[execenvv1.ObserveRequest]) (*connect.Response[execenvv1.ObservationPage], error) {
 	env, fence, err := h.fenced(req.Msg.GetFence())
 	if err != nil {
-		return nil, wireError(err)
+		return nil, wire.Error(err)
 	}
 	page, err := env.Observe(ctx, fence, req.Msg.GetAfter(), int(req.Msg.GetLimit()))
 	if err != nil {
-		return nil, wireError(err)
+		return nil, wire.Error(err)
 	}
-	return connect.NewResponse(observationPageTo(page)), nil
+	return connect.NewResponse(wire.ObservationPageTo(page)), nil
 }
 
 func (h *server) ReadObservationContent(ctx context.Context, req *connect.Request[execenvv1.ReadObservationContentRequest], stream *connect.ServerStream[execenvv1.ContentChunk]) error {
 	env, fence, err := h.fenced(req.Msg.GetFence())
 	if err != nil {
-		return wireError(err)
+		return wire.Error(err)
 	}
-	ref := contentFrom(req.Msg.GetContent())
+	ref := wire.ContentFrom(req.Msg.GetContent())
 	if ref == nil {
-		return wireError(execenv.ErrInvalid)
+		return wire.Error(execenv.ErrInvalid)
 	}
 	body, err := env.OpenObservationContent(ctx, fence, *ref)
 	if err != nil {
-		return wireError(err)
+		return wire.Error(err)
 	}
 	defer body.Close()
-	buf := make([]byte, chunkBytes)
+	buf := make([]byte, wire.ChunkSize)
 	for {
 		n, err := body.Read(buf)
 		if n > 0 {
@@ -394,7 +392,7 @@ func (h *server) ReadObservationContent(ctx context.Context, req *connect.Reques
 			return nil
 		}
 		if err != nil {
-			return wireError(err)
+			return wire.Error(err)
 		}
 	}
 }
@@ -402,11 +400,11 @@ func (h *server) ReadObservationContent(ctx context.Context, req *connect.Reques
 func (h *server) ConfirmObservationProjection(ctx context.Context, req *connect.Request[execenvv1.ConfirmObservationProjectionRequest]) (*connect.Response[execenvv1.ConfirmObservationProjectionResponse], error) {
 	env, fence, err := h.fenced(req.Msg.GetFence())
 	if err != nil {
-		return nil, wireError(err)
+		return nil, wire.Error(err)
 	}
-	binding := execenv.ObservationProjection{Fence: fence, HostSequence: req.Msg.GetHostSequence(), Mutation: mutationFrom(req.Msg.GetMutation())}
+	binding := execenv.ObservationProjection{Fence: fence, HostSequence: req.Msg.GetHostSequence(), Mutation: wire.MutationFrom(req.Msg.GetMutation())}
 	if err := env.ConfirmObservationProjection(ctx, binding); err != nil {
-		return nil, wireError(err)
+		return nil, wire.Error(err)
 	}
 	return connect.NewResponse(&execenvv1.ConfirmObservationProjectionResponse{}), nil
 }
@@ -414,10 +412,10 @@ func (h *server) ConfirmObservationProjection(ctx context.Context, req *connect.
 func (h *server) AcknowledgeObservations(ctx context.Context, req *connect.Request[execenvv1.AcknowledgeObservationsRequest]) (*connect.Response[execenvv1.AcknowledgeObservationsResponse], error) {
 	env, fence, err := h.fenced(req.Msg.GetFence())
 	if err != nil {
-		return nil, wireError(err)
+		return nil, wire.Error(err)
 	}
 	if err := env.AcknowledgeObservations(ctx, fence, req.Msg.GetThrough()); err != nil {
-		return nil, wireError(err)
+		return nil, wire.Error(err)
 	}
 	return connect.NewResponse(&execenvv1.AcknowledgeObservationsResponse{}), nil
 }
@@ -427,22 +425,22 @@ func (h *server) AcknowledgeObservations(ctx context.Context, req *connect.Reque
 func (h *server) ObserveProcesses(ctx context.Context, req *connect.Request[execenvv1.ObserveProcessesRequest]) (*connect.Response[execenvv1.ProcessPage], error) {
 	env, fence, err := h.fenced(req.Msg.GetFence())
 	if err != nil {
-		return nil, wireError(err)
+		return nil, wire.Error(err)
 	}
 	page, err := env.ObserveProcesses(ctx, fence, req.Msg.GetAfter(), int(req.Msg.GetLimit()))
 	if err != nil {
-		return nil, wireError(err)
+		return nil, wire.Error(err)
 	}
-	return connect.NewResponse(processPageTo(page)), nil
+	return connect.NewResponse(wire.ProcessPageTo(page)), nil
 }
 
 func (h *server) AcknowledgeProcesses(ctx context.Context, req *connect.Request[execenvv1.AcknowledgeProcessesRequest]) (*connect.Response[execenvv1.AcknowledgeProcessesResponse], error) {
 	env, fence, err := h.fenced(req.Msg.GetFence())
 	if err != nil {
-		return nil, wireError(err)
+		return nil, wire.Error(err)
 	}
 	if err := env.AcknowledgeProcesses(ctx, fence, req.Msg.GetThrough()); err != nil {
-		return nil, wireError(err)
+		return nil, wire.Error(err)
 	}
 	return connect.NewResponse(&execenvv1.AcknowledgeProcessesResponse{}), nil
 }
@@ -453,11 +451,11 @@ func (h *server) Attach(ctx context.Context, req *connect.Request[execenvv1.Atta
 	id := execenv.ID(req.Msg.GetGrantId())
 	env, err := h.env(id, req.Msg.GetEpoch())
 	if err != nil {
-		return wireError(err)
+		return wire.Error(err)
 	}
-	window, ok := windowFrom(req.Msg.GetWindow())
+	window, ok := wire.WindowFrom(req.Msg.GetWindow())
 	if !ok {
-		return wireError(execenv.ErrInvalid)
+		return wire.Error(execenv.ErrInvalid)
 	}
 	request := execenv.AttachRequest{Window: window, Takeover: req.Msg.GetTakeover()}
 	if resume := req.Msg.GetResume(); resume != nil {
@@ -465,12 +463,12 @@ func (h *server) Attach(ctx context.Context, req *connect.Request[execenvv1.Atta
 	}
 	term, err := env.Attach(ctx, request)
 	if err != nil {
-		return wireError(err)
+		return wire.Error(err)
 	}
 	key, err := randomID()
 	if err != nil {
 		_ = term.Close()
-		return wireError(execenv.ErrUnavailable)
+		return wire.Error(execenv.ErrUnavailable)
 	}
 	h.mu.Lock()
 	h.attachments[key] = &attachment{grant: id, term: term}
@@ -491,7 +489,7 @@ func (h *server) Attach(ctx context.Context, req *connect.Request[execenvv1.Atta
 	}}}); err != nil {
 		return err
 	}
-	buf := make([]byte, chunkBytes)
+	buf := make([]byte, wire.ChunkSize)
 	for {
 		n, err := term.Read(buf)
 		if n > 0 {
@@ -507,7 +505,7 @@ func (h *server) Attach(ctx context.Context, req *connect.Request[execenvv1.Atta
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return wireError(err)
+			return wire.Error(err)
 		}
 	}
 }
@@ -524,27 +522,27 @@ func (h *server) attachment(key string) (*attachment, error) {
 
 func (h *server) Input(_ context.Context, stream *connect.ClientStream[execenvv1.InputRequest]) (*connect.Response[execenvv1.InputResponse], error) {
 	if !stream.Receive() {
-		return nil, wireError(execenv.ErrInvalid)
+		return nil, wire.Error(execenv.ErrInvalid)
 	}
 	key := stream.Msg().GetAttachmentId()
 	if key == "" {
-		return nil, wireError(execenv.ErrInvalid)
+		return nil, wire.Error(execenv.ErrInvalid)
 	}
 	a, err := h.attachment(key)
 	if err != nil {
-		return nil, wireError(err)
+		return nil, wire.Error(err)
 	}
 	a.input.Lock()
 	defer a.input.Unlock()
 	for stream.Receive() {
 		data := stream.Msg().GetData()
 		if data == nil {
-			return nil, wireError(execenv.ErrInvalid)
+			return nil, wire.Error(execenv.ErrInvalid)
 		}
 		for len(data) > 0 {
 			n, err := a.term.Write(data)
 			if err != nil {
-				return nil, wireError(err)
+				return nil, wire.Error(err)
 			}
 			data = data[n:]
 		}
@@ -558,14 +556,14 @@ func (h *server) Input(_ context.Context, stream *connect.ClientStream[execenvv1
 func (h *server) Resize(ctx context.Context, req *connect.Request[execenvv1.ResizeRequest]) (*connect.Response[execenvv1.ResizeResponse], error) {
 	a, err := h.attachment(req.Msg.GetAttachmentId())
 	if err != nil {
-		return nil, wireError(err)
+		return nil, wire.Error(err)
 	}
-	window, ok := windowFrom(req.Msg.GetWindow())
+	window, ok := wire.WindowFrom(req.Msg.GetWindow())
 	if !ok {
-		return nil, wireError(execenv.ErrInvalid)
+		return nil, wire.Error(execenv.ErrInvalid)
 	}
 	if err := a.term.Resize(ctx, window); err != nil {
-		return nil, wireError(err)
+		return nil, wire.Error(err)
 	}
 	return connect.NewResponse(&execenvv1.ResizeResponse{}), nil
 }
@@ -585,39 +583,12 @@ func (h *server) Detach(_ context.Context, req *connect.Request[execenvv1.Detach
 func (h *server) Hangup(ctx context.Context, req *connect.Request[execenvv1.HangupRequest]) (*connect.Response[execenvv1.HangupResponse], error) {
 	a, err := h.attachment(req.Msg.GetAttachmentId())
 	if err != nil {
-		return nil, wireError(err)
+		return nil, wire.Error(err)
 	}
 	if err := a.term.Hangup(ctx); err != nil {
-		return nil, wireError(err)
+		return nil, wire.Error(err)
 	}
 	return connect.NewResponse(&execenvv1.HangupResponse{}), nil
-}
-
-// streamReader turns a stream of chunks into an io.Reader.
-type streamReader struct {
-	next    func() ([]byte, bool, error)
-	pending []byte
-	err     error
-}
-
-func (r *streamReader) Read(p []byte) (int, error) {
-	for len(r.pending) == 0 {
-		if r.err != nil {
-			return 0, r.err
-		}
-		chunk, ok, err := r.next()
-		if !ok {
-			if err == nil {
-				err = io.EOF
-			}
-			r.err = err
-			continue
-		}
-		r.pending = chunk
-	}
-	n := copy(p, r.pending)
-	r.pending = r.pending[n:]
-	return n, nil
 }
 
 // discardLog keeps the HTTP server's own messages, which can quote request
