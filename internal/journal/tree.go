@@ -5,12 +5,13 @@ import (
 	"path/filepath"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/content"
 	"github.com/sudosylabs/execenv/internal/tree"
 )
 
 // rewriteHome makes Home match files exactly. New contents are written to
 // a sibling directory first so a failed write leaves Home unchanged.
-func rewriteHome(home string, files tree.Snapshot) error {
+func rewriteHome(store *content.Store, home string, files tree.Snapshot) error {
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return err
 	}
@@ -19,7 +20,7 @@ func rewriteHome(home string, files tree.Snapshot) error {
 		return err
 	}
 	defer os.RemoveAll(staging)
-	if err := writeNodes(staging, files); err != nil {
+	if err := writeNodes(store, staging, files); err != nil {
 		return err
 	}
 	if err := clearChildren(home); err != nil {
@@ -53,13 +54,13 @@ func clearChildren(home string) error {
 	return nil
 }
 
-func writeNodes(home string, files tree.Snapshot) error {
+func writeNodes(store *content.Store, home string, files tree.Snapshot) error {
 	for path, ent := range files {
 		full, err := execenv.ResolvePath(home, path)
 		if err != nil {
 			return err
 		}
-		if ent.Kind == execenv.KindDirectory {
+		if ent.Kind == tree.KindDirectory {
 			if err := os.MkdirAll(full, 0o755); err != nil {
 				return err
 			}
@@ -68,7 +69,7 @@ func writeNodes(home string, files tree.Snapshot) error {
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(full, ent.Data, 0o644); err != nil {
+		if err := store.Place(ent.Content, full, 0o644); err != nil {
 			return err
 		}
 	}
@@ -77,7 +78,7 @@ func writeNodes(home string, files tree.Snapshot) error {
 
 // applyHome applies batch to disk. Guest files the batch does not name stay.
 // On failure this batch is reversed. On success stash files are discarded.
-func applyHome(home string, batch execenv.Batch) error {
+func applyHome(store *content.Store, home string, batch tree.Batch) error {
 	var undos []func() error
 	var drop []string
 	rollback := func() {
@@ -86,7 +87,7 @@ func applyHome(home string, batch execenv.Batch) error {
 		}
 	}
 	for _, mut := range batch.Mutations {
-		undo, stashPath, err := applyDisk(home, mut)
+		undo, stashPath, err := applyDisk(store, home, mut)
 		if err != nil {
 			rollback()
 			return err
@@ -102,25 +103,25 @@ func applyHome(home string, batch execenv.Batch) error {
 	return nil
 }
 
-func applyDisk(home string, mut execenv.Mutation) (undo func() error, stashPath string, err error) {
+func applyDisk(store *content.Store, home string, mut tree.Mutation) (undo func() error, stashPath string, err error) {
 	full, err := execenv.ResolvePath(home, mut.Path)
 	if err != nil {
 		return nil, "", err
 	}
 	nop := func() error { return nil }
 	switch mut.Op {
-	case execenv.OpCreate, execenv.OpReplace:
+	case tree.OpCreate, tree.OpReplace:
 		// The snapshot proves nothing observed is here, so anything present
 		// is an ignored guest path. A projected directory adopts an ignored
 		// directory; a file replaces what was there, as a checkout does.
-		if info, err := os.Lstat(full); err == nil && info.IsDir() && mut.Kind == execenv.KindDirectory {
+		if info, err := os.Lstat(full); err == nil && info.IsDir() && mut.Kind == tree.KindDirectory {
 			return nop, "", nil
 		}
 		prev, side, err := stash(full)
 		if err != nil {
 			return nil, "", err
 		}
-		if mut.Kind == execenv.KindDirectory {
+		if mut.Kind == tree.KindDirectory {
 			if err := os.MkdirAll(full, 0o755); err != nil {
 				_ = prev()
 				return nil, "", err
@@ -131,12 +132,12 @@ func applyDisk(home string, mut execenv.Mutation) (undo func() error, stashPath 
 			_ = prev()
 			return nil, "", err
 		}
-		if err := os.WriteFile(full, mut.Data, 0o644); err != nil {
+		if err := store.Place(mut.Content, full, 0o644); err != nil {
 			_ = prev()
 			return nil, "", err
 		}
 		return prev, side, nil
-	case execenv.OpDelete:
+	case tree.OpDelete:
 		prev, side, err := stash(full)
 		if err != nil {
 			return nil, "", err
@@ -146,7 +147,7 @@ func applyDisk(home string, mut execenv.Mutation) (undo func() error, stashPath 
 			return nil, "", err
 		}
 		return prev, side, nil
-	case execenv.OpMove:
+	case tree.OpMove:
 		from, err := execenv.ResolvePath(home, mut.From)
 		if err != nil {
 			return nil, "", err

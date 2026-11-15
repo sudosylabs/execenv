@@ -3,10 +3,8 @@
 package projection
 
 import (
-	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"maps"
 	"path"
@@ -15,6 +13,8 @@ import (
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/ignore"
+	"github.com/sudosylabs/execenv/internal/content"
+	"github.com/sudosylabs/execenv/internal/tree"
 )
 
 const retainedReceipts = 65536
@@ -25,12 +25,13 @@ type Node struct {
 	EntryID  string
 	Kind     execenv.ProjectionKind
 	Version  execenv.Version
-	Data     []byte
+	// Content names a file's body in the content store.
+	Content content.Blob
 }
 
 type upload struct {
 	reference execenv.ContentReference
-	data      []byte
+	blob      content.Blob
 	expires   time.Time
 }
 type receipt struct {
@@ -47,7 +48,6 @@ type State struct {
 	cursor              uint64
 	hostCursor          uint64
 	uploads             map[string]upload
-	uploadBytes         int64
 	receipts            map[string]receipt
 	proofs              map[uint64]observationProof
 	observationBindings map[uint64]observationProof
@@ -66,32 +66,40 @@ func (s *State) Ignore() *ignore.Rules { return s.ignore }
 
 // Put copies bounded bytes and generates an unguessable, single-purpose handle.
 // The environment's fence check binds this store to its exact host/grant/epoch.
-func (s *State) Put(data []byte) (execenv.ContentReference, error) {
+// Put registers a body already in the content store and returns the
+// reference a projection names it by. It expires unconsumed after five
+// minutes; at most retainedUploads are held at once.
+func (s *State) Put(blob content.Blob) (execenv.ContentReference, error) {
 	for id, u := range s.uploads {
 		if !time.Now().Before(u.expires) {
 			delete(s.uploads, id)
-			s.uploadBytes -= u.reference.Size
 		}
 	}
-	if len(data) > execenv.MaxFileBytes || s.uploadBytes+int64(len(data)) > execenv.MaxTreeBytes || len(s.uploads) >= retainedUploads {
+	if len(s.uploads) >= retainedUploads {
 		return execenv.ContentReference{}, execenv.ErrTooLarge
 	}
-	sum := sha256.Sum256(data)
-	ref := execenv.ContentReference{TransferID: rand.Text(), Size: int64(len(data)), Digest: hex.EncodeToString(sum[:])}
-	s.uploads[ref.TransferID] = upload{reference: ref, data: append([]byte{}, data...), expires: time.Now().Add(5 * time.Minute)}
-	s.uploadBytes += ref.Size
+	ref := execenv.ContentReference{TransferID: rand.Text(), Size: blob.Size, Digest: blob.Digest}
+	s.uploads[ref.TransferID] = upload{reference: ref, blob: blob, expires: time.Now().Add(5 * time.Minute)}
 	return ref, nil
 }
 
-func (s *State) content(ref *execenv.ContentReference) ([]byte, error) {
+// Live adds the digest of every body the projection still needs to live:
+// unconsumed uploads.
+func (s *State) Live(live map[string]bool) {
+	for _, u := range s.uploads {
+		live[u.blob.Digest] = true
+	}
+}
+
+func (s *State) content(ref *execenv.ContentReference) (content.Blob, error) {
 	if ref == nil {
-		return nil, execenv.ErrInvalid
+		return content.Blob{}, execenv.ErrInvalid
 	}
 	upload, ok := s.uploads[ref.TransferID]
 	if !ok || upload.reference != *ref || !time.Now().Before(upload.expires) {
-		return nil, execenv.ErrConflict
+		return content.Blob{}, execenv.ErrConflict
 	}
-	return upload.data, nil
+	return upload.blob, nil
 }
 
 func (s *State) replay(id string, digest [32]byte) (execenv.ProjectionReceipt, bool, error) {
@@ -111,15 +119,12 @@ func (s *State) remember(id string, digest [32]byte, value execenv.ProjectionRec
 func (s *State) consume(refs []*execenv.ContentReference) {
 	for _, ref := range refs {
 		if ref != nil {
-			if u, ok := s.uploads[ref.TransferID]; ok {
-				s.uploadBytes -= u.reference.Size
-				delete(s.uploads, ref.TransferID)
-			}
+			delete(s.uploads, ref.TransferID)
 		}
 	}
 }
 
-func (s *State) Initialize(request execenv.ProjectionInitialization, commit func(execenv.Tree) error) (execenv.ProjectionReceipt, error) {
+func (s *State) Initialize(request execenv.ProjectionInitialization, commit func(tree.Tree) error) (execenv.ProjectionReceipt, error) {
 	if err := execenv.ValidateProjectionInitialization(request); err != nil {
 		return execenv.ProjectionReceipt{}, err
 	}
@@ -136,7 +141,7 @@ func (s *State) Initialize(request execenv.ProjectionInitialization, commit func
 	}
 	next := make(map[string]Node)
 	refs := make([]*execenv.ContentReference, 0, len(request.Entries))
-	disk := make(execenv.Tree, 0, len(request.Entries))
+	disk := make(tree.Tree, 0, len(request.Entries))
 	for _, entry := range request.Entries {
 		mutation := execenv.ProjectionMutation{Operation: execenv.ProjectionCreate, EntryID: entry.EntryID, Kind: entry.Kind, Path: entry.Path, ResultingContentVersion: entry.ContentVersion, Content: entry.Content}
 		if err := s.applyOne(next, mutation); err != nil {
@@ -144,10 +149,7 @@ func (s *State) Initialize(request execenv.ProjectionInitialization, commit func
 		}
 		refs = append(refs, entry.Content)
 		node := next[entry.Path]
-		disk = append(disk, execenv.Node{Path: entry.Path, Kind: nodeKind(node.Kind), Version: node.Version, Data: node.Data})
-	}
-	if err := validateSize(next); err != nil {
-		return execenv.ProjectionReceipt{}, err
+		disk = append(disk, tree.Item{Path: entry.Path, Kind: nodeKind(node.Kind), Version: node.Version, Content: node.Content})
 	}
 	var rules *ignore.Rules
 	if request.Ignore != nil {
@@ -207,28 +209,25 @@ func (s *State) Apply(request execenv.ProjectionApply, commit func(Plan) error) 
 			next[mutation.Path] = node
 		}
 		refs = append(refs, mutation.Content)
-		converted := execenv.Mutation{Path: mutation.Path, Kind: nodeKind(mutation.Kind), Expected: mutation.ExpectedContentVersion, Version: mutation.ResultingContentVersion}
+		converted := tree.Mutation{Path: mutation.Path, Kind: nodeKind(mutation.Kind), Expected: mutation.ExpectedContentVersion, Version: mutation.ResultingContentVersion}
 		if mutation.Recursive != nil {
 			converted.Recursive = *mutation.Recursive
 		}
 		switch mutation.Operation {
 		case execenv.ProjectionCreate:
-			converted.Op = execenv.OpCreate
-			converted.Data = next[mutation.Path].Data
+			converted.Op = tree.OpCreate
+			converted.Content = next[mutation.Path].Content
 		case execenv.ProjectionWrite:
-			converted.Op = execenv.OpReplace
-			converted.Data = next[mutation.Path].Data
+			converted.Op = tree.OpReplace
+			converted.Content = next[mutation.Path].Content
 		case execenv.ProjectionMove, execenv.ProjectionRename:
-			converted.Op = execenv.OpMove
+			converted.Op = tree.OpMove
 			converted.From = mutation.Path
 			converted.Path = mutation.DestinationPath
 		case execenv.ProjectionDelete:
-			converted.Op = execenv.OpDelete
+			converted.Op = tree.OpDelete
 		}
 		plan.steps = append(plan.steps, step{before: before, after: maps.Clone(next), mutation: converted, echo: echo})
-	}
-	if err := validateSize(next); err != nil {
-		return execenv.ProjectionReceipt{}, err
 	}
 	if err := commit(plan); err != nil {
 		return execenv.ProjectionReceipt{}, err
@@ -261,7 +260,7 @@ func (s *State) applyOne(nodes map[string]Node, m execenv.ProjectionMutation) er
 			if err != nil {
 				return err
 			}
-			node.Data = body
+			node.Content = body
 		}
 		nodes[m.Path] = node
 		return nil
@@ -278,7 +277,7 @@ func (s *State) applyOne(nodes map[string]Node, m execenv.ProjectionMutation) er
 		if err != nil {
 			return err
 		}
-		current.Data = body
+		current.Content = body
 		current.Version = m.ResultingContentVersion
 		nodes[m.Path] = current
 	case execenv.ProjectionMove, execenv.ProjectionRename:
@@ -334,24 +333,11 @@ func requireParent(nodes map[string]Node, name string) error {
 	}
 	return nil
 }
-func validateSize(nodes map[string]Node) error {
-	if len(nodes) > execenv.MaxTreeEntries {
-		return execenv.ErrTooLarge
-	}
-	var total int64
-	for _, node := range nodes {
-		total += int64(len(node.Data))
-	}
-	if total > execenv.MaxTreeBytes {
-		return execenv.ErrTooLarge
-	}
-	return nil
-}
-func nodeKind(kind execenv.ProjectionKind) execenv.NodeKind {
+func nodeKind(kind execenv.ProjectionKind) tree.NodeKind {
 	if kind == execenv.ProjectionDirectory {
-		return execenv.KindDirectory
+		return tree.KindDirectory
 	}
-	return execenv.KindFile
+	return tree.KindFile
 }
 
 // GuestChanged fences projection until the guest observation has been reconciled.
@@ -366,12 +352,7 @@ func (s *State) GuestChanged() error {
 
 // Nodes returns a detached identity/version baseline for observation binding.
 func (s *State) Nodes() map[string]Node {
-	result := maps.Clone(s.nodes)
-	for name, node := range result {
-		node.Data = bytes.Clone(node.Data)
-		result[name] = node
-	}
-	return result
+	return maps.Clone(s.nodes)
 }
 
 // Holds reports whether the projection currently holds name. Held paths are

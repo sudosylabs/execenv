@@ -56,7 +56,7 @@ func liveHost(t *testing.T, slots int, workDir string) *Host {
 		workDir = t.TempDir()
 	}
 	host, err := New(Config{
-		WorkDir:   workDir,
+		WorkDir:  workDir,
 		Capacity: liveGrant.Times(int64(slots)),
 		Defaults: liveGrant,
 		Images: []Image{

@@ -65,6 +65,9 @@ var (
 	// needs. The client asks for its features when it connects, so a host
 	// too old or too new for it is refused at once, not halfway through.
 	ErrFeature = errors.New("execenv: feature not offered")
+	// ErrQuota indicates the grant's workspace disk is full. Nothing is
+	// truncated: the call that hit it changes nothing.
+	ErrQuota = errors.New("execenv: disk quota exceeded")
 )
 
 // OpError adds operation context while preserving errors.Is matching.

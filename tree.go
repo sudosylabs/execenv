@@ -7,16 +7,10 @@ import (
 )
 
 const (
-	// MaxTreeEntries is the maximum number of entries in one projection.
-	MaxTreeEntries = 500
-	// MaxFileBytes is the maximum size of one file body.
-	MaxFileBytes = 10 << 20
-	// MaxTreeBytes is the maximum sum of file bodies in one projection.
-	MaxTreeBytes = 50 << 20
 	// MaxPathBytes is the maximum UTF-8 length of a path.
-	MaxPathBytes = 1024
+	MaxPathBytes = 4096
 	// MaxPathSegments is the maximum number of '/' separated components.
-	MaxPathSegments = 16
+	MaxPathSegments = 64
 	// MaxSegmentBytes is the maximum UTF-8 length of one path component.
 	MaxSegmentBytes = 255
 )
@@ -25,71 +19,6 @@ const (
 // The host compares it for equality and returns it; it never parses it.
 // Directories do not have a version.
 type Version string
-
-// Tree, Node, Mutation and Batch are the physical file vocabulary an
-// adapter commits for a journal projection. Callers speak
-// ProjectionMutation; adapters translate it into these values.
-
-// NodeKind is a file or directory in a projected tree.
-type NodeKind uint8
-
-const (
-	// KindFile is a regular file.
-	KindFile NodeKind = iota
-	// KindDirectory is an empty-or-parent directory. Directory bytes are
-	// never stored; the path itself is the only directory state.
-	KindDirectory
-)
-
-// Node is one path in a complete physical tree. Data is the file body; an
-// empty non-nil slice is an empty file. Directories have nil Data and an
-// empty Version.
-type Node struct {
-	Path    string
-	Kind    NodeKind
-	Version Version
-	Data    []byte
-}
-
-// Tree is a complete physical snapshot: listed paths exist, unlisted paths
-// do not.
-type Tree []Node
-
-// Op is one physical filesystem change.
-type Op uint8
-
-const (
-	// OpCreate adds a path that did not exist.
-	OpCreate Op = iota + 1
-	// OpReplace changes the body of an existing file.
-	OpReplace
-	// OpMove renames a path. From is the old path, Path is the new one.
-	OpMove
-	// OpDelete removes a path.
-	OpDelete
-)
-
-// Mutation is one physical change in a Batch.
-//
-// Expected is an optimistic fence for files. Empty means "apply
-// unconditionally". A mismatch is ErrConflict.
-type Mutation struct {
-	// Recursive is required to delete a nonempty directory. It is invalid
-	// for other operations or for file deletion.
-	Recursive bool
-	Op        Op
-	Path      string
-	From      string
-	Kind      NodeKind
-	Version   Version
-	Expected  Version
-	Data      []byte
-}
-
-// Batch is an atomic group of mutations: applied completely or not at all.
-type Batch struct {
-	Mutations []Mutation
-}
 
 // ValidatePath reports ErrInvalid when path is not a bounded POSIX-relative
 // location. Product-specific reserved roots are the caller's problem.

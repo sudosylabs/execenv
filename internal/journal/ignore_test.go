@@ -18,11 +18,11 @@ import (
 type journalWorkspace struct{ j *Journal }
 
 func (w journalWorkspace) UploadProjectionContent(_ context.Context, fence execenv.ProjectionFence, body io.Reader) (execenv.ContentReference, error) {
-	data, err := io.ReadAll(body)
+	blob, err := w.j.Receive(body)
 	if err != nil {
 		return execenv.ContentReference{}, err
 	}
-	return w.j.Upload(fence, data)
+	return w.j.Upload(fence, blob)
 }
 func (w journalWorkspace) InitializeProjection(ctx context.Context, request execenv.ProjectionInitialization) (execenv.ProjectionReceipt, error) {
 	return w.j.Initialize(ctx, request)
@@ -49,7 +49,7 @@ func (g diskGuest) Remove(_ context.Context, name string) error { return os.Remo
 
 func ignoreJournal(t *testing.T, own func(string) error) (*Journal, execenv.ProjectionFence) {
 	t.Helper()
-	j := New(t.TempDir(), &testWriteBarrier{}, own)
+	j := New(t.TempDir(), testStore(t), &testWriteBarrier{}, own)
 	t.Cleanup(j.Close)
 	return j, execenv.ProjectionFence{ExecutionGrantID: "grant", EnvironmentEpoch: "epoch", FenceRevision: 1}
 }
@@ -96,7 +96,7 @@ func TestDiskJournalNeverWalksAnIgnoredDirectory(t *testing.T) {
 	if err != nil || len(page.Observations) != 0 {
 		t.Fatalf("ignored tree observed: %+v %v", page, err)
 	}
-	ref, err := j.Upload(fence, []byte("projected"))
+	ref, err := testUpload(t, j, fence, "projected")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestDiskJournalProjectionAdoptsIgnoredDirectory(t *testing.T) {
 	if err := guest.Write(t.Context(), "cache/blob", []byte("guest")); err != nil {
 		t.Fatal(err)
 	}
-	ref, err := j.Upload(fence, []byte("projected"))
+	ref, err := testUpload(t, j, fence, "projected")
 	if err != nil {
 		t.Fatal(err)
 	}

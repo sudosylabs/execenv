@@ -1,7 +1,6 @@
 package isolated
 
 import (
-	"bytes"
 	"context"
 	"io"
 
@@ -22,24 +21,19 @@ func (e *environment) UploadProjectionContent(ctx context.Context, fence execenv
 	if err := ctx.Err(); err != nil {
 		return execenv.ContentReference{}, err
 	}
-	// Do not hold the containment serializer while consuming caller-owned I/O.
-	body, err := io.ReadAll(io.LimitReader(reader, execenv.MaxFileBytes+1))
+	// Check the fence, then stream outside the control serializer: a large
+	// body must not hold up a freeze. The guest binds the fence again when it
+	// registers the body, so a fence that moves meanwhile is still refused.
+	var client *agent.Client
+	err := e.control.Run(ctx, fence, func() error {
+		var err error
+		client, err = e.projectionClient()
+		return err
+	})
 	if err != nil {
 		return execenv.ContentReference{}, err
 	}
-	if len(body) > execenv.MaxFileBytes {
-		return execenv.ContentReference{}, execenv.ErrTooLarge
-	}
-	var reference execenv.ContentReference
-	err = e.control.Run(ctx, fence, func() error {
-		client, err := e.projectionClient()
-		if err != nil {
-			return err
-		}
-		reference, err = client.UploadProjectionContent(ctx, fence, bytes.NewReader(body))
-		return err
-	})
-	return reference, err
+	return client.UploadProjectionContent(ctx, fence, reader)
 }
 func (e *environment) InitializeProjection(ctx context.Context, request execenv.ProjectionInitialization) (execenv.ProjectionReceipt, error) {
 	var receipt execenv.ProjectionReceipt

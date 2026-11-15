@@ -14,10 +14,13 @@ mount -t tmpfs -o size=16m,mode=0755,nosuid,nodev tmpfs /run || exit 1
 mkdir -p /run/execenv/disk /run/execenv/home || exit 1
 mount -t ext4 -o noatime,nosuid,nodev,noinit_itable /dev/vdb /run/execenv/disk || exit 1
 mkdir -p /run/execenv/disk/workspace /run/execenv/disk/home || exit 1
+# File bodies the projection and its observations hold live beside the
+# workspace on the same disk, outside what the workload can reach.
+mkdir -p /run/execenv/disk/content && chmod 0700 /run/execenv/disk/content || exit 1
 mount -o bind /run/execenv/disk/workspace /workspace || exit 1
 mount -o bind /run/execenv/disk/home /run/execenv/home || exit 1
 export HOME=/run/execenv/home
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null || exit 1
 cd /workspace || exit 1
-exec /usr/local/bin/execenv guest-init -home /workspace -scratch /run/execenv/home -contain-workload
+exec /usr/local/bin/execenv guest-init -home /workspace -scratch /run/execenv/home -content /run/execenv/disk/content -contain-workload

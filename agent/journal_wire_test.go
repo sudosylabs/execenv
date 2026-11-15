@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/content"
 	"github.com/sudosylabs/execenv/internal/journal"
 )
 
@@ -110,7 +111,7 @@ func journalWireFixture(t *testing.T) (*Client, string) {
 	home := t.TempDir()
 	hostConn, guestConn := net.Pipe()
 	ctx, cancel := context.WithCancel(t.Context())
-	server := &server{home: home, events: make(chan []execenv.ProcessEvent), journal: journal.New(home, openBarrier{}, nil)}
+	server := &server{home: home, events: make(chan []execenv.ProcessEvent), journal: journal.New(home, wireStore(t), openBarrier{}, nil)}
 	server.processes.Store(true)
 	done := make(chan struct{})
 	go func() {
@@ -137,7 +138,7 @@ func TestNativeJournalWireInitializesLargeSnapshot(t *testing.T) {
 		path += strings.Repeat("&", execenv.MaxSegmentBytes)
 		request.Entries = append(request.Entries, execenv.ProjectionEntry{EntryID: fmt.Sprintf("parent-%d", i), Kind: execenv.ProjectionDirectory, Path: path})
 	}
-	for i := len(request.Entries); i < execenv.MaxTreeEntries; i++ {
+	for i := len(request.Entries); i < 1200; i++ {
 		request.Entries = append(request.Entries, execenv.ProjectionEntry{EntryID: fmt.Sprintf("entry-%d", i), Kind: execenv.ProjectionDirectory, Path: fmt.Sprintf("%s/%04d", path, i)})
 	}
 	raw, _ := json.Marshal(request)
@@ -168,4 +169,13 @@ func (openBarrier) Stopped(ctx context.Context, fn func() error) error {
 		return err
 	}
 	return fn()
+}
+
+func wireStore(t *testing.T) *content.Store {
+	t.Helper()
+	store, err := content.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
 }

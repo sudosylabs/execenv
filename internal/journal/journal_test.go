@@ -36,7 +36,7 @@ func (b *testWriteBarrier) Stopped(ctx context.Context, fn func() error) error {
 func journalFixture(t *testing.T) (*Journal, execenv.ProjectionFence, *testWriteBarrier) {
 	t.Helper()
 	barrier := &testWriteBarrier{}
-	j := New(t.TempDir(), barrier, func(string) error {
+	j := New(t.TempDir(), testStore(t), barrier, func(string) error {
 		if !barrier.inside {
 			t.Fatal("disk ownership changed outside barrier")
 		}
@@ -44,7 +44,7 @@ func journalFixture(t *testing.T) (*Journal, execenv.ProjectionFence, *testWrite
 	})
 	t.Cleanup(j.Close)
 	fence := execenv.ProjectionFence{ExecutionGrantID: "grant", EnvironmentEpoch: "epoch", FenceRevision: 1}
-	ref, err := j.Upload(fence, []byte("base"))
+	ref, err := testUpload(t, j, fence, "base")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestDiskJournalPreservesUnrelatedGuestWriteAndExactReplay(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(j.home, "unrelated"), []byte("guest"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	ref, err := j.Upload(fence, []byte("saved"))
+	ref, err := testUpload(t, j, fence, "saved")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestDiskJournalRefusesSameFileConflictAndPoisonsUncertainCommit(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	ref, err := j.Upload(fence, []byte("save"))
+	ref, err := testUpload(t, j, fence, "save")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestNativeConfirmedGuestCreateDoesNotOverwriteLaterWrite(t *testing.T) {
 	if err := os.WriteFile(name, []byte("later"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	reference, err := j.Upload(fence, []byte("accepted"))
+	reference, err := testUpload(t, j, fence, "accepted")
 	if err != nil {
 		t.Fatal(err)
 	}

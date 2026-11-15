@@ -6,7 +6,6 @@
 package journal
 
 import (
-	"bytes"
 	"context"
 	"io"
 	"os"
@@ -14,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/content"
 	"github.com/sudosylabs/execenv/internal/guesttree"
 	"github.com/sudosylabs/execenv/internal/observations"
 	"github.com/sudosylabs/execenv/internal/projection"
@@ -32,6 +32,7 @@ type Barrier interface {
 // commit. An uncertain disk mutation poisons the barrier until guest teardown.
 type Journal struct {
 	home     string
+	store    *content.Store
 	barrier  Barrier
 	state    *projection.State
 	log      *observations.Log
@@ -40,21 +41,40 @@ type Journal struct {
 	own      func(string) error
 }
 
-// New journals home. own, when set, hands every projected path to the
-// workload's user.
-func New(home string, barrier Barrier, own func(string) error) *Journal {
-	return &Journal{home: home, barrier: barrier, state: projection.New(), own: own}
+// New journals home, keeping bodies in store, which must not be under home.
+// own, when set, hands every projected path to the workload's user.
+func New(home string, store *content.Store, barrier Barrier, own func(string) error) *Journal {
+	return &Journal{home: home, store: store, barrier: barrier, state: projection.New(), own: own}
+}
+
+// Receive stores a body. It needs no lock: Upload then registers it.
+func (j *Journal) Receive(body io.Reader) (content.Blob, error) {
+	return j.store.Put(body)
+}
+
+// sweep drops every stored body nothing references any more.
+func (j *Journal) sweep() {
+	live := make(map[string]bool)
+	j.state.Live(live)
+	if j.log != nil {
+		j.log.Live(live)
+	}
+	_ = j.store.Sweep(live)
 }
 
 // Initialized reports whether the projection has been initialized.
 func (j *Journal) Initialized() bool { return j.state.Initialized() }
 
-// Chunk reads part of a retained observation body.
-func (j *Journal) Chunk(ref execenv.ContentReference, offset int64, length int) ([]byte, error) {
-	if j.log == nil {
-		return nil, execenv.ErrConflict
+// Body opens the retained observation body ref names.
+func (j *Journal) Body(fence execenv.ProjectionFence, ref execenv.ContentReference) (*os.File, error) {
+	if err := j.Bind(fence); err != nil {
+		return nil, err
 	}
-	return j.log.Chunk(ref, offset, length)
+	blob, err := j.log.Content(ref)
+	if err != nil {
+		return nil, err
+	}
+	return j.store.Open(blob)
 }
 func (j *Journal) Close() { j.snapshot.Close() }
 func (j *Journal) Bind(fence execenv.ProjectionFence) error {
@@ -70,11 +90,13 @@ func (j *Journal) Bind(fence execenv.ProjectionFence) error {
 	}
 	return nil
 }
-func (j *Journal) Upload(fence execenv.ProjectionFence, body []byte) (execenv.ContentReference, error) {
+
+// Upload registers a body Receive stored.
+func (j *Journal) Upload(fence execenv.ProjectionFence, blob content.Blob) (execenv.ContentReference, error) {
 	if err := j.Bind(fence); err != nil {
 		return execenv.ContentReference{}, err
 	}
-	return j.state.Put(body)
+	return j.state.Put(blob)
 }
 func (j *Journal) Initialize(ctx context.Context, request execenv.ProjectionInitialization) (execenv.ProjectionReceipt, error) {
 	if err := j.Bind(request.Fence); err != nil {
@@ -84,7 +106,7 @@ func (j *Journal) Initialize(ctx context.Context, request execenv.ProjectionInit
 	var resultErr error
 	err := j.barrier.Stopped(ctx, func() error {
 		touched := false
-		receipt, resultErr = j.state.Initialize(request, func(snapshot execenv.Tree) error {
+		receipt, resultErr = j.state.Initialize(request, func(snapshot tree.Tree) error {
 			current, err := guesttree.Capture(j.home, nil, nil)
 			if err != nil {
 				return err
@@ -98,7 +120,7 @@ func (j *Journal) Initialize(ctx context.Context, request execenv.ProjectionInit
 				return err
 			}
 			touched = true
-			if err := rewriteHome(j.home, next); err != nil {
+			if err := rewriteHome(j.store, j.home, next); err != nil {
 				return err
 			}
 			return j.ownTree(nil)
@@ -117,6 +139,10 @@ func (j *Journal) Initialize(ctx context.Context, request execenv.ProjectionInit
 	if err != nil {
 		return execenv.ProjectionReceipt{}, err
 	}
+	if resultErr == nil {
+		// Consumed uploads are no longer needed.
+		j.sweep()
+	}
 	return receipt, resultErr
 }
 func (j *Journal) Apply(ctx context.Context, request execenv.ProjectionApply) (execenv.ProjectionReceipt, error) {
@@ -134,7 +160,7 @@ func (j *Journal) Apply(ctx context.Context, request execenv.ProjectionApply) (e
 			return err
 		}
 		touched := false
-		var disk execenv.Batch
+		var disk tree.Batch
 		receipt, resultErr = j.state.Apply(request, func(plan projection.Plan) error {
 			prepared, err := plan.Prepare(j.snapshot)
 			if err != nil {
@@ -145,7 +171,7 @@ func (j *Journal) Apply(ctx context.Context, request execenv.ProjectionApply) (e
 				return nil
 			}
 			touched = true
-			if err := applyHome(j.home, disk); err != nil {
+			if err := applyHome(j.store, j.home, disk); err != nil {
 				return err
 			}
 			roots := make([]string, 0, len(disk.Mutations))
@@ -170,6 +196,10 @@ func (j *Journal) Apply(ctx context.Context, request execenv.ProjectionApply) (e
 	if err != nil {
 		return execenv.ProjectionReceipt{}, err
 	}
+	if resultErr == nil {
+		// Consumed uploads are no longer needed.
+		j.sweep()
+	}
 	return receipt, resultErr
 }
 func (j *Journal) Observe(ctx context.Context, fence execenv.ProjectionFence, after uint64, limit int) (execenv.ObservationPage, error) {
@@ -185,7 +215,7 @@ func (j *Journal) Observe(ctx context.Context, fence execenv.ProjectionFence, af
 	return j.log.Page(after, limit)
 }
 func (j *Journal) observeCaptured() error {
-	next, err := guesttree.Capture(j.home, j.snapshot, j.observePolicy())
+	next, err := guesttree.CaptureInto(j.home, j.snapshot, j.observePolicy(), j.store)
 	if err != nil {
 		j.log.Lagged()
 		return err
@@ -210,11 +240,17 @@ func (j *Journal) observeCaptured() error {
 			recursive := change.Recursive
 			event.Recursive = &recursive
 		}
-		var body []byte
+		var body content.Blob
 		if change.Operation == guesttree.CreateFile || change.Operation == guesttree.WriteFile {
-			body = change.Data
+			// The guest is stopped, so the captured file still holds what
+			// was hashed. Keep a copy: the event's body must not change.
+			if body, err = j.keep(change); err != nil {
+				next.Close()
+				j.log.Lagged()
+				return err
+			}
 		}
-		captured = append(captured, observations.Captured{Event: event, Data: body})
+		captured = append(captured, observations.Captured{Event: event, Content: body})
 	}
 	if err := j.log.Append(captured); err != nil {
 		next.Close()
@@ -230,7 +266,7 @@ func (j *Journal) observeCaptured() error {
 	j.snapshot = next
 	return nil
 }
-func (j *Journal) captureProjection(mutations []execenv.Mutation) error {
+func (j *Journal) captureProjection(mutations []tree.Mutation) error {
 	// The guest is stopped, so the workspace is the previous capture plus this
 	// commit's effects. With ignore rules, admit exactly that: a path a
 	// projected ignore-file edit has just made visible must reach the stream
@@ -258,7 +294,7 @@ func (j *Journal) captureProjection(mutations []execenv.Mutation) error {
 			continue
 		}
 		actual, ok := next.Nodes[name]
-		if ok && actual.Kind == node.Kind && bytes.Equal(actual.Data, node.Data) {
+		if ok && actual.Kind == node.Kind && actual.Content == node.Content {
 			actual.Identity = node.Identity
 			next.Nodes[name] = actual
 		}
@@ -343,20 +379,40 @@ func (j *Journal) ownTree(roots []string) error {
 	return nil
 }
 func (j *Journal) Content(fence execenv.ProjectionFence, reference execenv.ContentReference) (io.ReadCloser, error) {
-	if err := j.Bind(fence); err != nil {
-		return nil, err
+	return j.Body(fence, reference)
+}
+
+// keep copies a captured file's body into the store, refusing one that no
+// longer matches its capture.
+func (j *Journal) keep(change guesttree.Change) (content.Blob, error) {
+	if j.store.Has(change.Content) {
+		return change.Content, nil
 	}
-	body, err := j.log.Content(reference)
+	file := change.File
+	if file == nil {
+		return content.Blob{}, execenv.ErrLagged
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return content.Blob{}, execenv.ErrLagged
+	}
+	blob, err := j.store.Put(file)
 	if err != nil {
-		return nil, err
+		return content.Blob{}, err
 	}
-	return io.NopCloser(bytes.NewReader(body)), nil
+	if blob != change.Content {
+		return content.Blob{}, execenv.ErrLagged
+	}
+	return blob, nil
 }
 func (j *Journal) Acknowledge(fence execenv.ProjectionFence, through uint64) error {
 	if err := j.Bind(fence); err != nil {
 		return err
 	}
-	return j.log.Acknowledge(through)
+	if err := j.log.Acknowledge(through); err != nil {
+		return err
+	}
+	j.sweep()
+	return nil
 }
 
 func (j *Journal) Confirm(binding execenv.ObservationProjection) error {

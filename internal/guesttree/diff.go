@@ -1,13 +1,14 @@
 package guesttree
 
 import (
-	"bytes"
 	"maps"
+	"os"
 	"path"
 	"slices"
 	"strings"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/content"
 )
 
 type Operation string
@@ -29,7 +30,10 @@ type Change struct {
 	Path        string
 	Destination string
 	Recursive   bool
-	Data        []byte
+	// Content is a created or written file's body, as captured.
+	Content content.Blob
+	// File is the captured node's open file, for copying Content.
+	File *os.File
 }
 
 // Diff constructs semantic operations only when stable captured identities
@@ -59,7 +63,7 @@ func Diff(before, after *Snapshot) ([]Change, error) {
 	current := maps.Clone(before.Nodes)
 	var changes []Change
 	appendChange := func(op Operation, name, destination string, node Node, recursive bool) {
-		changes = append(changes, Change{Operation: op, Identity: node.Identity, Kind: node.Kind, Path: name, Destination: destination, Recursive: recursive, Data: append([]byte(nil), node.Data...)})
+		changes = append(changes, Change{Operation: op, Identity: node.Identity, Kind: node.Kind, Path: name, Destination: destination, Recursive: recursive, Content: node.Content, File: node.file})
 	}
 	parentReady := func(name string) bool {
 		parent := path.Dir(name)
@@ -73,7 +77,7 @@ func Diff(before, after *Snapshot) ([]Change, error) {
 	names := slices.Sorted(maps.Keys(after.Nodes))
 	// Each pass makes progress on a finite identity/path set. Moves rewrite an
 	// entire subtree, so descendants already at their destination emit no echo.
-	for pass := 0; pass <= execenv.MaxTreeEntries*2; pass++ {
+	for pass := 0; pass <= 2*(len(before.Nodes)+len(after.Nodes))+2; pass++ {
 		progress := false
 		for _, name := range slices.Sorted(maps.Keys(current)) {
 			node, ok := current[name]
@@ -164,7 +168,7 @@ func Diff(before, after *Snapshot) ([]Change, error) {
 		if matched {
 			for _, name := range names {
 				actual, desired := current[name], after.Nodes[name]
-				if actual.Kind == execenv.ProjectionFile && !bytes.Equal(actual.Data, desired.Data) {
+				if actual.Kind == execenv.ProjectionFile && actual.Content != desired.Content {
 					appendChange(WriteFile, name, "", desired, false)
 				}
 			}

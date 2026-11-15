@@ -58,14 +58,13 @@ func TestDirectoryMoveUsesIdentityAndRetainsCapturedBytes(t *testing.T) {
 		}
 	}
 	write(t, home, "moved/nested/file", "later live bytes")
-	if string(changes[1].Data) != "observed" {
+	if changes[1].Content != blob("observed") {
 		t.Fatal("event reads later live bytes")
 	}
-	if string(first.Nodes["dir/nested/file"].Data) != "original" {
+	if first.Nodes["dir/nested/file"].Content != blob("original") {
 		t.Fatal("capture mutated prior baseline")
 	}
-	changes[1].Data[0] = 'X'
-	if string(second.Nodes["moved/nested/file"].Data) != "observed" {
+	if second.Nodes["moved/nested/file"].Content != blob("observed") {
 		t.Fatal("change bytes alias captured state")
 	}
 }
@@ -111,7 +110,7 @@ func TestSemanticCreateAndDeletes(t *testing.T) {
 }
 
 func TestCaptureRejectsUnsupportedTopology(t *testing.T) {
-	for _, kind := range []string{"symlink", "hardlink", "fifo", "oversized"} {
+	for _, kind := range []string{"symlink", "hardlink", "fifo"} {
 		t.Run(kind, func(t *testing.T) {
 			home := t.TempDir()
 			write(t, home, "file", "original")
@@ -124,8 +123,6 @@ func TestCaptureRejectsUnsupportedTopology(t *testing.T) {
 				err = os.Link(filepath.Join(home, "file"), filepath.Join(home, "other"))
 			case "fifo":
 				err = makeFIFO(filepath.Join(home, "other"))
-			case "oversized":
-				err = os.Truncate(filepath.Join(home, "file"), execenv.MaxFileBytes+1)
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -134,7 +131,7 @@ func TestCaptureRejectsUnsupportedTopology(t *testing.T) {
 			if !errors.Is(err, execenv.ErrLagged) || after != nil {
 				t.Fatalf("unsupported tree became observation: %+v %v", after, err)
 			}
-			if string(before.Nodes["file"].Data) != "original" {
+			if before.Nodes["file"].Content != blob("original") {
 				t.Fatal("failed capture mutated baseline")
 			}
 		})

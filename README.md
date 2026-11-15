@@ -394,9 +394,11 @@ that would overwrite a guest change on an affected path, fails with
 `ErrConflict` before any path changes. Observe first, decide, then apply.
 Freeze and thaw preserve the projection; neither requires a new snapshot.
 
-File contents travel separately as immutable, scoped SHA-256 references, within
-the 10-MiB file and 50-MiB tree limits. Unconsumed content expires after five
-minutes, with at most 512 handles per environment. Over the remote wire each
+File contents travel separately as immutable, scoped SHA-256 references. A
+body streams to the grant's workspace disk as it arrives and is never held in
+memory, so no size limit applies to it but the disk itself: a body or a tree
+that would not fit is `ErrQuota`, and nothing is left half-written. Unconsumed
+content expires after five minutes, with at most 512 handles per environment. Over the remote wire each
 upload is one stream of 64-KiB messages on the content connection; one that
 breaks off leaves nothing behind. References cannot name
 paths, URLs, credentials, another environment or observation content.
@@ -460,7 +462,9 @@ confirmation.
 
 Acknowledge only after recording the outcome durably. Acknowledgement releases
 retained content; it does not itself imply acceptance or advance projection
-versions. Unacknowledged retention is bounded to 4096 events and 50 MiB.
+versions. Unacknowledged retention is bounded to 4096 events; their bodies are
+kept on the grant's disk, each copied as it was observed, and removed once
+acknowledged.
 Overflow reports `ErrLagged` without discarding the retained prefix. A cursor
 before the acknowledged prefix also returns `ErrLagged`.
 
@@ -694,7 +698,8 @@ Match with `errors.Is`. Wrappers preserve the sentinel.
 | `ErrClosed` | terminal or content reader closed (not revoke) |
 | `ErrNotFound` | path missing from the projection |
 | `ErrLagged` | observations no longer retained, or a process log position already acknowledged |
-| `ErrTooLarge` | file, tree or metadata over the cap |
+| `ErrTooLarge` | metadata over its bound, or too many content handles |
+| `ErrQuota` | the grant's workspace disk is full; the call changed nothing |
 | `ErrConnection` | remote session lost |
 | `ErrNetwork` | allowlist requested, host offers none |
 
@@ -705,13 +710,11 @@ Do not log tokens, tree bodies, or PTY octets.
 | Cap | Value |
 | --- | --- |
 | Grant id / image id | 1–64 characters `[A-Za-z0-9._-:]` |
-| Entries in one projection | 500 |
+| File bodies, one or all | the grant's `DiskBytes` |
 | Mutations per Apply | 128 |
-| One file body | 10 MiB |
-| Sum of file bodies | 50 MiB |
 | Apply metadata | 256 KiB |
-| Initialization metadata | 4 MiB |
-| Unacknowledged observations | 4096 events, 50 MiB |
+| Initialization metadata | 64 MiB (a few hundred thousand entries) |
+| Unacknowledged observations | 4096 events |
 | Unacknowledged process events | 4096 events, 2 MiB |
 | Process log page | 256 events, 256 KiB |
 | Started command line | 64 arguments, 1 KiB |
@@ -721,8 +724,8 @@ Do not log tokens, tree bodies, or PTY octets.
 | Content and terminal output per message | 64 KiB |
 | HTTP/2 stream window, client receiving | 256 KiB interactive, 4 MiB content |
 | HTTP/2 stream window, host receiving | 4 MiB |
-| Path length | 1024 bytes UTF-8 |
-| Path segments | 16 |
+| Path length | 4096 bytes UTF-8 |
+| Path segments | 64 |
 | One segment | 255 bytes |
 | Terminals per environment | 1 |
 

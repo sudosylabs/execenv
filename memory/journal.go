@@ -36,20 +36,17 @@ func (e *environment) UploadProjectionContent(ctx context.Context, fence execenv
 	if err := ctx.Err(); err != nil {
 		return execenv.ContentReference{}, err
 	}
-	body, err := io.ReadAll(io.LimitReader(reader, execenv.MaxFileBytes+1))
+	if err := e.control.Run(ctx, fence, func() error { return nil }); err != nil {
+		return execenv.ContentReference{}, err
+	}
+	blob, err := e.journal.Receive(reader)
 	if err != nil {
 		return execenv.ContentReference{}, err
 	}
-	if len(body) > execenv.MaxFileBytes {
-		return execenv.ContentReference{}, execenv.ErrTooLarge
-	}
 	var ref execenv.ContentReference
 	err = e.journaled(ctx, fence, func() error {
-		if err := e.journal.Bind(fence); err != nil {
-			return err
-		}
 		var err error
-		ref, err = e.journal.Upload(fence, body)
+		ref, err = e.journal.Upload(fence, blob)
 		return err
 	})
 	return ref, err

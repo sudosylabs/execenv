@@ -43,6 +43,7 @@ func Run(t *testing.T, factory Factory) {
 	runProjection(t, factory)
 	runTerminal(t, factory)
 	runResources(t, factory)
+	runContent(t, factory)
 
 	t.Run("ready reports the default image", func(t *testing.T) {
 		host := factory(t, Config{})

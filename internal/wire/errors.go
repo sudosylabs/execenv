@@ -35,6 +35,7 @@ var sentinels = []struct {
 	{execenv.ErrConnection, "connection", connect.CodeUnavailable},
 	{execenv.ErrNetwork, "network", connect.CodeFailedPrecondition},
 	{execenv.ErrFeature, "feature", connect.CodeFailedPrecondition},
+	{execenv.ErrQuota, "quota", connect.CodeResourceExhausted},
 }
 
 // wireError turns a host error into a Connect error. Its message is the

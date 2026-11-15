@@ -128,7 +128,7 @@ func TestRemoteInitialProjectionRetainsLargeSnapshot(t *testing.T) {
 		path += strings.Repeat("&", execenv.MaxSegmentBytes)
 		request.Entries = append(request.Entries, execenv.ProjectionEntry{EntryID: fmt.Sprintf("parent-%d", i), Kind: execenv.ProjectionDirectory, Path: path})
 	}
-	for i := len(request.Entries); i < execenv.MaxTreeEntries; i++ {
+	for i := len(request.Entries); i < 1200; i++ {
 		request.Entries = append(request.Entries, execenv.ProjectionEntry{EntryID: fmt.Sprintf("entry-%d", i), Kind: execenv.ProjectionDirectory, Path: fmt.Sprintf("%s/%04d", path, i)})
 	}
 	raw, _ := json.Marshal(request)

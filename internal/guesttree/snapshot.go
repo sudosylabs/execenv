@@ -10,15 +10,32 @@ import (
 	"path"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/content"
 )
 
 type Node struct {
 	Identity string
 	Kind     execenv.ProjectionKind
-	Data     []byte
-	file     *os.File
-	key      physicalKey
+	// Content is a file's digest and size, never its bytes. The body is
+	// copied into the content store only when a change reports it.
+	Content content.Blob
+	file    *os.File
+	key     physicalKey
+	// stamp is what a file's metadata was when Content was computed, so an
+	// unchanged file is not hashed again.
+	stamp stamp
 }
+
+// stamp is the metadata that changes whenever a file's bytes may have.
+type stamp struct {
+	size  int64
+	mtime int64
+	ctime int64
+}
+
+// File is the open file a capture holds for a node, positioned anywhere.
+// Callers copying its body must seek it first.
+func (n Node) File() *os.File { return n.file }
 
 type Snapshot struct{ Nodes map[string]Node }
 
@@ -56,9 +73,6 @@ func admitted(root *os.Root, parent *os.File, directory string, previous *Snapsh
 				}
 			}
 			entries = append(entries, entry)
-			if len(entries) > execenv.MaxTreeEntries {
-				return nil, execenv.ErrLagged
-			}
 		}
 		if err == io.EOF || err == nil && len(batch) == 0 {
 			return entries, nil
@@ -95,7 +109,14 @@ func (s *Snapshot) node(name string) (Node, bool) {
 // open until this call succeeds and the observation transaction is retained.
 // Failure is a typed resynchronization error, never a plausible empty tree.
 // observe leaves ignored paths out; see Observe.
-func Capture(home string, previous *Snapshot, observe Observe) (result *Snapshot, err error) {
+func Capture(home string, previous *Snapshot, observe Observe) (*Snapshot, error) {
+	return CaptureInto(home, previous, observe, nil)
+}
+
+// CaptureInto is Capture that also keeps every new or changed file's body in
+// store, copied in the same pass that hashes it, so a body a change reports
+// is exactly what was hashed. Unchanged files are neither hashed nor copied.
+func CaptureInto(home string, previous *Snapshot, observe Observe, store *content.Store) (result *Snapshot, err error) {
 	root, err := os.OpenRoot(home)
 	if err != nil {
 		return nil, execenv.ErrLagged
@@ -115,7 +136,12 @@ func Capture(home string, previous *Snapshot, observe Observe) (result *Snapshot
 		}
 	}
 	seen := make(map[physicalKey]bool)
-	var total int64
+	previousByKey := make(map[physicalKey]Node)
+	if previous != nil {
+		for _, node := range previous.Nodes {
+			previousByKey[node.key] = node
+		}
+	}
 	var visit func(string) error
 	visit = func(directory string) error {
 		parent, err := root.Open(directory)
@@ -129,7 +155,7 @@ func Capture(home string, previous *Snapshot, observe Observe) (result *Snapshot
 		}
 		for _, entry := range entries {
 			name := path.Join(directory, entry.Name())
-			if execenv.ValidatePath(name) != nil || len(result.Nodes) >= execenv.MaxTreeEntries {
+			if execenv.ValidatePath(name) != nil {
 				return execenv.ErrLagged
 			}
 			info, err := root.Lstat(name)
@@ -163,19 +189,26 @@ func Capture(home string, previous *Snapshot, observe Observe) (result *Snapshot
 			result.Nodes[name] = node
 			seen[key] = true
 			if kind == execenv.ProjectionFile {
-				data, err := io.ReadAll(io.LimitReader(file, execenv.MaxFileBytes+1))
-				if err != nil || len(data) > execenv.MaxFileBytes {
+				st := stampOf(actual)
+				if old, ok := previousByKey[key]; ok && old.Kind == kind && old.stamp == st && old.Content.Digest != "" {
+					node.Content, node.stamp = old.Content, st
+					result.Nodes[name] = node
+					continue
+				}
+				var blob content.Blob
+				if store != nil {
+					blob, err = store.Put(file)
+				} else {
+					blob, err = content.Hash(file)
+				}
+				if err != nil {
 					return execenv.ErrLagged
 				}
 				final, err := file.Stat()
-				if err != nil || final.Size() != int64(len(data)) || !final.ModTime().Equal(info.ModTime()) {
+				if err != nil || final.Size() != blob.Size || stampOf(final) != st {
 					return execenv.ErrLagged
 				}
-				total += int64(len(data))
-				if total > execenv.MaxTreeBytes {
-					return execenv.ErrLagged
-				}
-				node.Data = data
+				node.Content, node.stamp = blob, st
 				result.Nodes[name] = node
 			} else if err := visit(name); err != nil {
 				return err

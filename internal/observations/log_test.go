@@ -1,7 +1,6 @@
 package observations
 
 import (
-	"bytes"
 	"errors"
 	"testing"
 
@@ -9,7 +8,7 @@ import (
 )
 
 func captured(body string) Captured {
-	return Captured{Event: execenv.ExecutionObservation{Fence: execenv.ProjectionFence{ExecutionGrantID: "grant", EnvironmentEpoch: "epoch", FenceRevision: 1}, BasedOnWorkspaceCursor: 7, Operation: execenv.ObservationWriteFile, NodeIdentity: "node", Kind: execenv.ProjectionFile, Path: "file", ExpectedContentVersion: "v1"}, Data: []byte(body)}
+	return Captured{Event: execenv.ExecutionObservation{Fence: execenv.ProjectionFence{ExecutionGrantID: "grant", EnvironmentEpoch: "epoch", FenceRevision: 1}, BasedOnWorkspaceCursor: 7, Operation: execenv.ObservationWriteFile, NodeIdentity: "node", Kind: execenv.ProjectionFile, Path: "file", ExpectedContentVersion: "v1"}, Content: blob(body)}
 }
 func TestRetainedContentSurvivesReplayUntilAcknowledged(t *testing.T) {
 	log := New("grant", "epoch")
@@ -17,7 +16,6 @@ func TestRetainedContentSurvivesReplayUntilAcknowledged(t *testing.T) {
 	if err := log.Append([]Captured{one, two}); err != nil {
 		t.Fatal(err)
 	}
-	one.Data[0] = 'X'
 	page, err := log.Page(0, 128)
 	if err != nil || len(page.Observations) != 2 {
 		t.Fatalf("page: %+v %v", page, err)
@@ -28,13 +26,8 @@ func TestRetainedContentSurvivesReplayUntilAcknowledged(t *testing.T) {
 			t.Fatalf("lost original baseline: %+v", event)
 		}
 		body, err := log.Content(*event.Content)
-		if err != nil || string(body) != want {
-			t.Fatalf("immutable event: %q %v", body, err)
-		}
-		body[0] = 'X'
-		again, err := log.Content(*event.Content)
-		if err != nil || string(again) != want {
-			t.Fatal("read bytes alias retention")
+		if err != nil || body != blob(want) {
+			t.Fatalf("immutable event: %+v %v", body, err)
 		}
 	}
 	reference := *page.Observations[0].Content
@@ -62,8 +55,10 @@ func TestRetainedContentSurvivesReplayUntilAcknowledged(t *testing.T) {
 	if err := log.Acknowledge(1); err != nil {
 		t.Fatal("acknowledgement retry failed")
 	}
-	if log.bytes != int64(len("second")) {
-		t.Fatal("incorrect retained byte accounting")
+	live := map[string]bool{}
+	log.Live(live)
+	if len(live) != 1 || !live[blob("second").Digest] {
+		t.Fatalf("retained bodies = %v, want only the second", live)
 	}
 }
 func TestCaptureValidationIsAtomicAndOverflowRetainsEvidence(t *testing.T) {
@@ -73,7 +68,7 @@ func TestCaptureValidationIsAtomicAndOverflowRetainsEvidence(t *testing.T) {
 	if err := log.Append([]Captured{captured("valid"), bad}); !errors.Is(err, execenv.ErrInvalid) {
 		t.Fatal(err)
 	}
-	if log.cursor != 0 || len(log.events) != 0 || log.bytes != 0 {
+	if log.cursor != 0 || len(log.events) != 0 {
 		t.Fatal("partially appended invalid capture")
 	}
 	if err := log.Append([]Captured{captured("retained")}); err != nil {
@@ -89,7 +84,7 @@ func TestCaptureValidationIsAtomicAndOverflowRetainsEvidence(t *testing.T) {
 		t.Fatalf("unbounded retained events: %v", err)
 	}
 	body, err := log.Content(ref)
-	if err != nil || !bytes.Equal(body, []byte("retained")) {
+	if err != nil || body != blob("retained") {
 		t.Fatal("overflow discarded unacknowledged evidence")
 	}
 	if _, err := log.Page(0, 1); err != nil {

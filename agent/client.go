@@ -462,9 +462,6 @@ func (c *Client) UploadProjectionContent(ctx context.Context, fence execenv.Proj
 		n, err := body.Read(buf)
 		if n > 0 {
 			size += int64(n)
-			if size > execenv.MaxFileBytes {
-				return execenv.ContentReference{}, execenv.ErrTooLarge
-			}
 			_, _ = sum.Write(buf[:n])
 			if serr := stream.Send(&execenvv1.UploadContentRequest{Part: &execenvv1.UploadContentRequest_Chunk{Chunk: buf[:n]}}); serr != nil {
 				_, cerr := stream.CloseAndReceive()

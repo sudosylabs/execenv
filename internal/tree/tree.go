@@ -10,13 +10,70 @@ import (
 	"strings"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/content"
 )
 
-// Node is one path in a snapshot. Directories have nil Data.
-type Node struct {
-	Kind    execenv.NodeKind
+// NodeKind is a file or directory in a projected tree.
+type NodeKind uint8
+
+const (
+	// KindFile is a regular file.
+	KindFile NodeKind = iota
+	// KindDirectory is a directory. The path itself is its only state.
+	KindDirectory
+)
+
+// Item is one path of a complete physical tree. Content names a file's
+// body in the content store; directories have none and no Version.
+type Item struct {
+	Path    string
+	Kind    NodeKind
 	Version execenv.Version
-	Data    []byte
+	Content content.Blob
+}
+
+// Tree is a complete physical snapshot: listed paths exist, unlisted paths
+// do not.
+type Tree []Item
+
+// Op is one physical filesystem change.
+type Op uint8
+
+const (
+	// OpCreate adds a path that did not exist.
+	OpCreate Op = iota + 1
+	// OpReplace changes the body of an existing file.
+	OpReplace
+	// OpMove renames a path. From is the old path, Path is the new one.
+	OpMove
+	// OpDelete removes a path.
+	OpDelete
+)
+
+// Mutation is one physical change in a Batch. Expected is an optimistic
+// fence for files; empty applies unconditionally.
+type Mutation struct {
+	// Recursive is required to delete a nonempty directory.
+	Recursive bool
+	Op        Op
+	Path      string
+	From      string
+	Kind      NodeKind
+	Version   execenv.Version
+	Expected  execenv.Version
+	Content   content.Blob
+}
+
+// Batch is an atomic group of mutations: applied completely or not at all.
+type Batch struct {
+	Mutations []Mutation
+}
+
+// Node is one path in a snapshot.
+type Node struct {
+	Kind    NodeKind
+	Version execenv.Version
+	Content content.Blob
 }
 
 // Snapshot is the current projection keyed by validated relative path.
@@ -24,11 +81,7 @@ type Snapshot map[string]Node
 
 // FromTree returns a snapshot that matches tree exactly. Every file carries
 // its body; nil Data on a file is ErrInvalid.
-func FromTree(tree execenv.Tree) (Snapshot, error) {
-	if len(tree) > execenv.MaxTreeEntries {
-		return nil, execenv.ErrTooLarge
-	}
-	var total int64
+func FromTree(tree Tree) (Snapshot, error) {
 	seen := make(map[string]struct{}, len(tree))
 	next := make(Snapshot, len(tree))
 	for _, item := range tree {
@@ -40,21 +93,16 @@ func FromTree(tree execenv.Tree) (Snapshot, error) {
 		}
 		seen[item.Path] = struct{}{}
 		switch item.Kind {
-		case execenv.KindDirectory:
-			if item.Version != "" || item.Data != nil {
+		case KindDirectory:
+			if item.Version != "" || item.Content != (content.Blob{}) {
 				return nil, execenv.ErrInvalid
 			}
-			next[item.Path] = Node{Kind: execenv.KindDirectory}
-		case execenv.KindFile:
-			if item.Data == nil {
+			next[item.Path] = Node{Kind: KindDirectory}
+		case KindFile:
+			if item.Content.Digest == "" {
 				return nil, execenv.ErrInvalid
 			}
-			body := append([]byte(nil), item.Data...)
-			total += int64(len(body))
-			if int64(len(body)) > execenv.MaxFileBytes || total > execenv.MaxTreeBytes {
-				return nil, execenv.ErrTooLarge
-			}
-			next[item.Path] = Node{Kind: execenv.KindFile, Version: item.Version, Data: body}
+			next[item.Path] = Node{Kind: KindFile, Version: item.Version, Content: item.Content}
 		default:
 			return nil, execenv.ErrInvalid
 		}
@@ -67,28 +115,17 @@ func FromTree(tree execenv.Tree) (Snapshot, error) {
 
 // Apply returns a new snapshot with batch applied, or an error and the
 // original left unused. Callers must not commit on error.
-func Apply(current Snapshot, batch execenv.Batch) (Snapshot, error) {
+func Apply(current Snapshot, batch Batch) (Snapshot, error) {
 	return apply(current, batch, true)
 }
 
-// ApplyGuest is Apply for a guest-side tree that also holds ignored paths.
-// Those never count toward MaxTreeEntries, so only the observed part is
-// bounded by its owner; bytes stay bounded here.
-func ApplyGuest(current Snapshot, batch execenv.Batch) (Snapshot, error) {
-	return apply(current, batch, false)
-}
-
-func apply(current Snapshot, batch execenv.Batch, bounded bool) (Snapshot, error) {
-	if len(batch.Mutations) > execenv.MaxTreeEntries {
-		return nil, execenv.ErrTooLarge
-	}
+func apply(current Snapshot, batch Batch, bounded bool) (Snapshot, error) {
 	next := maps.Clone(current)
 	if next == nil {
 		next = make(Snapshot)
 	}
-	var total int64
 	for _, mut := range batch.Mutations {
-		if err := applyOne(next, mut, &total); err != nil {
+		if err := applyOne(next, mut); err != nil {
 			return nil, err
 		}
 	}
@@ -98,37 +135,37 @@ func apply(current Snapshot, batch execenv.Batch, bounded bool) (Snapshot, error
 	return next, nil
 }
 
-func applyOne(next Snapshot, mut execenv.Mutation, total *int64) error {
+func applyOne(next Snapshot, mut Mutation) error {
 	if err := execenv.ValidatePath(mut.Path); err != nil {
 		return err
 	}
-	if mut.Recursive && mut.Op != execenv.OpDelete {
+	if mut.Recursive && mut.Op != OpDelete {
 		return execenv.ErrInvalid
 	}
 	switch mut.Op {
-	case execenv.OpCreate:
+	case OpCreate:
 		if _, ok := next[mut.Path]; ok {
 			return execenv.ErrConflict
 		}
-		return put(next, mut, total)
-	case execenv.OpReplace:
+		return put(next, mut)
+	case OpReplace:
 		ent, ok := next[mut.Path]
-		if !ok || ent.Kind != execenv.KindFile {
+		if !ok || ent.Kind != KindFile {
 			return execenv.ErrNotFound
 		}
 		if mut.Expected != "" && ent.Version != mut.Expected {
 			return execenv.ErrConflict
 		}
-		return put(next, mut, total)
-	case execenv.OpDelete:
+		return put(next, mut)
+	case OpDelete:
 		ent, ok := next[mut.Path]
 		if !ok {
 			return execenv.ErrNotFound
 		}
-		if mut.Expected != "" && ent.Kind == execenv.KindFile && ent.Version != mut.Expected {
+		if mut.Expected != "" && ent.Kind == KindFile && ent.Version != mut.Expected {
 			return execenv.ErrConflict
 		}
-		if ent.Kind == execenv.KindFile && mut.Recursive {
+		if ent.Kind == KindFile && mut.Recursive {
 			return execenv.ErrInvalid
 		}
 		prefix := mut.Path + "/"
@@ -142,7 +179,7 @@ func applyOne(next Snapshot, mut execenv.Mutation, total *int64) error {
 		}
 		delete(next, mut.Path)
 		return nil
-	case execenv.OpMove:
+	case OpMove:
 		if err := execenv.ValidatePath(mut.From); err != nil {
 			return err
 		}
@@ -150,7 +187,7 @@ func applyOne(next Snapshot, mut execenv.Mutation, total *int64) error {
 		if !ok {
 			return execenv.ErrNotFound
 		}
-		if mut.Expected != "" && ent.Kind == execenv.KindFile && ent.Version != mut.Expected {
+		if mut.Expected != "" && ent.Kind == KindFile && ent.Version != mut.Expected {
 			return execenv.ErrConflict
 		}
 		if _, exists := next[mut.Path]; exists {
@@ -185,30 +222,19 @@ func applyOne(next Snapshot, mut execenv.Mutation, total *int64) error {
 	}
 }
 
-func put(next Snapshot, mut execenv.Mutation, total *int64) error {
+func put(next Snapshot, mut Mutation) error {
 	switch mut.Kind {
-	case execenv.KindDirectory:
-		if mut.Data != nil || mut.Version != "" {
+	case KindDirectory:
+		if mut.Content != (content.Blob{}) || mut.Version != "" {
 			return execenv.ErrInvalid
 		}
-		next[mut.Path] = Node{Kind: execenv.KindDirectory}
+		next[mut.Path] = Node{Kind: KindDirectory}
 		return nil
-	case execenv.KindFile:
-		if mut.Data == nil {
+	case KindFile:
+		if mut.Content.Digest == "" {
 			return execenv.ErrInvalid
 		}
-		if int64(len(mut.Data)) > execenv.MaxFileBytes {
-			return execenv.ErrTooLarge
-		}
-		*total += int64(len(mut.Data))
-		if *total > execenv.MaxTreeBytes {
-			return execenv.ErrTooLarge
-		}
-		next[mut.Path] = Node{
-			Kind:    execenv.KindFile,
-			Version: mut.Version,
-			Data:    append([]byte(nil), mut.Data...),
-		}
+		next[mut.Path] = Node{Kind: KindFile, Version: mut.Version, Content: mut.Content}
 		return nil
 	default:
 		return execenv.ErrInvalid
@@ -217,18 +243,10 @@ func put(next Snapshot, mut execenv.Mutation, total *int64) error {
 
 // Missing parent entries retain the original implicit-directory convention;
 // an explicitly projected file can never become another node's parent.
-func validateTopology(nodes Snapshot, bounded bool) error {
-	if bounded && len(nodes) > execenv.MaxTreeEntries {
-		return execenv.ErrTooLarge
-	}
-	var total int64
-	for key, node := range nodes {
-		total += int64(len(node.Data))
-		if total > execenv.MaxTreeBytes {
-			return execenv.ErrTooLarge
-		}
+func validateTopology(nodes Snapshot, _ bool) error {
+	for key := range nodes {
 		for parent := path.Dir(key); parent != "."; parent = path.Dir(parent) {
-			if ancestor, ok := nodes[parent]; ok && ancestor.Kind != execenv.KindDirectory {
+			if ancestor, ok := nodes[parent]; ok && ancestor.Kind != KindDirectory {
 				return execenv.ErrConflict
 			}
 		}

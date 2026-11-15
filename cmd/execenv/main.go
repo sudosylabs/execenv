@@ -64,6 +64,7 @@ func runAgent(args []string) int {
 	fs := flag.NewFlagSet("agent", flag.ContinueOnError)
 	home := fs.String("home", "", "projected tree; the shell's working directory")
 	scratch := fs.String("scratch", "", "the shell's $HOME, outside the projected tree; empty uses -home")
+	contentDir := fs.String("content", "", "where file bodies are kept, outside the projected tree; empty uses a temporary directory")
 	contained := fs.Bool("contain-workload", false, "require a kernel-acknowledged unprivileged workload barrier")
 	listen := fs.String("listen", "", "unix socket the host dials; empty uses the guest link")
 	if err := fs.Parse(args); err != nil {
@@ -73,7 +74,7 @@ func runAgent(args []string) int {
 		fmt.Fprintln(os.Stderr, "usage: execenv agent -home <dir> [-scratch <dir>] [-listen <unix-socket>]")
 		return 2
 	}
-	cfg := agent.Config{Home: *home, Scratch: *scratch, ContainWorkload: *contained}
+	cfg := agent.Config{Home: *home, Scratch: *scratch, Content: *contentDir, ContainWorkload: *contained}
 	var ln net.Listener
 	var err error
 	if *listen != "" {

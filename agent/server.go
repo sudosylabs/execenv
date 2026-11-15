@@ -14,6 +14,7 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/content"
 	guestv1 "github.com/sudosylabs/execenv/internal/gen/execenv/guest/v1"
 	"github.com/sudosylabs/execenv/internal/gen/execenv/guest/v1/guestv1connect"
 	execenvv1 "github.com/sudosylabs/execenv/internal/gen/execenv/v1"
@@ -31,6 +32,11 @@ type Config struct {
 	// tool caches and virtual environments are neither observed nor
 	// harvested. Empty uses Home (local development only).
 	Scratch string
+	// Content is where file bodies are kept: uploads waiting for the
+	// projection and the bodies observations report. It must not be under
+	// Home and should be on the same disk. Empty uses a temporary directory
+	// (local development only).
+	Content string
 	// ContainWorkload requires a dedicated guest with a usable kernel write
 	// barrier and launches every workload process unprivileged. Unsupported
 	// configurations fail before serving or accepting a terminal. It is how
@@ -93,11 +99,24 @@ func Serve(ctx context.Context, conn net.Conn, cfg Config) error {
 		scratch:  scratch,
 		events:   make(chan []execenv.ProcessEvent),
 	}
+	contentDir := cfg.Content
+	if contentDir == "" {
+		dir, err := os.MkdirTemp("", "execenv-content-")
+		if err != nil {
+			return execenv.Error("agent", err)
+		}
+		defer os.RemoveAll(dir)
+		contentDir = dir
+	}
+	store, err := content.Open(contentDir)
+	if err != nil {
+		return execenv.Error("agent", err)
+	}
 	switch {
 	case group != nil:
-		s.journal = journal.New(cfg.Home, group, group.OwnHome)
+		s.journal = journal.New(cfg.Home, store, group, group.OwnHome)
 	case cfg.Barrier != nil:
-		s.journal = journal.New(cfg.Home, cfg.Barrier, nil)
+		s.journal = journal.New(cfg.Home, store, cfg.Barrier, nil)
 	}
 	if s.journal != nil {
 		defer s.journal.Close()
@@ -369,26 +388,27 @@ func (s *server) UploadContent(_ context.Context, stream *connect.ClientStream[e
 	if execenv.ValidateProjectionFence(fence) != nil {
 		return nil, wire.Error(execenv.ErrInvalid)
 	}
-	var data []byte
-	for stream.Receive() {
-		chunk := stream.Msg().GetChunk()
-		if len(data)+len(chunk) > execenv.MaxFileBytes {
-			return nil, wire.Error(execenv.ErrTooLarge)
-		}
-		data = append(data, chunk...)
+	if s.journal == nil {
+		return nil, wire.Error(execenv.ErrUnavailable)
 	}
-	if err := stream.Err(); err != nil {
-		return nil, err
+	// The body streams to the workspace disk without the server's lock;
+	// only registering it takes the lock.
+	body := &wire.ChunkReader{Next: func() ([]byte, bool, error) {
+		if !stream.Receive() {
+			return nil, false, stream.Err()
+		}
+		return stream.Msg().GetChunk(), true, nil
+	}}
+	blob, err := s.journal.Receive(body)
+	if err != nil {
+		return nil, wire.Error(err)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.journalGuard(); err != nil {
 		return nil, wire.Error(err)
 	}
-	if err := s.journal.Bind(fence); err != nil {
-		return nil, wire.Error(err)
-	}
-	ref, err := s.journal.Upload(fence, data)
+	ref, err := s.journal.Upload(fence, blob)
 	if err != nil {
 		return nil, wire.Error(err)
 	}
@@ -450,34 +470,38 @@ func (s *server) Observe(ctx context.Context, req *connect.Request[execenvv1.Obs
 	return connect.NewResponse(wire.ObservationPageTo(page)), nil
 }
 
-// ReadObservationContent streams a retained body. An unknown or retired one
-// is refused before anything is sent.
+// ReadObservationContent streams a retained body from the content store.
+// An unknown or retired one is refused before anything is sent.
 func (s *server) ReadObservationContent(_ context.Context, req *connect.Request[execenvv1.ReadObservationContentRequest], stream *connect.ServerStream[execenvv1.ContentChunk]) error {
 	ref := wire.ContentFrom(req.Msg.GetContent())
 	if ref == nil || execenv.ValidateContentReference(*ref) != nil {
 		return wire.Error(execenv.ErrInvalid)
 	}
-	chunk := func(offset int64) ([]byte, error) {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		if _, err := s.bound(req.Msg.GetFence()); err != nil {
-			return nil, err
-		}
-		return s.journal.Chunk(*ref, offset, wire.ChunkSize)
+	s.mu.Lock()
+	fence, err := s.bound(req.Msg.GetFence())
+	var body *os.File
+	if err == nil {
+		body, err = s.journal.Body(fence, *ref)
 	}
-	var offset int64
+	s.mu.Unlock()
+	if err != nil {
+		return wire.Error(err)
+	}
+	defer body.Close()
+	buf := make([]byte, wire.ChunkSize)
 	for {
-		body, err := chunk(offset)
-		if err != nil {
-			return wire.Error(err)
+		n, err := body.Read(buf)
+		if n > 0 {
+			if serr := stream.Send(&execenvv1.ContentChunk{Data: buf[:n]}); serr != nil {
+				return serr
+			}
 		}
-		if len(body) == 0 {
+		if err == io.EOF {
 			return nil
 		}
-		if err := stream.Send(&execenvv1.ContentChunk{Data: body}); err != nil {
-			return err
+		if err != nil {
+			return wire.Error(execenv.ErrUnavailable)
 		}
-		offset += int64(len(body))
 	}
 }
 

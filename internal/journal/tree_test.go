@@ -3,21 +3,24 @@ package journal
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
-	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/content"
+
 	"github.com/sudosylabs/execenv/internal/tree"
 )
 
 func TestApplyHomeFailureRestoresHome(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
-	if err := rewriteHome(home, tree.Snapshot{"blocked": {Kind: execenv.KindFile, Version: "v1", Data: []byte("old")}}); err != nil {
+	store := testStore(t)
+	if err := rewriteHome(store, home, tree.Snapshot{"blocked": {Kind: tree.KindFile, Version: "v1", Content: put(t, store, "old")}}); err != nil {
 		t.Fatal(err)
 	}
-	err := applyHome(home, execenv.Batch{Mutations: []execenv.Mutation{
-		{Op: execenv.OpReplace, Path: "blocked", Kind: execenv.KindFile, Data: []byte("new")},
-		{Op: execenv.OpCreate, Path: "blocked/nested.txt", Kind: execenv.KindFile, Data: []byte("nope")},
+	err := applyHome(store, home, tree.Batch{Mutations: []tree.Mutation{
+		{Op: tree.OpReplace, Path: "blocked", Kind: tree.KindFile, Content: put(t, store, "new")},
+		{Op: tree.OpCreate, Path: "blocked/nested.txt", Kind: tree.KindFile, Content: put(t, store, "nope")},
 	}})
 	if err == nil {
 		t.Fatal("applyHome succeeded with a file parent")
@@ -31,13 +34,14 @@ func TestApplyHomeFailureRestoresHome(t *testing.T) {
 func TestApplyHomeReplaceDoesNotLeaveStash(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
-	if err := rewriteHome(home, tree.Snapshot{"a.txt": {Kind: execenv.KindFile, Version: "v1", Data: []byte("one")}}); err != nil {
+	store := testStore(t)
+	if err := rewriteHome(store, home, tree.Snapshot{"a.txt": {Kind: tree.KindFile, Version: "v1", Content: put(t, store, "one")}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(home, "guest.txt"), []byte("hi"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := applyHome(home, execenv.Batch{Mutations: []execenv.Mutation{{Op: execenv.OpReplace, Path: "a.txt", Kind: execenv.KindFile, Data: []byte("two")}}}); err != nil {
+	if err := applyHome(store, home, tree.Batch{Mutations: []tree.Mutation{{Op: tree.OpReplace, Path: "a.txt", Kind: tree.KindFile, Content: put(t, store, "two")}}}); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := os.ReadDir(home)
@@ -50,4 +54,14 @@ func TestApplyHomeReplaceDoesNotLeaveStash(t *testing.T) {
 	if got, err := os.ReadFile(filepath.Join(home, "guest.txt")); err != nil || string(got) != "hi" {
 		t.Fatalf("guest file after apply = %q %v", got, err)
 	}
+}
+
+// put stores body and names it.
+func put(t *testing.T, store *content.Store, body string) content.Blob {
+	t.Helper()
+	blob, err := store.Put(strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return blob
 }
