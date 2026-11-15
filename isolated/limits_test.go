@@ -70,7 +70,7 @@ func TestMachineIsSizedAndLimitedFromTheGrant(t *testing.T) {
 func TestCgroupThrottlesToTheReservedCPU(t *testing.T) {
 	t.Parallel()
 	args := cgroupLimits(execenv.Resources{CPUMillis: 1500, MemoryBytes: 1 << 30})
-	for _, want := range []string{"cpu.max=150000 100000", "memory.max=1140850688", "memory.swap.max=0"} {
+	for _, want := range []string{"cpu.max=150000 100000", "memory.high=1140850688", "memory.max=1409286144", "memory.swap.max=0"} {
 		if !slices.Contains(args, want) {
 			t.Errorf("cgroup args %v lack %q", args, want)
 		}

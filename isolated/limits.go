@@ -14,6 +14,12 @@ const cgroupPeriod = 100_000
 // memory. The cgroup's memory limit allows for it.
 const monitorOverhead = 64 << 20
 
+// cacheHeadroom is how far above its reservation a grant's cgroup may go
+// before the kernel kills its machine. What lies above is the host's cache
+// of the grant's disk, which the cgroup is charged for and the kernel
+// reclaims from memory.high on, slowing the writer instead of killing it.
+const cacheHeadroom = 256 << 20
+
 // vcpuCount is enough virtual CPUs to use cpuMillis of CPU time.
 func vcpuCount(cpuMillis int64) int64 {
 	return max(1, (cpuMillis+999)/1000)
@@ -26,7 +32,8 @@ func cgroupLimits(r execenv.Resources) []string {
 	quota := r.CPUMillis * cgroupPeriod / 1000
 	return []string{
 		"--cgroup", "cpu.max=" + strconv.FormatInt(quota, 10) + " " + strconv.Itoa(cgroupPeriod),
-		"--cgroup", "memory.max=" + strconv.FormatInt(r.MemoryBytes+monitorOverhead, 10),
+		"--cgroup", "memory.high=" + strconv.FormatInt(r.MemoryBytes+monitorOverhead, 10),
+		"--cgroup", "memory.max=" + strconv.FormatInt(r.MemoryBytes+monitorOverhead+cacheHeadroom, 10),
 		"--cgroup", "memory.swap.max=0",
 	}
 }

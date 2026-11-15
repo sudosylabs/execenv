@@ -898,9 +898,11 @@ gives in all and what a grant gets by default:
 | `jail_uid_base` | 2000000000 | first of 65536 host uids reserved for jailed microVM monitors |
 
 A grant's machine gets enough virtual CPUs for its `cpu_millis`; its cgroup
-throttles it to exactly that and caps its memory at its `memory_bytes` plus
-the monitor's own overhead, with no swap. Its workspace disk and network
-device carry the grant's rate limits, changeable while it runs.
+throttles it to exactly that, with no swap. Its memory is held at its
+`memory_bytes` plus the monitor's own overhead: past that the kernel
+reclaims the host's cache of the grant's disk and slows its writes, and
+only 256 MiB further does it stop the machine. Its workspace disk and
+network device carry the grant's rate limits, changeable while it runs.
 
 Each grant's monitor runs in its own jail under
 `<state>/work/jails`, as its own unprivileged uid from the
@@ -1072,10 +1074,12 @@ that hostname, set the application’s `ServerName` to the same name, and
 open 8443 on the firewall only to the application network.
 
 The daemon takes an exclusive lock on `work_dir`. A second daemon cannot use
-the same state directory. Startup removes stale grant projections after the
-previous process has released that lock; revoke removes the grant directory.
-The installed systemd unit kills the whole process group, and Linux children
-also receive a parent-death signal when a directly-run daemon exits abruptly.
+the same state directory. `work_dir` must be on a filesystem that allows
+device nodes (not one mounted `nodev`, as a tmpfs `/tmp` often is): each
+jail holds its own isolation device, and the daemon refuses grants
+otherwise. Grants' machines outlive the daemon (see [Control](#control)), so
+startup adopts the ones its state files name and stops only the jails
+nothing names; revoke removes the grant directory.
 
 ### Install catalog images
 

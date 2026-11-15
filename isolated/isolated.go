@@ -264,7 +264,7 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 	}
 	spec.Resources = h.pool.Resolve(spec.Resources)
 	if err := h.probe(); err != nil {
-		return nil, execenv.Error("ensure", execenv.ErrUnavailable)
+		return nil, execenv.Error("ensure", err)
 	}
 	h.mu.Lock()
 	if env, call, err := h.occupiedLocked(spec); env != nil || call != nil || err != nil {
