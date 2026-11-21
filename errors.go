@@ -40,6 +40,8 @@ var (
 	ErrLost = errors.New("execenv: grant lost")
 	// ErrBusy indicates a grant already runs MaxProcesses processes.
 	ErrBusy = errors.New("execenv: too many processes")
+	// ErrRefused indicates no listener accepted the loopback connection.
+	ErrRefused = errors.New("execenv: port connection refused")
 	// ErrClosed indicates the process, attachment or reader has ended.
 	ErrClosed = errors.New("execenv: closed")
 	// ErrNotFound indicates a grant, path, process, seed or transfer that

@@ -21,6 +21,14 @@ const guestDevice = "eth0"
 // routes everything through the host end of its link. It speaks route
 // netlink itself: the image need not carry any network tool.
 func configureNet(n *start.Net) error {
+	link, err := dialRoute()
+	if err != nil {
+		return err
+	}
+	defer link.close()
+	if err := link.up("lo"); err != nil {
+		return fmt.Errorf("workload: loopback up: %w", err)
+	}
 	if n == nil {
 		return nil
 	}
@@ -33,17 +41,7 @@ func configureNet(n *start.Net) error {
 	if err != nil {
 		return fmt.Errorf("workload: no network device: %w", err)
 	}
-	link, err := dialRoute()
-	if err != nil {
-		return err
-	}
-	defer link.close()
-	// Up.
-	info := make([]byte, unix.SizeofIfInfomsg)
-	binary.NativeEndian.PutUint32(info[4:], uint32(dev.Index))
-	binary.NativeEndian.PutUint32(info[8:], unix.IFF_UP)
-	binary.NativeEndian.PutUint32(info[12:], unix.IFF_UP)
-	if err := link.request(unix.RTM_NEWLINK, 0, info); err != nil {
+	if err := link.setUp(dev.Index); err != nil {
 		return fmt.Errorf("workload: network device up: %w", err)
 	}
 	// Its address.
@@ -71,6 +69,22 @@ func configureNet(n *start.Net) error {
 		return fmt.Errorf("workload: default route: %w", err)
 	}
 	return nil
+}
+
+func (l *routeLink) up(name string) error {
+	dev, err := net.InterfaceByName(name)
+	if err != nil {
+		return err
+	}
+	return l.setUp(dev.Index)
+}
+
+func (l *routeLink) setUp(index int) error {
+	info := make([]byte, unix.SizeofIfInfomsg)
+	binary.NativeEndian.PutUint32(info[4:], uint32(index))
+	binary.NativeEndian.PutUint32(info[8:], unix.IFF_UP)
+	binary.NativeEndian.PutUint32(info[12:], unix.IFF_UP)
+	return l.request(unix.RTM_NEWLINK, 0, info)
 }
 
 // attr appends one route attribute, padded to its alignment.

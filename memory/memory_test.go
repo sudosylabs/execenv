@@ -110,3 +110,11 @@ func TestThawOfASuspendedGrantNeedsItsResources(t *testing.T) {
 		t.Fatalf("thaw with room = %+v, %v", receipt, err)
 	}
 }
+
+func TestPortConformance(t *testing.T) {
+	host, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Capacity: execenv.DefaultGrant})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execenvtest.RunPorts(t, host, execenvtest.LocalPortListener(host))
+}

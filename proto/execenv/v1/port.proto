@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package execenv.v1;
+
+import "execenv/v1/common.proto";
+
+option go_package = "github.com/sudosylabs/execenv/internal/gen/execenv/v1;execenvv1";
+
+service PortService {
+  rpc ConnectPort(stream PortFrame) returns (stream PortFrame);
+}
+
+// The client sends open first and waits for opened. Thereafter both peers
+// send data (at most 32 KiB per frame) or close_write independently. A
+// terminal RPC error frame carries an ErrorDetail.
+message PortFrame {
+  oneof payload {
+    PortOpen open = 1;
+    bool opened = 2;
+    bytes data = 3;
+    bool close_write = 4;
+  }
+}
+
+message PortOpen {
+  // The host-facing call requires a fence. The guest link omits it.
+  Fence fence = 1;
+  int32 port = 2;
+}

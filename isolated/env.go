@@ -10,10 +10,13 @@ import (
 	"github.com/sudosylabs/execenv/agent"
 	"github.com/sudosylabs/execenv/internal/control"
 	"github.com/sudosylabs/execenv/internal/lifetime"
+	"github.com/sudosylabs/execenv/internal/portconn"
 	"github.com/sudosylabs/execenv/internal/procs"
 )
 
 type environment struct {
+	ports portconn.Set
+
 	control *control.State
 	// procs keeps the grant's processes: their history and input on the
 	// host, the processes themselves in the guest.
@@ -171,6 +174,7 @@ func (e *environment) freeze(ctx context.Context) error {
 	suspended := e.suspended
 	e.mu.Unlock()
 	e.manager().Freeze()
+	e.ports.End(execenv.ErrFrozen)
 	if paused || suspended {
 		return nil
 	}
@@ -286,6 +290,7 @@ func (e *environment) stop(cause error) error {
 	// Processes end with the cause before the verdict is out, so a reader
 	// whose link broke sees why.
 	e.manager().End(cause)
+	e.ports.End(cause)
 	e.goneOnce.Do(func() { close(e.gone) })
 	if client != nil {
 		client.Hangup(cause)

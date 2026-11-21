@@ -5,6 +5,7 @@ package execenv.guest.v1;
 import "execenv/v1/common.proto";
 import "execenv/v1/file.proto";
 import "execenv/v1/journal.proto";
+import "execenv/v1/port.proto";
 import "execenv/v1/process.proto";
 import "execenv/v1/process_log.proto";
 
@@ -39,6 +40,8 @@ service AgentService {
   // ProcessScreen is a terminal process's screen, from the helper's own
   // headless terminal fed every byte the process wrote.
   rpc ProcessScreen(ProcessScreenRequest) returns (execenv.v1.Screen);
+
+  rpc DialPort(stream execenv.v1.PortFrame) returns (stream execenv.v1.PortFrame);
 
   // Freeze closes I/O before the host pauses the machine; Thaw reopens it.
   rpc Freeze(FreezeRequest) returns (FreezeResponse);

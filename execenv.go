@@ -215,4 +215,7 @@ type Env interface {
 	Revoke(ctx context.Context) error
 	Files
 	Processes
+	// ConnectPort opens a stream to the grant's IPv4 loopback. The fence
+	// is checked when it opens. The context controls the stream's lifetime.
+	ConnectPort(ctx context.Context, fence ProjectionFence, port int) (PortConn, error)
 }

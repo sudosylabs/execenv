@@ -352,3 +352,9 @@ func TestLiveObserveCostsTheChangeNotTheTree(t *testing.T) {
 	}
 	t.Logf("Observe after one change in 5,000 files took %v", took)
 }
+
+func TestLivePortConformance(t *testing.T) {
+	host := liveHost(t, 1, "")
+	t.Cleanup(func() { revokeAll(host) })
+	execenvtest.RunPorts(t, host, execenvtest.GuestPortListener(t))
+}

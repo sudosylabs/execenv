@@ -56,6 +56,8 @@ const (
 	// AgentServiceProcessScreenProcedure is the fully-qualified name of the AgentService's
 	// ProcessScreen RPC.
 	AgentServiceProcessScreenProcedure = "/execenv.guest.v1.AgentService/ProcessScreen"
+	// AgentServiceDialPortProcedure is the fully-qualified name of the AgentService's DialPort RPC.
+	AgentServiceDialPortProcedure = "/execenv.guest.v1.AgentService/DialPort"
 	// AgentServiceFreezeProcedure is the fully-qualified name of the AgentService's Freeze RPC.
 	AgentServiceFreezeProcedure = "/execenv.guest.v1.AgentService/Freeze"
 	// AgentServiceThawProcedure is the fully-qualified name of the AgentService's Thaw RPC.
@@ -134,6 +136,7 @@ type AgentServiceClient interface {
 	// ProcessScreen is a terminal process's screen, from the helper's own
 	// headless terminal fed every byte the process wrote.
 	ProcessScreen(context.Context, *connect.Request[v1.ProcessScreenRequest]) (*connect.Response[v11.Screen], error)
+	DialPort(context.Context) *connect.BidiStreamForClient[v11.PortFrame, v11.PortFrame]
 	// Freeze closes I/O before the host pauses the machine; Thaw reopens it.
 	Freeze(context.Context, *connect.Request[v1.FreezeRequest]) (*connect.Response[v1.FreezeResponse], error)
 	Thaw(context.Context, *connect.Request[v1.ThawRequest]) (*connect.Response[v1.ThawResponse], error)
@@ -225,6 +228,12 @@ func NewAgentServiceClient(httpClient connect.HTTPClient, baseURL string, opts .
 			httpClient,
 			baseURL+AgentServiceProcessScreenProcedure,
 			connect.WithSchema(agentServiceMethods.ByName("ProcessScreen")),
+			connect.WithClientOptions(opts...),
+		),
+		dialPort: connect.NewClient[v11.PortFrame, v11.PortFrame](
+			httpClient,
+			baseURL+AgentServiceDialPortProcedure,
+			connect.WithSchema(agentServiceMethods.ByName("DialPort")),
 			connect.WithClientOptions(opts...),
 		),
 		freeze: connect.NewClient[v1.FreezeRequest, v1.FreezeResponse](
@@ -367,6 +376,7 @@ type agentServiceClient struct {
 	resizeProcess                *connect.Client[v1.ResizeRequest, v1.Empty]
 	signalProcess                *connect.Client[v1.SignalRequest, v1.Empty]
 	processScreen                *connect.Client[v1.ProcessScreenRequest, v11.Screen]
+	dialPort                     *connect.Client[v11.PortFrame, v11.PortFrame]
 	freeze                       *connect.Client[v1.FreezeRequest, v1.FreezeResponse]
 	thaw                         *connect.Client[v1.ThawRequest, v1.ThawResponse]
 	observeProcesses             *connect.Client[v11.ObserveProcessesRequest, v11.ProcessPage]
@@ -433,6 +443,11 @@ func (c *agentServiceClient) SignalProcess(ctx context.Context, req *connect.Req
 // ProcessScreen calls execenv.guest.v1.AgentService.ProcessScreen.
 func (c *agentServiceClient) ProcessScreen(ctx context.Context, req *connect.Request[v1.ProcessScreenRequest]) (*connect.Response[v11.Screen], error) {
 	return c.processScreen.CallUnary(ctx, req)
+}
+
+// DialPort calls execenv.guest.v1.AgentService.DialPort.
+func (c *agentServiceClient) DialPort(ctx context.Context) *connect.BidiStreamForClient[v11.PortFrame, v11.PortFrame] {
+	return c.dialPort.CallBidiStream(ctx)
 }
 
 // Freeze calls execenv.guest.v1.AgentService.Freeze.
@@ -564,6 +579,7 @@ type AgentServiceHandler interface {
 	// ProcessScreen is a terminal process's screen, from the helper's own
 	// headless terminal fed every byte the process wrote.
 	ProcessScreen(context.Context, *connect.Request[v1.ProcessScreenRequest]) (*connect.Response[v11.Screen], error)
+	DialPort(context.Context, *connect.BidiStream[v11.PortFrame, v11.PortFrame]) error
 	// Freeze closes I/O before the host pauses the machine; Thaw reopens it.
 	Freeze(context.Context, *connect.Request[v1.FreezeRequest]) (*connect.Response[v1.FreezeResponse], error)
 	Thaw(context.Context, *connect.Request[v1.ThawRequest]) (*connect.Response[v1.ThawResponse], error)
@@ -651,6 +667,12 @@ func NewAgentServiceHandler(svc AgentServiceHandler, opts ...connect.HandlerOpti
 		AgentServiceProcessScreenProcedure,
 		svc.ProcessScreen,
 		connect.WithSchema(agentServiceMethods.ByName("ProcessScreen")),
+		connect.WithHandlerOptions(opts...),
+	)
+	agentServiceDialPortHandler := connect.NewBidiStreamHandler(
+		AgentServiceDialPortProcedure,
+		svc.DialPort,
+		connect.WithSchema(agentServiceMethods.ByName("DialPort")),
 		connect.WithHandlerOptions(opts...),
 	)
 	agentServiceFreezeHandler := connect.NewUnaryHandler(
@@ -799,6 +821,8 @@ func NewAgentServiceHandler(svc AgentServiceHandler, opts ...connect.HandlerOpti
 			agentServiceSignalProcessHandler.ServeHTTP(w, r)
 		case AgentServiceProcessScreenProcedure:
 			agentServiceProcessScreenHandler.ServeHTTP(w, r)
+		case AgentServiceDialPortProcedure:
+			agentServiceDialPortHandler.ServeHTTP(w, r)
 		case AgentServiceFreezeProcedure:
 			agentServiceFreezeHandler.ServeHTTP(w, r)
 		case AgentServiceThawProcedure:
@@ -884,6 +908,10 @@ func (UnimplementedAgentServiceHandler) SignalProcess(context.Context, *connect.
 
 func (UnimplementedAgentServiceHandler) ProcessScreen(context.Context, *connect.Request[v1.ProcessScreenRequest]) (*connect.Response[v11.Screen], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.ProcessScreen is not implemented"))
+}
+
+func (UnimplementedAgentServiceHandler) DialPort(context.Context, *connect.BidiStream[v11.PortFrame, v11.PortFrame]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.DialPort is not implemented"))
 }
 
 func (UnimplementedAgentServiceHandler) Freeze(context.Context, *connect.Request[v1.FreezeRequest]) (*connect.Response[v1.FreezeResponse], error) {

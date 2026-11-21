@@ -247,7 +247,12 @@ func Serve(ctx context.Context, conn net.Conn, cfg Config) error {
 func (s *server) serveLink(ctx context.Context, conn net.Conn, handler guestv1connect.AgentServiceHandler) {
 	link := watch(conn)
 	mux := http.NewServeMux()
-	mux.Handle(guestv1connect.NewAgentServiceHandler(handler))
+	mux.Handle(guestv1connect.NewAgentServiceHandler(handler, connect.WithConditionalHandlerOptions(func(spec connect.Spec) []connect.HandlerOption {
+		if spec.Procedure == guestv1connect.AgentServiceDialPortProcedure {
+			return []connect.HandlerOption{connect.WithReadMaxBytes(wire.MaxPortMessage)}
+		}
+		return nil
+	})))
 	srv := linkServer(mux)
 	served := make(chan struct{})
 	go func() {

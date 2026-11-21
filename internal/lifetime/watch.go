@@ -44,6 +44,11 @@ func (w *watched) WriteInput(ctx context.Context, f execenv.ProjectionFence, tag
 	return w.Env.WriteInput(ctx, f, tag, offset, data)
 }
 
+func (w *watched) ConnectPort(ctx context.Context, f execenv.ProjectionFence, port int) (execenv.PortConn, error) {
+	w.t.Touch()
+	return w.Env.ConnectPort(ctx, f, port)
+}
+
 func (w *watched) Control(ctx context.Context, r execenv.ControlRequest) (execenv.ControlReceipt, error) {
 	w.t.Touch()
 	return w.Env.Control(ctx, r)

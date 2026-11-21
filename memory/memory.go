@@ -4,6 +4,7 @@ package memory
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -18,6 +19,7 @@ import (
 	"github.com/sudosylabs/execenv/internal/grants"
 	"github.com/sudosylabs/execenv/internal/journal"
 	"github.com/sudosylabs/execenv/internal/lifetime"
+	"github.com/sudosylabs/execenv/internal/portconn"
 	"github.com/sudosylabs/execenv/internal/procs"
 	"github.com/sudosylabs/execenv/internal/seed"
 )
@@ -65,6 +67,9 @@ type Host struct {
 }
 
 type environment struct {
+	ports     portconn.Set
+	listeners map[int]*net.TCPListener
+
 	control *control.State
 	mu      sync.Mutex
 	id      execenv.ID
@@ -396,6 +401,7 @@ func (e *environment) freeze(ctx context.Context) error {
 	}
 	e.frozen = true
 	e.procs.Freeze()
+	e.ports.End(execenv.ErrFrozen)
 	return nil
 }
 
@@ -461,6 +467,7 @@ func (e *environment) stop(cause error) error {
 	e.lost = errors.Is(cause, execenv.ErrLost) || e.lost
 	e.frozen = false
 	e.procs.End(cause)
+	e.ports.End(cause)
 	e.journalMu.Lock()
 	e.journal.Close()
 	e.journalMu.Unlock()
