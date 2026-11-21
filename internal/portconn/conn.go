@@ -9,9 +9,12 @@ import (
 	"strconv"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/sudosylabs/execenv"
 )
+
+const DialTimeout = 5 * time.Second
 
 func Valid(port int) bool { return port >= 1 && port <= 65535 }
 
@@ -22,42 +25,84 @@ type tcpConn struct {
 
 func (c tcpConn) Port() int { return c.port }
 
-// Dial uses a literal IPv4 loopback destination, with no name resolution.
-func Dial(ctx context.Context, port int) (execenv.PortConn, error) {
+func (c tcpConn) Read(p []byte) (int, error) {
+	n, err := c.TCPConn.Read(p)
+	return n, socketError(err)
+}
+
+func (c tcpConn) Write(p []byte) (int, error) {
+	n, err := c.TCPConn.Write(p)
+	return n, socketError(err)
+}
+
+func (c tcpConn) CloseWrite() error { return socketError(c.TCPConn.CloseWrite()) }
+
+func socketError(err error) error {
+	if err == nil || errors.Is(err, io.EOF) {
+		return err
+	}
+	return execenv.ErrConnection
+}
+
+// Dial tries only literal loopback addresses. The memory adapter selects
+// which families its registered listeners can actually accept.
+func Dial(ctx context.Context, port int, ipv4, ipv6 bool) (execenv.PortConn, error) {
 	if !Valid(port) {
 		return nil, execenv.ErrInvalid
 	}
-	d := net.Dialer{}
-	conn, err := d.DialContext(ctx, "tcp4", "127.0.0.1:"+strconv.Itoa(port))
-	if errors.Is(err, syscall.ECONNREFUSED) {
-		return nil, execenv.ErrRefused
+	ctx, cancel := context.WithTimeout(ctx, DialTimeout)
+	defer cancel()
+	for _, target := range []struct {
+		enabled bool
+		network string
+		host    string
+	}{{ipv4, "tcp4", "127.0.0.1"}, {ipv6, "tcp6", "::1"}} {
+		if !target.enabled {
+			continue
+		}
+		d := net.Dialer{}
+		conn, err := d.DialContext(ctx, target.network, net.JoinHostPort(target.host, strconv.Itoa(port)))
+		switch {
+		case err == nil:
+			return tcpConn{conn.(*net.TCPConn), port}, nil
+		case ctx.Err() != nil:
+			return nil, ctx.Err()
+		case errors.Is(err, syscall.ECONNREFUSED):
+			continue
+		case target.network == "tcp6" && (errors.Is(err, syscall.EAFNOSUPPORT) || errors.Is(err, syscall.EADDRNOTAVAIL) || errors.Is(err, syscall.ENETUNREACH)):
+			continue // This guest has no IPv6 loopback.
+		default:
+			return nil, execenv.ErrConnection
+		}
 	}
-	if err != nil {
-		return nil, err
-	}
-	return tcpConn{conn.(*net.TCPConn), port}, nil
+	return nil, execenv.ErrRefused
 }
 
-// Set tracks the connections one grant can end together. The caller
-// serializes Add and End with changes to the grant's running state.
+// Set tracks dialing and open connections that one grant can end together.
 type Set struct {
 	mu      sync.Mutex
-	conns   map[*held]struct{}
+	conns   map[*Slot]struct{}
 	limit   execenv.TokenBucket
 	buckets [2]bucket
 	changed chan struct{}
 }
 
-func (s *Set) Add(ctx context.Context, conn execenv.PortConn, mapError func(error) error) execenv.PortConn {
-	c := &held{PortConn: conn, set: s, done: make(chan struct{}), mapError: mapError}
+// Reserve takes a slot under the grant's control gate. Dial must run
+// outside that gate. release ends the idle hold when the slot closes.
+func (s *Set) Reserve(ctx context.Context, release func()) (*Slot, error) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.conns) >= execenv.MaxPortConns {
+		return nil, execenv.ErrBusy
+	}
+	ctx, cancel := context.WithCancelCause(ctx)
+	c := &Slot{set: s, ctx: ctx, cancel: cancel, release: release, done: make(chan struct{})}
 	if s.conns == nil {
-		s.conns = make(map[*held]struct{})
+		s.conns = make(map[*Slot]struct{})
 	}
 	s.conns[c] = struct{}{}
-	c.stop = context.AfterFunc(ctx, func() { c.end(ctx.Err()) })
-	s.mu.Unlock()
-	return c
+	c.stop = context.AfterFunc(ctx, func() { c.end(context.Cause(ctx)) })
+	return c, nil
 }
 
 func (s *Set) End(cause error) {
@@ -65,8 +110,7 @@ func (s *Set) End(cause error) {
 	conns := s.conns
 	s.conns = nil
 	for c := range conns {
-		c.cause = cause
-		close(c.done)
+		c.markEndedLocked(cause)
 	}
 	s.mu.Unlock()
 	for c := range conns {
@@ -74,49 +118,88 @@ func (s *Set) End(cause error) {
 	}
 }
 
-type held struct {
-	execenv.PortConn
-	set      *Set
-	stop     func() bool
-	once     sync.Once
-	done     chan struct{}
-	mapError func(error) error
+// Slot is one reserved or established connection.
+type Slot struct {
+	set     *Set
+	ctx     context.Context
+	cancel  context.CancelCauseFunc
+	stop    func() bool
+	release func()
+	once    sync.Once
+	done    chan struct{}
 
-	// All state below is guarded by set.mu.
+	// Guarded by set.mu. conn and mapError become immutable once assigned.
+	conn      execenv.PortConn
+	mapError  func(error) error
 	cause     error
 	readDone  bool
 	writeDone bool
 }
 
-func (c *held) Done() <-chan struct{} { return c.done }
+func (c *Slot) Dial(dial func(context.Context) (execenv.PortConn, error), mapError func(error) error) (execenv.PortConn, error) {
+	conn, err := dial(c.ctx)
+	c.set.mu.Lock()
+	if cause := context.Cause(c.ctx); cause != nil {
+		err = cause
+	}
+	if err == nil {
+		c.conn, c.mapError = conn, mapError
+		c.set.mu.Unlock()
+		return c, nil
+	}
+	c.set.mu.Unlock()
+	if conn != nil {
+		_ = conn.Close()
+	}
+	c.end(err)
+	if mapError != nil {
+		err = mapError(err)
+	}
+	return nil, err
+}
 
-func (c *held) Err() error {
+func (c *Slot) Port() int             { return c.conn.Port() }
+func (c *Slot) Done() <-chan struct{} { return c.done }
+
+func (c *Slot) Err() error {
 	c.set.mu.Lock()
 	defer c.set.mu.Unlock()
 	return c.cause
 }
 
-func (c *held) close() {
+func (c *Slot) close() {
 	c.once.Do(func() {
 		c.stop()
-		_ = c.PortConn.Close()
+		c.set.mu.Lock()
+		conn := c.conn
+		c.set.mu.Unlock()
+		if conn != nil {
+			_ = conn.Close()
+		}
 		c.set.mu.Lock()
 		delete(c.set.conns, c)
 		c.set.mu.Unlock()
+		c.release()
+		close(c.done)
+		c.cancel(execenv.ErrClosed)
 	})
 }
 
-func (c *held) end(cause error) {
-	c.set.mu.Lock()
+func (c *Slot) markEndedLocked(cause error) {
 	if c.cause == nil {
 		c.cause = cause
-		close(c.done)
+		c.cancel(cause)
 	}
+}
+
+func (c *Slot) end(cause error) {
+	c.set.mu.Lock()
+	c.markEndedLocked(cause)
 	c.set.mu.Unlock()
 	c.close()
 }
 
-func (c *held) half(read bool) {
+func (c *Slot) half(read bool) {
 	c.set.mu.Lock()
 	if read {
 		c.readDone = true
@@ -124,22 +207,29 @@ func (c *held) half(read bool) {
 		c.writeDone = true
 	}
 	done := c.readDone && c.writeDone
-	if done {
-	}
 	c.set.mu.Unlock()
 	if done {
 		c.close()
 	}
 }
 
-func (c *held) failure(err error) error {
-	if err != nil && c.mapError != nil {
-		return c.mapError(err)
+func (c *Slot) failure(err error) error {
+	if cause := c.Err(); cause != nil {
+		return cause
+	}
+	if err == nil || errors.Is(err, io.EOF) {
+		return err
+	}
+	if c.mapError != nil {
+		err = c.mapError(err)
+	}
+	if !errors.Is(err, execenv.ErrClosed) {
+		c.end(err)
 	}
 	return err
 }
 
-func (c *held) status(dir direction) error {
+func (c *Slot) status(dir direction) error {
 	c.set.mu.Lock()
 	defer c.set.mu.Unlock()
 	if c.cause != nil {
@@ -154,14 +244,16 @@ func (c *held) status(dir direction) error {
 	return nil
 }
 
-func (c *held) Read(p []byte) (int, error) {
+func (c *Slot) Read(p []byte) (int, error) {
 	if err := c.status(fromGuest); err != nil {
 		return 0, err
 	}
 	if len(p) == 0 {
 		return 0, nil
 	}
-	n, err := c.PortConn.Read(p[:min(len(p), ChunkSize)])
+	n, err := c.conn.Read(p[:min(len(p), ChunkSize)])
+	// Reading again grants new wire credit. Hold this read until the
+	// budget covers its bytes, so throttled streams cannot refill credit.
 	for left := n; left > 0; {
 		allowed, limitErr := c.allow(fromGuest, left)
 		if limitErr != nil {
@@ -169,16 +261,13 @@ func (c *held) Read(p []byte) (int, error) {
 		}
 		left -= allowed
 	}
-	if cause := c.Err(); cause != nil {
-		return n, cause
-	}
-	if errors.Is(err, io.EOF) {
+	if err = c.failure(err); errors.Is(err, io.EOF) {
 		c.half(true)
 	}
-	return n, c.failure(err)
+	return n, err
 }
 
-func (c *held) Write(p []byte) (int, error) {
+func (c *Slot) Write(p []byte) (int, error) {
 	if err := c.status(toGuest); err != nil {
 		return 0, err
 	}
@@ -188,37 +277,31 @@ func (c *held) Write(p []byte) (int, error) {
 		if err != nil {
 			return written, err
 		}
-		n, err := c.PortConn.Write(p[:allowed])
+		n, err := c.conn.Write(p[:allowed])
 		written += n
-		if cause := c.Err(); cause != nil {
-			return written, cause
-		}
-		if err != nil {
-			return written, c.failure(err)
+		if err := c.failure(err); err != nil {
+			return written, err
 		}
 		if n != allowed {
-			return written, io.ErrShortWrite
+			return written, c.failure(execenv.ErrConnection)
 		}
 		p = p[n:]
 	}
 	return written, nil
 }
 
-func (c *held) CloseWrite() error {
+func (c *Slot) CloseWrite() error {
 	if err := c.Err(); err != nil {
 		return err
 	}
-	err := c.PortConn.CloseWrite()
-	if cause := c.Err(); cause != nil {
-		return cause
-	}
+	err := c.failure(c.conn.CloseWrite())
 	if err == nil {
 		c.half(false)
 	}
-	return c.failure(err)
+	return err
 }
 
-func (c *held) Close() error {
+func (c *Slot) Close() error {
 	c.end(execenv.ErrClosed)
 	return nil
 }

@@ -20,7 +20,7 @@ func (e *remoteEnv) ConnectPort(ctx context.Context, fence execenv.ProjectionFen
 	}
 	c := e.client
 	open := &execenvv1.PortOpen{Fence: wire.FenceTo(fence), Port: int32(port)}
-	return wire.OpenPort(ctx, c.ctx, operationTimeoutOrDefault(c.cfg.OperationTimeout), c.ports.ConnectPort, open, func(err error) error {
+	return wire.OpenPort(ctx, c.ctx, min(portconn.DialTimeout, operationTimeoutOrDefault(c.cfg.OperationTimeout)), c.ports.ConnectPort, open, func(err error) error {
 		return wire.HostError("connect_port", err)
 	})
 }
@@ -41,7 +41,7 @@ func (e *remoteEnv) ListPorts(ctx context.Context) ([]execenv.ListeningPort, err
 	}
 	ctx, cancel := e.client.call(ctx)
 	defer cancel()
-	resp, err := e.client.ports.ListPorts(ctx, connect.NewRequest(&execenvv1.ListPortsRequest{Id: string(e.id), Epoch: e.epoch}))
+	resp, err := e.client.portList.ListPorts(ctx, connect.NewRequest(&execenvv1.ListPortsRequest{Id: string(e.id), Epoch: e.epoch}))
 	if err != nil {
 		return nil, wire.HostError("list_ports", err)
 	}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 
+	"github.com/sudosylabs/execenv/agent"
+
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/internal/portconn"
 )
@@ -12,29 +14,39 @@ func (e *environment) ConnectPort(ctx context.Context, fence execenv.ProjectionF
 	if !portconn.Valid(port) {
 		return nil, execenv.Error("connect_port", execenv.ErrInvalid)
 	}
-	var conn execenv.PortConn
+	var slot *portconn.Slot
+	var client *agent.Client
 	err := e.control.Run(ctx, fence, func() error {
-		client, err := e.live("connect_port")
+		var err error
+		client, err = e.live("connect_port")
 		if err != nil {
 			return err
 		}
-		if e.ports.Full() {
-			return execenv.ErrCapacity
-		}
-		raw, err := client.DialPort(ctx, port)
+		release := e.timer.Hold()
+		slot, err = e.ports.Reserve(ctx, release)
 		if err != nil {
-			return err
+			release()
 		}
-		conn = e.ports.Add(ctx, raw, e.portError)
-		return nil
+		return err
 	})
-	// The loss monitor needs the control gate to publish its verdict.
-	return conn, execenv.Error("connect_port", e.portError(err))
+	if err != nil {
+		return nil, execenv.Error("connect_port", err)
+	}
+	conn, err := slot.Dial(func(ctx context.Context) (execenv.PortConn, error) {
+		return client.DialPort(ctx, port)
+	}, func(err error) error {
+		return e.portError(client, err)
+	})
+	return conn, execenv.Error("connect_port", err)
 }
 
-func (e *environment) portError(err error) error {
+func (e *environment) portError(client *agent.Client, err error) error {
 	if errors.Is(err, execenv.ErrConnection) || errors.Is(err, execenv.ErrUnavailable) {
-		return e.endCause(err)
+		select {
+		case <-client.Done():
+			return e.endCause(err)
+		default:
+		}
 	}
 	return err
 }
@@ -45,5 +57,5 @@ func (e *environment) ListPorts(ctx context.Context) ([]execenv.ListeningPort, e
 		return nil, err
 	}
 	ports, err := client.ListeningPorts(ctx)
-	return ports, execenv.Error("list_ports", e.portError(err))
+	return ports, execenv.Error("list_ports", e.portError(client, err))
 }

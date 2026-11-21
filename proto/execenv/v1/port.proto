@@ -12,7 +12,8 @@ service PortService {
 }
 
 // The client sends open first and waits for opened. Thereafter both peers
-// send data (at most 32 KiB per frame) or close_write independently. A
+// send credit, data (at most 32 KiB per frame), or close_write. A
+// sender must have sufficient byte credit before sending data. A
 // terminal RPC error frame carries an ErrorDetail.
 message PortFrame {
   oneof payload {
@@ -20,6 +21,7 @@ message PortFrame {
     bool opened = 2;
     bytes data = 3;
     bool close_write = 4;
+    uint32 credit = 5;
   }
 }
 

@@ -1,6 +1,7 @@
 package portconn
 
 import (
+	"context"
 	"math"
 	"time"
 
@@ -24,24 +25,27 @@ const (
 	toGuest
 )
 
-// Full is checked under the grant's control gate before dialing.
-func (s *Set) Full() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.conns) >= execenv.MaxPortConns
-}
-
 // SetLimit replaces both directional buckets and wakes waiting transfers.
 // An unchanged configuration keeps the existing credit.
 func (s *Set) SetLimit(limit execenv.TokenBucket) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.limit == limit {
+	if s.changed != nil && s.limit == limit {
 		return
 	}
+	now := time.Now()
+	for i := range s.buckets {
+		b := &s.buckets[i]
+		if s.changed == nil {
+			b.burst = float64(limit.Burst)
+		} else {
+			b.refill(s.limit, now)
+			b.burst = min(b.burst, float64(limit.Burst))
+			b.credit = min(b.credit, float64(batchSize(limit)), float64(limit.Burst)-b.burst)
+		}
+		b.at = now
+	}
 	s.limit = limit
-	initial := bucket{burst: float64(limit.Burst), at: time.Now()}
-	s.buckets = [2]bucket{initial, initial}
 	if s.changed != nil {
 		close(s.changed)
 	}
@@ -51,12 +55,11 @@ func (s *Set) SetLimit(limit execenv.TokenBucket) {
 // allow grants up to want bytes out of the shared grant bucket. Small
 // rates still make progress with a zero burst. At higher rates, waiting
 // for a batch avoids scheduling a timer for every byte.
-func (c *held) allow(dir direction, want int) (int, error) {
+func (c *Slot) allow(dir direction, want int) (int, error) {
 	s := c.set
 	for {
 		s.mu.Lock()
-		if c.cause != nil {
-			err := c.cause
+		if err := context.Cause(c.ctx); err != nil {
 			s.mu.Unlock()
 			return 0, err
 		}
@@ -65,11 +68,9 @@ func (c *held) allow(dir direction, want int) (int, error) {
 			return want, nil
 		}
 		rate := float64(s.limit.Rate)
-		batch := max(1, min(ChunkSize, s.limit.Rate/20))
+		batch := batchSize(s.limit)
 		b := &s.buckets[dir]
-		now := time.Now()
-		b.credit = min(float64(batch), b.credit+now.Sub(b.at).Seconds()*rate)
-		b.at = now
+		b.refill(s.limit, time.Now())
 		if n := int(min(float64(want), b.burst+b.credit)); n > 0 {
 			spentBurst := min(b.burst, float64(n))
 			b.burst -= spentBurst
@@ -84,10 +85,21 @@ func (c *held) allow(dir direction, want int) (int, error) {
 
 		timer := time.NewTimer(delay)
 		select {
-		case <-c.done:
+		case <-c.ctx.Done():
 		case <-changed:
 		case <-timer.C:
 		}
 		timer.Stop()
 	}
+}
+
+func batchSize(limit execenv.TokenBucket) int64 {
+	return max(1, min(ChunkSize, limit.Rate/20))
+}
+
+func (b *bucket) refill(limit execenv.TokenBucket, now time.Time) {
+	if limit.Rate > 0 {
+		b.credit = min(float64(batchSize(limit)), b.credit+now.Sub(b.at).Seconds()*float64(limit.Rate))
+	}
+	b.at = now
 }

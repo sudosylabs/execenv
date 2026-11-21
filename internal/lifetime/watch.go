@@ -8,11 +8,9 @@ import (
 	"github.com/sudosylabs/execenv"
 )
 
-// Watch wraps env so every call on it is activity, and every attachment to
-// a process keeps it busy until it is closed or ends. Reading what the grant
-// did is not activity: Observe and ObserveProcesses pass straight through,
-// so a caller that keeps an observation wait open does not keep the grant
-// awake.
+// Watch marks activity for fenced mutations and holds the timer for process
+// attachments. Observation and port discovery pass through. The adapters
+// hold the timer for the lifetime of each port connection.
 func Watch(env execenv.Env, t *Timer) execenv.Env {
 	if t == nil {
 		return env
@@ -42,16 +40,6 @@ func (w *watched) Start(ctx context.Context, f execenv.ProjectionFence, spec exe
 func (w *watched) WriteInput(ctx context.Context, f execenv.ProjectionFence, tag string, offset uint64, data []byte) (uint64, error) {
 	w.t.Touch()
 	return w.Env.WriteInput(ctx, f, tag, offset, data)
-}
-
-func (w *watched) ConnectPort(ctx context.Context, f execenv.ProjectionFence, port int) (execenv.PortConn, error) {
-	w.t.Touch()
-	return w.Env.ConnectPort(ctx, f, port)
-}
-
-func (w *watched) ListPorts(ctx context.Context) ([]execenv.ListeningPort, error) {
-	w.t.Touch()
-	return w.Env.ListPorts(ctx)
 }
 
 func (w *watched) Control(ctx context.Context, r execenv.ControlRequest) (execenv.ControlReceipt, error) {

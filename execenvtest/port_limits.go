@@ -43,7 +43,7 @@ func RunPortLimits(t *testing.T, host execenv.Host, listen PortListener) {
 		t.Cleanup(func() { _ = conn.Close() })
 		return conn
 	}
-	t.Run("connection capacity", func(t *testing.T) {
+	t.Run("connection cap", func(t *testing.T) {
 		first, _ := listen(t, env, fence, "127.0.0.1", "hold")
 		second, _ := listen(t, env, fence, "127.0.0.1", "hold")
 		var conns []execenv.PortConn
@@ -54,8 +54,8 @@ func RunPortLimits(t *testing.T, host execenv.Host, listen PortListener) {
 		if err == nil {
 			_ = capped.Close()
 		}
-		if !errors.Is(err, execenv.ErrCapacity) {
-			t.Fatalf("ConnectPort after %d opens = %v, want ErrCapacity", len(conns), err)
+		if !errors.Is(err, execenv.ErrBusy) {
+			t.Fatalf("ConnectPort after %d opens = %v, want ErrBusy", len(conns), err)
 		}
 		if err := conns[0].Close(); err != nil {
 			t.Fatal(err)
@@ -71,7 +71,7 @@ func RunPortLimits(t *testing.T, host execenv.Host, listen PortListener) {
 				_ = replacement.Close()
 				break
 			}
-			if !errors.Is(err, execenv.ErrCapacity) {
+			if !errors.Is(err, execenv.ErrBusy) {
 				t.Fatalf("ConnectPort after Close() = %v", err)
 			}
 			time.Sleep(10 * time.Millisecond)
@@ -117,6 +117,57 @@ func RunPortLimits(t *testing.T, host execenv.Host, listen PortListener) {
 			t.Fatal("transfer remained throttled after setting a zero port rate")
 		}
 	})
+	t.Run("network budget does not throttle ports", func(t *testing.T) {
+		if err := env.UpdateLimits(ctx, fence, execenv.Limits{NetworkBytes: execenv.TokenBucket{Rate: 1}}); err != nil {
+			t.Fatal(err)
+		}
+		port, _ := listen(t, env, fence, "127.0.0.1", "echo")
+		fast, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		conn, err := env.ConnectPort(fast, fence, port)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		if err := portEcho(conn, make([]byte, 64<<10)); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("unread ports leave process and file traffic responsive", func(t *testing.T) {
+		port, _ := listen(t, env, fence, "127.0.0.1", "flood")
+		deadline := time.Now().Add(5 * time.Second)
+		for i := 0; i < execenv.MaxPortConns; {
+			conn, err := env.ConnectPort(ctx, fence, port)
+			if errors.Is(err, execenv.ErrBusy) && time.Now().Before(deadline) {
+				time.Sleep(10 * time.Millisecond)
+				continue
+			}
+			if err != nil {
+				t.Fatalf("open unread port connection %d: %v", i, err)
+			}
+			t.Cleanup(func() { _ = conn.Close() })
+			i++
+		}
+		sh := StartShell(t, env, fence, "port-pressure")
+		if err := sh.Type(`echo port""s-responsive`); err != nil {
+			t.Fatal(err)
+		}
+		sh.Expect("ports-responsive")
+		fast, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		if _, err := env.WriteFile(fast, fence, "port-test.txt", bytes.NewBufferString("file responsive"), execenv.WriteOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		r, err := env.ReadFile(fast, "port-test.txt", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		if body, err := io.ReadAll(r); err != nil || string(body) != "file responsive" {
+			t.Fatalf("read under port pressure = %q, %v", body, err)
+		}
+	})
+
 }
 
 func portEcho(conn execenv.PortConn, payload []byte) error {

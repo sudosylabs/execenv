@@ -26,7 +26,7 @@ import (
 type PortListener func(t *testing.T, env execenv.Env, fence execenv.ProjectionFence, address, mode string) (port int, stop func())
 
 type portRegistrar interface {
-	RegisterPortListener(execenv.Env, *net.TCPListener) error
+	RegisterPortListener(execenv.Env, *net.TCPListener, ...string) error
 }
 
 // LocalPortListener starts real listeners and registers them when the
@@ -34,7 +34,13 @@ type portRegistrar interface {
 func LocalPortListener(registrar portRegistrar) PortListener {
 	return func(t *testing.T, env execenv.Env, _ execenv.ProjectionFence, address, mode string) (int, func()) {
 		t.Helper()
-		listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.ParseIP(address)})
+		network := "tcp4"
+		if address == "::" {
+			network = "tcp"
+		} else if address == "::1" {
+			network = "tcp6"
+		}
+		listener, err := net.ListenTCP(network, &net.TCPAddr{IP: net.ParseIP(address)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -174,6 +180,11 @@ func RunPorts(t *testing.T, host execenv.Host, listen PortListener) {
 		if err := conn.CloseWrite(); err != nil {
 			t.Fatal(err)
 		}
+		report, err := io.ReadAll(open(t, port))
+		if err != nil || string(report) != "write after EOF" {
+			t.Fatalf("guest received %q after half-close, error %v", report, err)
+		}
+
 	})
 	t.Run("refused invalid and stale fence", func(t *testing.T) {
 		port, stop := listen(t, env, fence, "127.0.0.1", "hold")
@@ -189,6 +200,36 @@ func RunPorts(t *testing.T, host execenv.Host, listen PortListener) {
 		for _, invalid := range []int{0, 65536} {
 			if _, err := env.ConnectPort(ctx, fence, invalid); !errors.Is(err, execenv.ErrInvalid) {
 				t.Fatalf("ConnectPort(%d) = %v, want ErrInvalid", invalid, err)
+			}
+		}
+	})
+	t.Run("reset is confined to the connection", func(t *testing.T) {
+		port, _ := listen(t, env, fence, "127.0.0.1", "reset")
+		conn := open(t, port)
+		prefix := make([]byte, len("prefix"))
+		if _, err := io.ReadFull(conn, prefix); err != nil || string(prefix) != "prefix" {
+			t.Fatalf("prefix = %q, %v", prefix, err)
+		}
+		if _, err := conn.Write([]byte{1}); err != nil {
+			t.Fatal(err)
+		}
+		start := time.Now()
+		if _, err := conn.Read(prefix); !errors.Is(err, execenv.ErrConnection) {
+			t.Fatalf("read after reset = %v, want ErrConnection", err)
+		}
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Fatalf("read after reset took %v", elapsed)
+		}
+		if _, err := env.ControlStatus(ctx); err != nil {
+			t.Fatalf("grant after reset: %v", err)
+		}
+		_ = open(t, port)
+	})
+	t.Run("IPv6 listeners are reachable", func(t *testing.T) {
+		for _, address := range []string{"::1", "::"} {
+			port, _ := listen(t, env, fence, address, "echo")
+			if err := portEcho(open(t, port), []byte(address)); err != nil {
+				t.Fatalf("echo over %s: %v", address, err)
 			}
 		}
 	})

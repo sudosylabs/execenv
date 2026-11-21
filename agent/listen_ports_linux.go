@@ -175,6 +175,7 @@ func parseProcListeners(scanner *bufio.Scanner) ([]listeningSocket, error) {
 }
 
 func listenerSocket(addr netip.Addr, port uint16, inode uint64) (listeningSocket, bool) {
+	addr = addr.Unmap()
 	if port == 0 || portconn.AddressOrder(addr.String()) == 0 {
 		return listeningSocket{}, false
 	}

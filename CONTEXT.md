@@ -32,12 +32,10 @@ taken by offset, so a resend duplicates nothing. A shell is a process with a
 terminal. Exit, signal, timeout, detach grace and revoke end it.
 _Avoid_: Terminal (for the process), session, job
 
-**Port connection**
-
+**Port connection**:
 A bidirectional byte stream from a caller to a TCP port on its grant's own
-loopback address.
-
-_Avoid_ “port forwarding”, “ingress”, “tunnel”.
+loopback address, never another address.
+_Avoid_: port forwarding, ingress, tunnel
 
 **Seed**:
 A workspace a caller stores on the host once, by its archive's digest, so

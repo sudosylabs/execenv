@@ -10,11 +10,18 @@ import (
 )
 
 func main() {
-	addr, err := net.ResolveTCPAddr("tcp4", os.Args[1]+":0")
+	network := "tcp4"
+	switch os.Args[1] {
+	case "::":
+		network = "tcp"
+	case "::1":
+		network = "tcp6"
+	}
+	addr, err := net.ResolveTCPAddr(network, net.JoinHostPort(os.Args[1], "0"))
 	if err != nil {
 		panic(err)
 	}
-	listener, err := net.ListenTCP("tcp4", addr)
+	listener, err := net.ListenTCP(network, addr)
 	if err != nil {
 		panic(err)
 	}

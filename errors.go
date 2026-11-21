@@ -38,8 +38,8 @@ var (
 	// the id afresh under a new Epoch. The caller rebuilds from its own
 	// journal, as after any new occupancy.
 	ErrLost = errors.New("execenv: grant lost")
-	// ErrBusy indicates a grant already runs MaxProcesses processes.
-	ErrBusy = errors.New("execenv: too many processes")
+	// ErrBusy indicates a grant has reached MaxProcesses or MaxPortConns.
+	ErrBusy = errors.New("execenv: too many processes or port connections")
 	// ErrRefused indicates no listener accepted the loopback connection.
 	ErrRefused = errors.New("execenv: port connection refused")
 	// ErrClosed indicates the process, attachment or reader has ended.

@@ -22,7 +22,7 @@ import (
 )
 
 // protocol is the major version of the schema in proto/execenv/v1.
-const protocol = 1
+const protocol = 2
 
 // Features this host offers. A client names the ones it needs in Hello.
 const (

@@ -22,7 +22,8 @@ const (
 )
 
 // The client sends open first and waits for opened. Thereafter both peers
-// send data (at most 32 KiB per frame) or close_write independently. A
+// send credit, data (at most 32 KiB per frame), or close_write. A
+// sender must have sufficient byte credit before sending data. A
 // terminal RPC error frame carries an ErrorDetail.
 type PortFrame struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -32,6 +33,7 @@ type PortFrame struct {
 	//	*PortFrame_Opened
 	//	*PortFrame_Data
 	//	*PortFrame_CloseWrite
+	//	*PortFrame_Credit
 	Payload       isPortFrame_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -110,6 +112,15 @@ func (x *PortFrame) GetCloseWrite() bool {
 	return false
 }
 
+func (x *PortFrame) GetCredit() uint32 {
+	if x != nil {
+		if x, ok := x.Payload.(*PortFrame_Credit); ok {
+			return x.Credit
+		}
+	}
+	return 0
+}
+
 type isPortFrame_Payload interface {
 	isPortFrame_Payload()
 }
@@ -130,6 +141,10 @@ type PortFrame_CloseWrite struct {
 	CloseWrite bool `protobuf:"varint,4,opt,name=close_write,json=closeWrite,proto3,oneof"`
 }
 
+type PortFrame_Credit struct {
+	Credit uint32 `protobuf:"varint,5,opt,name=credit,proto3,oneof"`
+}
+
 func (*PortFrame_Open) isPortFrame_Payload() {}
 
 func (*PortFrame_Opened) isPortFrame_Payload() {}
@@ -137,6 +152,8 @@ func (*PortFrame_Opened) isPortFrame_Payload() {}
 func (*PortFrame_Data) isPortFrame_Payload() {}
 
 func (*PortFrame_CloseWrite) isPortFrame_Payload() {}
+
+func (*PortFrame_Credit) isPortFrame_Payload() {}
 
 type PortOpen struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -352,13 +369,14 @@ var File_execenv_v1_port_proto protoreflect.FileDescriptor
 const file_execenv_v1_port_proto_rawDesc = "" +
 	"\n" +
 	"\x15execenv/v1/port.proto\x12\n" +
-	"execenv.v1\x1a\x17execenv/v1/common.proto\"\x95\x01\n" +
+	"execenv.v1\x1a\x17execenv/v1/common.proto\"\xaf\x01\n" +
 	"\tPortFrame\x12*\n" +
 	"\x04open\x18\x01 \x01(\v2\x14.execenv.v1.PortOpenH\x00R\x04open\x12\x18\n" +
 	"\x06opened\x18\x02 \x01(\bH\x00R\x06opened\x12\x14\n" +
 	"\x04data\x18\x03 \x01(\fH\x00R\x04data\x12!\n" +
 	"\vclose_write\x18\x04 \x01(\bH\x00R\n" +
-	"closeWriteB\t\n" +
+	"closeWrite\x12\x18\n" +
+	"\x06credit\x18\x05 \x01(\rH\x00R\x06creditB\t\n" +
 	"\apayload\"G\n" +
 	"\bPortOpen\x12'\n" +
 	"\x05fence\x18\x01 \x01(\v2\x11.execenv.v1.FenceR\x05fence\x12\x12\n" +
@@ -423,6 +441,7 @@ func file_execenv_v1_port_proto_init() {
 		(*PortFrame_Opened)(nil),
 		(*PortFrame_Data)(nil),
 		(*PortFrame_CloseWrite)(nil),
+		(*PortFrame_Credit)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

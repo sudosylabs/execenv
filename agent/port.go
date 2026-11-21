@@ -12,7 +12,7 @@ import (
 	"github.com/sudosylabs/execenv/internal/wire"
 )
 
-// DialPort opens a byte stream to the guest's IPv4 loopback.
+// DialPort opens a byte stream to the guest's loopback.
 func (c *Client) DialPort(ctx context.Context, port int) (execenv.PortConn, error) {
 	if !portconn.Valid(port) {
 		return nil, execenv.ErrInvalid
@@ -20,8 +20,8 @@ func (c *Client) DialPort(ctx context.Context, port int) (execenv.PortConn, erro
 	if err := c.ioGuard(); err != nil {
 		return nil, err
 	}
-	return wire.OpenPort(ctx, c.ctx, callTimeout, c.agent.DialPort, &execenvv1.PortOpen{Port: int32(port)}, func(err error) error {
-		return c.failure("dial_port", err)
+	return wire.OpenPort(ctx, c.ctx, portconn.DialTimeout, c.ports.DialPort, &execenvv1.PortOpen{Port: int32(port)}, func(err error) error {
+		return wire.HostError("dial_port", err)
 	})
 }
 
@@ -36,7 +36,7 @@ func (s *server) DialPort(ctx context.Context, stream *connect.BidiStream[execen
 		if open.GetFence() != nil {
 			return nil, execenv.ErrInvalid
 		}
-		return portconn.Dial(ctx, int(open.GetPort()))
+		return portconn.Dial(ctx, int(open.GetPort()), true, true)
 	})
 }
 

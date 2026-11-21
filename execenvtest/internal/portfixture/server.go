@@ -1,6 +1,7 @@
 package portfixture
 
 import (
+	"bytes"
 	"io"
 	"net"
 	"net/http"
@@ -14,6 +15,8 @@ func Serve(listener *net.TCPListener, mode string) {
 		}))
 		return
 	}
+	var accepted int
+	received := make(chan []byte, 1)
 	for {
 		conn, err := listener.AcceptTCP()
 		if err != nil {
@@ -26,6 +29,8 @@ func Serve(listener *net.TCPListener, mode string) {
 			_, _ = io.Copy(io.Discard, conn)
 			return
 		}
+		accepted++
+		first := accepted == 1
 		go func() {
 			defer conn.Close()
 			switch mode {
@@ -35,9 +40,26 @@ func Serve(listener *net.TCPListener, mode string) {
 					_, _ = conn.Write(data)
 				}
 			case "send-fin":
-				_, _ = io.WriteString(conn, "ready")
-				_ = conn.CloseWrite()
-				_, _ = io.Copy(io.Discard, conn)
+				if first {
+					_, _ = io.WriteString(conn, "ready")
+					_ = conn.CloseWrite()
+					data, _ := io.ReadAll(conn)
+					received <- data
+				} else {
+					_, _ = conn.Write(<-received)
+				}
+			case "reset":
+				_, _ = io.WriteString(conn, "prefix")
+				var ack [1]byte
+				_, _ = io.ReadFull(conn, ack[:])
+				_ = conn.SetLinger(0)
+			case "flood":
+				data := bytes.Repeat([]byte{'x'}, 32<<10)
+				for {
+					if _, err := conn.Write(data); err != nil {
+						break
+					}
+				}
 			case "hold":
 				_, _ = io.Copy(io.Discard, conn)
 			}

@@ -4,7 +4,6 @@ package memory
 import (
 	"context"
 	"errors"
-	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -69,7 +68,7 @@ type Host struct {
 
 type environment struct {
 	ports     portconn.Set
-	listeners map[netip.AddrPort]*net.TCPListener
+	listeners map[netip.AddrPort]portListener
 
 	control *control.State
 	mu      sync.Mutex

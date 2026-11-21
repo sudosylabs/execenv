@@ -133,9 +133,9 @@ type Spec struct {
 	WallTimeout time.Duration
 	// IdleTimeout and IdleAction, set together, freeze, suspend or revoke
 	// the grant once it has been idle that long. A grant is busy while
-	// anything is attached to one of its processes and for a moment after
-	// any call on it, except Observe and ObserveProcesses: reading what the
-	// grant did is not activity.
+	// anything is attached to one of its processes, while a port connection is open,
+	// and for a moment after activity. Observe, ObserveProcesses and
+	// ListPorts do not count as activity.
 	IdleTimeout time.Duration
 	IdleAction  IdleAction
 	// Labels are the caller's, for its own bookkeeping. The host never
@@ -215,7 +215,7 @@ type Env interface {
 	Revoke(ctx context.Context) error
 	Files
 	Processes
-	// ConnectPort opens a stream to the grant's IPv4 loopback. The fence
+	// ConnectPort opens a stream to the grant's loopback. The fence
 	// is checked when it opens. The context controls the stream's lifetime.
 	ConnectPort(ctx context.Context, fence ProjectionFence, port int) (PortConn, error)
 	// ListPorts returns listening TCP sockets on loopback or wildcard

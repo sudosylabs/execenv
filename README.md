@@ -870,7 +870,8 @@ live on the grant's writable disk, not in guest memory.
 ### Connect to a listening port
 
 `env.ConnectPort(ctx, fence, port)` opens a byte stream to
-`127.0.0.1:<port>` inside the grant. It works with `NetworkNone` and
+the grant's loopback. It tries `127.0.0.1:<port>` first, then
+`[::1]:<port>` if IPv4 refuses the connection. It works with `NetworkNone` and
 requires no network device. Use a context that stays live for as long
 as you need the stream.
 
@@ -901,11 +902,13 @@ connection's slot.
 Each result has a `Port`, its `Address` (`127.0.0.1`, `0.0.0.0`, `::1`,
 or `::`), and the owning process's `Tag` when available. If several
 addresses listen on the same port, the list gives one entry and prefers
-IPv4. An IPv6-only listener can appear in the list, while `ConnectPort`
-always dials IPv4 loopback.
+IPv4. Polling `ListPorts` does not reset the grant's idle timeout. An open
+connection keeps the grant busy. For local tests, use
+`memory.Host.RegisterPortListener(env, listener, tag)` to register a TCP
+listener with an optional process tag.
 
 A grant can hold up to `MaxPortConns` (64) connections across all ports.
-Opening another returns `ErrCapacity`. `Limits.PortBytes` sets a shared
+Opening another returns `ErrBusy`. `Limits.PortBytes` sets a shared
 byte rate and one-time burst for the grant's port traffic, with an
 independent bucket in each direction. A zero rate is unlimited.
 `env.UpdateLimits(ctx, fence, limits)` applies a new rate to open
@@ -990,7 +993,7 @@ Match with `errors.Is`. Wrappers preserve the sentinel.
 | --- | --- |
 | `ErrInvalid` | bad id, image, path, fence, port, or config |
 | `ErrUnknownImage` | that catalog id is not on the host |
-| `ErrCapacity` | the grant does not fit or the port connection cap was reached. A `*CapacityError` identifies a grant resource shortfall |
+| `ErrCapacity` | the grant does not fit. A `*CapacityError` identifies a grant resource shortfall |
 | `ErrDraining` | host is draining; it serves held grants only |
 | `ErrConflict` | live grant mismatch, stale fence, or unobserved guest change |
 | `ErrUnavailable` | host unusable, or it refused the client's credentials |
@@ -999,7 +1002,7 @@ Match with `errors.Is`. Wrappers preserve the sentinel.
 | `ErrRevoked` | grant is gone |
 | `ErrLost` | grant's environment ended without a revoke; Revoke, then Ensure again |
 | `ErrRefused` | the loopback port refused the connection |
-| `ErrBusy` | the grant already runs 32 processes |
+| `ErrBusy` | the grant reached its process or port connection cap |
 | `ErrClosed` | attachment or content reader closed, or input to a process that exited (not revoke) |
 | `ErrNotFound` | path missing from the projection, or no process has that tag |
 | `ErrLagged` | observations no longer retained, or a process log position already acknowledged |

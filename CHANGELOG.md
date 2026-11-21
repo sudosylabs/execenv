@@ -4,12 +4,16 @@
 
 ### Added
 
-- `Env.ConnectPort` opens a half-closeable TCP byte stream to a grant's
-  IPv4 loopback, including with `NetworkNone`. `Env.ListPorts` reports
-  listening loopback and wildcard TCP ports with process tags when
-  available. Isolated hosts need images baked with the matching guest
-  helper.
+- The `Env` interface adds `ConnectPort` and `ListPorts`. A port
+  connection supports half-close and reaches the grant's IPv4 or IPv6
+  loopback, including with `NetworkNone`. A refused connection returns
+  `ErrRefused`. Listener discovery includes process tags when available.
+- Local tests can register a listener and optional tag with
+  `memory.Host.RegisterPortListener`. Remote clients now require the
+  `port_connections` feature and the updated protocol. Isolated hosts
+  require images baked with the matching guest helper.
 - Each grant supports up to `MaxPortConns` (64) open port connections.
+  Further opens return `ErrBusy`.
   `Limits.PortBytes` sets a shared limit per direction and can be changed
   on running streams through `UpdateLimits`.
 
