@@ -2,6 +2,7 @@ package isolated
 
 import (
 	"context"
+	"time"
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/internal/procs"
@@ -31,14 +32,14 @@ type guestProcess struct {
 	link <-chan struct{}
 }
 
-func (p guestProcess) Wait() execenv.ExitStatus {
-	status := p.Backend.Wait()
+func (p guestProcess) Wait() (execenv.ExitStatus, time.Time) {
+	status, ended := p.Backend.Wait()
 	select {
 	case <-p.link:
 		_ = p.env.endCause(nil)
 	default:
 	}
-	return status
+	return status, ended
 }
 
 func (e *environment) Start(ctx context.Context, fence execenv.ProjectionFence, spec execenv.ProcessSpec) (execenv.ProcessInfo, error) {

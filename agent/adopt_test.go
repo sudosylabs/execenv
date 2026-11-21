@@ -152,7 +152,7 @@ type interruptedKill struct {
 	result     chan error
 }
 
-func (b interruptedKill) Wait() execenv.ExitStatus {
+func (b interruptedKill) Wait() (execenv.ExitStatus, time.Time) {
 	<-b.wait
 	return b.Backend.Wait()
 }
@@ -234,4 +234,51 @@ func TestDeadlineRetriesInterruptedKillOnNewLink(t *testing.T) {
 	}
 	defer after.Close()
 	expectDeadlineExit(t, after, execenv.ExitStatus{Signal: int(syscall.SIGKILL)})
+}
+
+func TestAdoptionRetainsProcessExitTime(t *testing.T) {
+	a, err := agent.New(agent.Config{Home: t.TempDir(), Barrier: quiescent{}, Processes: newFakeProcesses()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(a.Close)
+	first, oldConn := link(t, a)
+	m := procs.New(first.Start)
+	spec := execenv.ProcessSpec{Tag: "finished", Argv: []string{"sh", "-c", "exit 7"}}
+	if _, err := m.Start(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	att, err := m.Attach(spec.Tag, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer att.Close()
+	expectDeadlineExit(t, att, execenv.ExitStatus{Code: 7})
+	before, err := m.Process(spec.Tag)
+	if err != nil || before.Ended.IsZero() || before.Ended.Before(before.Started) {
+		t.Fatalf("Process before adoption = %+v, %v", before, err)
+	}
+	if err := oldConn.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	second, conn := link(t, a)
+	defer conn.Close()
+	held, err := second.Processes(t.Context())
+	if err != nil || len(held) != 1 || held[0].Info.Running || !held[0].Info.Ended.Equal(before.Ended) {
+		t.Fatalf("guest process after reconnect = %+v, %v", held, err)
+	}
+	gp := held[0]
+	backend, err := second.Adopt(gp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := procs.New(second.Start)
+	if err := restored.Adopt(procs.Adopted{Spec: gp.Spec, Info: gp.Info, From: gp.First}, backend); err != nil {
+		t.Fatal(err)
+	}
+	after, err := restored.Process(spec.Tag)
+	if err != nil || after.Running || !after.Ended.Equal(before.Ended) || !after.Started.Equal(before.Started) || after.Exit != before.Exit {
+		t.Fatalf("adopted Process = %+v, %v; before %+v", after, err, before)
+	}
 }

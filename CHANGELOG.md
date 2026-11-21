@@ -4,6 +4,9 @@
 
 ### Added
 
+- `ProcessInfo.Ended` reports when a process exited and stays zero while
+  the process is running.
+
 - The `Env` interface adds `ConnectPort` and `ListPorts`. A port
   connection supports half-close and reaches the grant's IPv4 or IPv6
   loopback, including with `NetworkNone`. A refused connection returns
@@ -18,6 +21,8 @@
   on running streams through `UpdateLimits`.
 
 ### Fixed
+
+- A port connection interrupted by grant loss reports `ErrLost`.
 
 - Freeze and suspend pause detach grace. Process timeouts continue to
   count wall-clock time, including while the host is down. Reattaching

@@ -98,6 +98,9 @@ func ProcessInfoTo(p execenv.ProcessInfo) *execenvv1.ProcessInfo {
 	if !p.Started.IsZero() {
 		out.Started = timestamppb.New(p.Started)
 	}
+	if !p.Ended.IsZero() {
+		out.Ended = timestamppb.New(p.Ended)
+	}
 	return out
 }
 
@@ -116,6 +119,9 @@ func ProcessInfoFrom(p *execenvv1.ProcessInfo) execenv.ProcessInfo {
 	}
 	if t := p.GetStarted(); t != nil {
 		out.Started = t.AsTime()
+	}
+	if t := p.GetEnded(); t != nil {
+		out.Ended = t.AsTime()
 	}
 	return out
 }

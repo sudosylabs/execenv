@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -26,7 +27,11 @@ func (c *Client) Start(ctx context.Context, spec execenv.ProcessSpec) (procs.Bac
 	if err != nil {
 		return nil, c.failure("start", err)
 	}
-	return c.open(spec.Tag, int(resp.Msg.GetPid()), spec.PTY != nil, nil)
+	var started time.Time
+	if t := resp.Msg.GetStarted(); t != nil {
+		started = t.AsTime()
+	}
+	return c.open(spec.Tag, int(resp.Msg.GetPid()), spec.PTY != nil, started, nil)
 }
 
 // GuestProcess is a process the guest holds, as a restarted host finds it.
@@ -59,16 +64,16 @@ func (c *Client) Processes(ctx context.Context) ([]GuestProcess, error) {
 // Adopt reads on from a process the guest holds, from the oldest output it
 // still has.
 func (c *Client) Adopt(gp GuestProcess) (procs.Backend, error) {
-	return c.open(gp.Spec.Tag, gp.Info.PID, gp.Spec.PTY != nil, gp.First)
+	return c.open(gp.Spec.Tag, gp.Info.PID, gp.Spec.PTY != nil, gp.Info.Started, gp.First)
 }
 
 // open streams tag's output from the offsets in from.
-func (c *Client) open(tag string, pid int, pty bool, from map[execenv.Stream]uint64) (procs.Backend, error) {
+func (c *Client) open(tag string, pid int, pty bool, started time.Time, from map[execenv.Stream]uint64) (procs.Backend, error) {
 	stream, err := c.agent.Output(c.ctx, connect.NewRequest(&guestv1.OutputRequest{Tag: tag, From: wire.OffsetsTo(from)}))
 	if err != nil {
 		return nil, c.failure("output", err)
 	}
-	b := &guestBackend{client: c, tag: tag, pid: pid, stream: stream, done: make(chan struct{}), writers: map[execenv.Stream]*io.PipeWriter{}, readers: map[execenv.Stream]io.Reader{}}
+	b := &guestBackend{client: c, tag: tag, pid: pid, started: started, stream: stream, done: make(chan struct{}), writers: map[execenv.Stream]*io.PipeWriter{}, readers: map[execenv.Stream]io.Reader{}}
 	names := []execenv.Stream{execenv.StreamStdout, execenv.StreamStderr}
 	if pty {
 		names = []execenv.Stream{execenv.StreamPTY}
@@ -91,6 +96,8 @@ type guestBackend struct {
 	writers map[execenv.Stream]*io.PipeWriter
 	done    chan struct{}
 	exit    execenv.ExitStatus
+	started time.Time
+	ended   time.Time
 
 	feedMu sync.Mutex
 	feed   *connect.ClientStreamForClient[guestv1.FeedRequest, guestv1.FeedResponse]
@@ -108,6 +115,9 @@ func (b *guestBackend) receive() {
 		msg := b.stream.Msg()
 		if exit := msg.GetExit(); exit != nil {
 			b.exit, exited = wire.ExitFrom(exit), true
+			if t := msg.GetEnded(); t != nil {
+				b.ended = t.AsTime()
+			}
 			break
 		}
 		data := msg.GetData()
@@ -207,9 +217,11 @@ func (b *guestBackend) Signal(s execenv.Signal) error {
 	return b.client.failure("signal", err)
 }
 
-func (b *guestBackend) Wait() execenv.ExitStatus {
+func (b *guestBackend) Wait() (execenv.ExitStatus, time.Time) {
 	<-b.done
-	return b.exit
+	return b.exit, b.ended
 }
+
+func (b *guestBackend) Started() time.Time { return b.started }
 
 func (b *guestBackend) PID() int { return b.pid }

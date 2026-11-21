@@ -4,9 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/sudosylabs/execenv/agent"
-
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/agent"
 	"github.com/sudosylabs/execenv/internal/portconn"
 )
 
@@ -35,6 +34,12 @@ func (e *environment) ConnectPort(ctx context.Context, fence execenv.ProjectionF
 	conn, err := slot.Dial(func(ctx context.Context) (execenv.PortConn, error) {
 		return client.DialPort(ctx, port)
 	}, func(err error) error {
+		// The stream can report HTTP/2 cancellation before the link
+		// watcher publishes the grant's terminal cause. A live caller
+		// did not request this cancellation.
+		if errors.Is(err, context.Canceled) && ctx.Err() == nil {
+			return e.endCause(execenv.ErrConnection)
+		}
 		return e.portError(client, err)
 	})
 	return conn, execenv.Error("connect_port", err)

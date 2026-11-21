@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/sudosylabs/execenv"
 	guestv1 "github.com/sudosylabs/execenv/internal/gen/execenv/guest/v1"
@@ -61,6 +62,7 @@ type guestProc struct {
 	pumping int
 	closing bool
 	exited  bool
+	ended   time.Time
 	exit    execenv.ExitStatus
 	input   uint64
 
@@ -99,7 +101,7 @@ func (s *server) Spawn(_ context.Context, req *connect.Request[guestv1.SpawnRequ
 		return nil, wire.Error(execenv.ErrUnavailable)
 	}
 	s.procs[spec.Tag] = p
-	return connect.NewResponse(&guestv1.SpawnResponse{Pid: int32(p.cmd.Process.Pid)}), nil
+	return connect.NewResponse(&guestv1.SpawnResponse{Pid: int32(p.cmd.Process.Pid), Started: timestamppb.New(p.started)}), nil
 }
 
 // spawn starts spec in the workload: unprivileged and in its cgroup when
@@ -319,9 +321,10 @@ func (p *guestProc) pump(stream execenv.Stream, r io.Reader) {
 // once the drain has passed.
 func (p *guestProc) wait() {
 	_ = p.cmd.Wait()
+	ended := time.Now()
 	status := exitStatus(p.cmd)
 	p.mu.Lock()
-	p.exited, p.exit = true, status
+	p.exited, p.exit, p.ended = true, status, ended
 	p.cond.Broadcast()
 	p.mu.Unlock()
 	time.Sleep(outputDrain)
@@ -382,7 +385,7 @@ func (s *server) ListProcesses(context.Context, *connect.Request[guestv1.ListPro
 func (p *guestProc) describe() *guestv1.GuestProcess {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	info := execenv.ProcessInfo{Tag: p.spec.Tag, PID: p.cmd.Process.Pid, PTY: p.pty != nil, Started: p.started, Running: !p.exited, Exit: p.exit, Input: p.input, Output: map[execenv.Stream]uint64{}}
+	info := execenv.ProcessInfo{Tag: p.spec.Tag, PID: p.cmd.Process.Pid, PTY: p.pty != nil, Started: p.started, Ended: p.ended, Running: !p.exited, Exit: p.exit, Input: p.input, Output: map[execenv.Stream]uint64{}}
 	first := map[execenv.Stream]uint64{}
 	for name, r := range p.rings {
 		info.Output[name] = r.Total()
@@ -452,7 +455,7 @@ func (s *server) Output(ctx context.Context, req *connect.Request[guestv1.Output
 				}
 			}
 			if msg == nil && p.exited && p.pumping == 0 {
-				msg = &guestv1.OutputResponse{Event: &guestv1.OutputResponse_Exit{Exit: wire.ExitTo(p.exit)}}
+				msg = &guestv1.OutputResponse{Event: &guestv1.OutputResponse_Exit{Exit: wire.ExitTo(p.exit)}, Ended: timestamppb.New(p.ended)}
 			}
 			if msg == nil {
 				p.cond.Wait()

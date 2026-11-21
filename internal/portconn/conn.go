@@ -155,11 +155,11 @@ func (c *Slot) Dial(dial func(context.Context) (execenv.PortConn, error), mapErr
 	if conn != nil {
 		_ = conn.Close()
 	}
-	c.end(err)
 	if mapError != nil {
 		err = mapError(err)
 	}
-	return nil, err
+	c.end(err)
+	return nil, c.Err()
 }
 
 func (c *Slot) Port() int             { return c.conn.Port() }
@@ -229,6 +229,9 @@ func (c *Slot) failure(err error) error {
 	}
 	if !errors.Is(err, execenv.ErrClosed) {
 		c.end(err)
+	}
+	if cause := c.Err(); cause != nil {
+		return cause
 	}
 	return err
 }

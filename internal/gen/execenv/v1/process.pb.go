@@ -250,6 +250,7 @@ type ProcessInfo struct {
 	Exit          *ExitStatus            `protobuf:"bytes,6,opt,name=exit,proto3" json:"exit,omitempty"`
 	Output        map[string]uint64      `protobuf:"bytes,7,rep,name=output,proto3" json:"output,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
 	Input         uint64                 `protobuf:"varint,8,opt,name=input,proto3" json:"input,omitempty"`
+	Ended         *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=ended,proto3" json:"ended,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -338,6 +339,13 @@ func (x *ProcessInfo) GetInput() uint64 {
 		return x.Input
 	}
 	return 0
+}
+
+func (x *ProcessInfo) GetEnded() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Ended
+	}
+	return nil
 }
 
 type StartProcessRequest struct {
@@ -1277,7 +1285,7 @@ const file_execenv_v1_process_proto_rawDesc = "" +
 	"\n" +
 	"ExitStatus\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\x05R\x04code\x12\x16\n" +
-	"\x06signal\x18\x02 \x01(\x05R\x06signal\"\xcd\x02\n" +
+	"\x06signal\x18\x02 \x01(\x05R\x06signal\"\xff\x02\n" +
 	"\vProcessInfo\x12\x10\n" +
 	"\x03tag\x18\x01 \x01(\tR\x03tag\x12\x10\n" +
 	"\x03pid\x18\x02 \x01(\x05R\x03pid\x12\x10\n" +
@@ -1286,7 +1294,8 @@ const file_execenv_v1_process_proto_rawDesc = "" +
 	"\arunning\x18\x05 \x01(\bR\arunning\x12*\n" +
 	"\x04exit\x18\x06 \x01(\v2\x16.execenv.v1.ExitStatusR\x04exit\x12;\n" +
 	"\x06output\x18\a \x03(\v2#.execenv.v1.ProcessInfo.OutputEntryR\x06output\x12\x14\n" +
-	"\x05input\x18\b \x01(\x04R\x05input\x1a9\n" +
+	"\x05input\x18\b \x01(\x04R\x05input\x120\n" +
+	"\x05ended\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\x05ended\x1a9\n" +
 	"\vOutputEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"k\n" +
@@ -1426,41 +1435,42 @@ var file_execenv_v1_process_proto_depIdxs = []int32{
 	25, // 4: execenv.v1.ProcessInfo.started:type_name -> google.protobuf.Timestamp
 	2,  // 5: execenv.v1.ProcessInfo.exit:type_name -> execenv.v1.ExitStatus
 	21, // 6: execenv.v1.ProcessInfo.output:type_name -> execenv.v1.ProcessInfo.OutputEntry
-	26, // 7: execenv.v1.StartProcessRequest.fence:type_name -> execenv.v1.Fence
-	1,  // 8: execenv.v1.StartProcessRequest.spec:type_name -> execenv.v1.ProcessSpec
-	3,  // 9: execenv.v1.ListProcessesResponse.processes:type_name -> execenv.v1.ProcessInfo
-	22, // 10: execenv.v1.AttachProcessRequest.from:type_name -> execenv.v1.AttachProcessRequest.FromEntry
-	0,  // 11: execenv.v1.OutputEvent.kind:type_name -> execenv.v1.OutputKind
-	2,  // 12: execenv.v1.OutputEvent.exit:type_name -> execenv.v1.ExitStatus
-	26, // 13: execenv.v1.WriteInputRequest.fence:type_name -> execenv.v1.Fence
-	26, // 14: execenv.v1.CloseInputRequest.fence:type_name -> execenv.v1.Fence
-	26, // 15: execenv.v1.ResizeProcessRequest.fence:type_name -> execenv.v1.Fence
-	23, // 16: execenv.v1.ResizeProcessRequest.window:type_name -> execenv.v1.Window
-	26, // 17: execenv.v1.SignalProcessRequest.fence:type_name -> execenv.v1.Fence
-	23, // 18: execenv.v1.Screen.window:type_name -> execenv.v1.Window
-	4,  // 19: execenv.v1.ProcessService.StartProcess:input_type -> execenv.v1.StartProcessRequest
-	5,  // 20: execenv.v1.ProcessService.GetProcess:input_type -> execenv.v1.GetProcessRequest
-	6,  // 21: execenv.v1.ProcessService.ListProcesses:input_type -> execenv.v1.ListProcessesRequest
-	8,  // 22: execenv.v1.ProcessService.AttachProcess:input_type -> execenv.v1.AttachProcessRequest
-	10, // 23: execenv.v1.ProcessService.WriteInput:input_type -> execenv.v1.WriteInputRequest
-	12, // 24: execenv.v1.ProcessService.CloseInput:input_type -> execenv.v1.CloseInputRequest
-	14, // 25: execenv.v1.ProcessService.ResizeProcess:input_type -> execenv.v1.ResizeProcessRequest
-	16, // 26: execenv.v1.ProcessService.SignalProcess:input_type -> execenv.v1.SignalProcessRequest
-	18, // 27: execenv.v1.ProcessService.GetScreen:input_type -> execenv.v1.GetScreenRequest
-	3,  // 28: execenv.v1.ProcessService.StartProcess:output_type -> execenv.v1.ProcessInfo
-	3,  // 29: execenv.v1.ProcessService.GetProcess:output_type -> execenv.v1.ProcessInfo
-	7,  // 30: execenv.v1.ProcessService.ListProcesses:output_type -> execenv.v1.ListProcessesResponse
-	9,  // 31: execenv.v1.ProcessService.AttachProcess:output_type -> execenv.v1.OutputEvent
-	11, // 32: execenv.v1.ProcessService.WriteInput:output_type -> execenv.v1.WriteInputResponse
-	13, // 33: execenv.v1.ProcessService.CloseInput:output_type -> execenv.v1.CloseInputResponse
-	15, // 34: execenv.v1.ProcessService.ResizeProcess:output_type -> execenv.v1.ResizeProcessResponse
-	17, // 35: execenv.v1.ProcessService.SignalProcess:output_type -> execenv.v1.SignalProcessResponse
-	19, // 36: execenv.v1.ProcessService.GetScreen:output_type -> execenv.v1.Screen
-	28, // [28:37] is the sub-list for method output_type
-	19, // [19:28] is the sub-list for method input_type
-	19, // [19:19] is the sub-list for extension type_name
-	19, // [19:19] is the sub-list for extension extendee
-	0,  // [0:19] is the sub-list for field type_name
+	25, // 7: execenv.v1.ProcessInfo.ended:type_name -> google.protobuf.Timestamp
+	26, // 8: execenv.v1.StartProcessRequest.fence:type_name -> execenv.v1.Fence
+	1,  // 9: execenv.v1.StartProcessRequest.spec:type_name -> execenv.v1.ProcessSpec
+	3,  // 10: execenv.v1.ListProcessesResponse.processes:type_name -> execenv.v1.ProcessInfo
+	22, // 11: execenv.v1.AttachProcessRequest.from:type_name -> execenv.v1.AttachProcessRequest.FromEntry
+	0,  // 12: execenv.v1.OutputEvent.kind:type_name -> execenv.v1.OutputKind
+	2,  // 13: execenv.v1.OutputEvent.exit:type_name -> execenv.v1.ExitStatus
+	26, // 14: execenv.v1.WriteInputRequest.fence:type_name -> execenv.v1.Fence
+	26, // 15: execenv.v1.CloseInputRequest.fence:type_name -> execenv.v1.Fence
+	26, // 16: execenv.v1.ResizeProcessRequest.fence:type_name -> execenv.v1.Fence
+	23, // 17: execenv.v1.ResizeProcessRequest.window:type_name -> execenv.v1.Window
+	26, // 18: execenv.v1.SignalProcessRequest.fence:type_name -> execenv.v1.Fence
+	23, // 19: execenv.v1.Screen.window:type_name -> execenv.v1.Window
+	4,  // 20: execenv.v1.ProcessService.StartProcess:input_type -> execenv.v1.StartProcessRequest
+	5,  // 21: execenv.v1.ProcessService.GetProcess:input_type -> execenv.v1.GetProcessRequest
+	6,  // 22: execenv.v1.ProcessService.ListProcesses:input_type -> execenv.v1.ListProcessesRequest
+	8,  // 23: execenv.v1.ProcessService.AttachProcess:input_type -> execenv.v1.AttachProcessRequest
+	10, // 24: execenv.v1.ProcessService.WriteInput:input_type -> execenv.v1.WriteInputRequest
+	12, // 25: execenv.v1.ProcessService.CloseInput:input_type -> execenv.v1.CloseInputRequest
+	14, // 26: execenv.v1.ProcessService.ResizeProcess:input_type -> execenv.v1.ResizeProcessRequest
+	16, // 27: execenv.v1.ProcessService.SignalProcess:input_type -> execenv.v1.SignalProcessRequest
+	18, // 28: execenv.v1.ProcessService.GetScreen:input_type -> execenv.v1.GetScreenRequest
+	3,  // 29: execenv.v1.ProcessService.StartProcess:output_type -> execenv.v1.ProcessInfo
+	3,  // 30: execenv.v1.ProcessService.GetProcess:output_type -> execenv.v1.ProcessInfo
+	7,  // 31: execenv.v1.ProcessService.ListProcesses:output_type -> execenv.v1.ListProcessesResponse
+	9,  // 32: execenv.v1.ProcessService.AttachProcess:output_type -> execenv.v1.OutputEvent
+	11, // 33: execenv.v1.ProcessService.WriteInput:output_type -> execenv.v1.WriteInputResponse
+	13, // 34: execenv.v1.ProcessService.CloseInput:output_type -> execenv.v1.CloseInputResponse
+	15, // 35: execenv.v1.ProcessService.ResizeProcess:output_type -> execenv.v1.ResizeProcessResponse
+	17, // 36: execenv.v1.ProcessService.SignalProcess:output_type -> execenv.v1.SignalProcessResponse
+	19, // 37: execenv.v1.ProcessService.GetScreen:output_type -> execenv.v1.Screen
+	29, // [29:38] is the sub-list for method output_type
+	20, // [20:29] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for extension type_name
+	20, // [20:20] is the sub-list for extension extendee
+	0,  // [0:20] is the sub-list for field type_name
 }
 
 func init() { file_execenv_v1_process_proto_init() }

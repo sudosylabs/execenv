@@ -291,10 +291,11 @@ func (e *environment) stop(cause error) error {
 	e.client = nil
 	inst := e.inst
 	e.mu.Unlock()
-	// Processes end with the cause before the verdict is out, so a reader
-	// whose link broke sees why.
-	e.manager().End(cause)
+	// Record the port cause before process teardown can cancel more
+	// traffic on the shared guest link.
 	e.ports.End(cause)
+	// Process readers also see the grant's verdict.
+	e.manager().End(cause)
 	e.goneOnce.Do(func() { close(e.gone) })
 	if client != nil {
 		client.Hangup(cause)

@@ -30,8 +30,11 @@ type Backend interface {
 	Signal(s execenv.Signal) error
 	// Screen is the terminal's screen; only a terminal process is asked.
 	Screen(ctx context.Context) (execenv.Screen, error)
-	// Wait blocks until the process has exited.
-	Wait() execenv.ExitStatus
+	// Wait blocks until the process has exited and reports the exit time
+	// when the backend recorded it.
+	Wait() (execenv.ExitStatus, time.Time)
+	// Started reports the backend start time when known.
+	Started() time.Time
 	PID() int
 }
 
@@ -74,6 +77,7 @@ type proc struct {
 	spec    execenv.ProcessSpec
 	backend Backend
 	started time.Time
+	ended   time.Time
 	rings   map[execenv.Stream]*ring.Ring
 	cond    *sync.Cond
 
@@ -189,7 +193,11 @@ func (m *Manager) Adopt(a Adopted, backend Backend) error {
 		m.mu.Unlock()
 		return execenv.ErrConflict
 	}
-	p := &proc{m: m, spec: spec, input: a.Info.Input, exited: !a.Info.Running, exit: a.Info.Exit}
+	p := &proc{m: m, spec: spec, input: a.Info.Input, exited: !a.Info.Running, exit: a.Info.Exit, ended: a.Info.Ended}
+	if p.exited && p.ended.IsZero() {
+		// Older backends may have no retained exit timestamp.
+		p.ended = m.now()
+	}
 	p.cond = sync.NewCond(&m.mu)
 	m.procs[spec.Tag] = p
 	p.runLocked(backend, a.Info.Started, a.From, a.Deadlines)
@@ -227,6 +235,9 @@ func (p *proc) caughtUp(until map[execenv.Stream]uint64) bool {
 func (p *proc) runLocked(backend Backend, started time.Time, from map[execenv.Stream]uint64, deadlines *Deadlines) {
 	p.backend = backend
 	p.started = started
+	if actual := backend.Started(); !actual.IsZero() {
+		p.started = actual
+	}
 	p.rings = make(map[execenv.Stream]*ring.Ring)
 	streams := backend.Streams()
 	for name := range streams {
@@ -274,17 +285,22 @@ func (p *proc) pump(name execenv.Stream, r io.Reader) {
 }
 
 func (p *proc) wait() {
-	status := p.backend.Wait()
+	status, ended := p.backend.Wait()
+	if ended.IsZero() {
+		ended = p.m.now()
+	}
 	p.m.mu.Lock()
 	defer p.m.mu.Unlock()
-	p.exited, p.exit = true, status
+	if !p.exited {
+		p.exited, p.exit, p.ended = true, status, ended
+	}
 	p.clearPendingLocked()
 	p.stopDeadlineLocked()
 	p.cond.Broadcast()
 }
 
 func (p *proc) infoLocked() execenv.ProcessInfo {
-	out := execenv.ProcessInfo{Tag: p.spec.Tag, PTY: p.spec.PTY != nil, Started: p.started, Running: !p.exited, Exit: p.exit, Input: p.input, Output: make(map[execenv.Stream]uint64)}
+	out := execenv.ProcessInfo{Tag: p.spec.Tag, PTY: p.spec.PTY != nil, Started: p.started, Ended: p.ended, Running: !p.exited, Exit: p.exit, Input: p.input, Output: make(map[execenv.Stream]uint64)}
 	if p.backend != nil {
 		out.PID = p.backend.PID()
 	}

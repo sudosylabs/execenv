@@ -83,6 +83,9 @@ type ProcessInfo struct {
 	PID     int
 	PTY     bool
 	Started time.Time
+	// Ended is the host wall-clock time of exit, or zero while running.
+	// Adoption may use its own time when the original exit time is unavailable.
+	Ended time.Time
 	// Running is false once the process has exited; Exit says how.
 	Running bool
 	Exit    ExitStatus

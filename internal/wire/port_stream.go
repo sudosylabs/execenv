@@ -375,11 +375,11 @@ func (c *framedPort) sendError(err error) error {
 }
 
 func (c *framedPort) transportError(err error) error {
+	if cause := context.Cause(c.ctx); cause != nil {
+		return cause
+	}
 	var rpcErr *connect.Error
 	if errors.As(err, &rpcErr) {
-		if cause := context.Cause(c.ctx); cause != nil {
-			return cause
-		}
 		return c.mapError(err)
 	}
 	return err

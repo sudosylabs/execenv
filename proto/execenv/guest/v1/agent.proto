@@ -9,6 +9,8 @@ import "execenv/v1/port.proto";
 import "execenv/v1/process.proto";
 import "execenv/v1/process_log.proto";
 
+import "google/protobuf/timestamp.proto";
+
 option go_package = "github.com/sudosylabs/execenv/internal/gen/execenv/guest/v1;guestv1";
 
 // AgentService is the guest helper, served on the per-grant guest link.
@@ -91,6 +93,7 @@ message SpawnRequest {
 
 message SpawnResponse {
   int32 pid = 1;
+  google.protobuf.Timestamp started = 2;
 }
 
 message ProcessRef {
@@ -124,6 +127,7 @@ message OutputResponse {
     execenv.v1.ExitStatus exit = 2;
     Empty opened = 3;
   }
+  google.protobuf.Timestamp ended = 4;
 }
 
 message Chunk {

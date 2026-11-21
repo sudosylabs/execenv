@@ -55,6 +55,7 @@ message ProcessInfo {
   ExitStatus exit = 6;
   map<string, uint64> output = 7;
   uint64 input = 8;
+  google.protobuf.Timestamp ended = 9;
 }
 
 message StartProcessRequest {

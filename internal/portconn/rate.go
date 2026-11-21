@@ -59,6 +59,11 @@ func (c *Slot) allow(dir direction, want int) (int, error) {
 	s := c.set
 	for {
 		s.mu.Lock()
+		if c.cause != nil {
+			err := c.cause
+			s.mu.Unlock()
+			return 0, err
+		}
 		if err := context.Cause(c.ctx); err != nil {
 			s.mu.Unlock()
 			return 0, err
