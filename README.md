@@ -867,6 +867,56 @@ tree, or `Dir` within it. Its `$HOME` is `/run/execenv/home`
 projected, observed, or harvested, and it is discarded with the grant. Both
 live on the grant's writable disk, not in guest memory.
 
+### Connect to a listening port
+
+`env.ConnectPort(ctx, fence, port)` opens a byte stream to
+`127.0.0.1:<port>` inside the grant. It works with `NetworkNone` and
+requires no network device. Use a context that stays live for as long
+as you need the stream.
+
+```go
+func request(ctx context.Context, env execenv.Env, fence execenv.ProjectionFence) ([]byte, error) {
+	conn, err := env.ConnectPort(ctx, fence, 8080)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	if _, err := io.WriteString(conn, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"); err != nil {
+		return nil, err
+	}
+	if err := conn.CloseWrite(); err != nil {
+		return nil, err
+	}
+	return io.ReadAll(conn)
+}
+```
+
+`CloseWrite` sends EOF to the listener and leaves the response readable.
+When the listener half-closes, the caller can still write until it closes
+its own write side. `Close` ends both directions and releases the
+connection's slot.
+
+`env.ListPorts(ctx)` returns listening TCP ports sorted by port number.
+Each result has a `Port`, its `Address` (`127.0.0.1`, `0.0.0.0`, `::1`,
+or `::`), and the owning process's `Tag` when available. If several
+addresses listen on the same port, the list gives one entry and prefers
+IPv4. An IPv6-only listener can appear in the list, while `ConnectPort`
+always dials IPv4 loopback.
+
+A grant can hold up to `MaxPortConns` (64) connections across all ports.
+Opening another returns `ErrCapacity`. `Limits.PortBytes` sets a shared
+byte rate and one-time burst for the grant's port traffic, with an
+independent bucket in each direction. A zero rate is unlimited.
+`env.UpdateLimits(ctx, fence, limits)` applies a new rate to open
+connections. The network device has its own `Limits.NetworkBytes` bucket.
+
+Ports outside 1–65535 return `ErrInvalid`. A port that refuses the
+connection returns `ErrRefused`. The fence is checked at open and a stale
+fence returns `ErrConflict`. Freeze, revoke, and grant loss end all open
+connections with `ErrFrozen`, `ErrRevoked`, and `ErrLost` respectively.
+Open a fresh connection after thawing a grant.
+
 ### Revoke
 
 ```go
@@ -938,9 +988,9 @@ Match with `errors.Is`. Wrappers preserve the sentinel.
 
 | Error | When |
 | --- | --- |
-| `ErrInvalid` | bad id, image, path, fence, or config |
+| `ErrInvalid` | bad id, image, path, fence, port, or config |
 | `ErrUnknownImage` | that catalog id is not on the host |
-| `ErrCapacity` | the grant does not fit; `errors.As` a `*CapacityError` for the short resource |
+| `ErrCapacity` | the grant does not fit or the port connection cap was reached. A `*CapacityError` identifies a grant resource shortfall |
 | `ErrDraining` | host is draining; it serves held grants only |
 | `ErrConflict` | live grant mismatch, stale fence, or unobserved guest change |
 | `ErrUnavailable` | host unusable, or it refused the client's credentials |
@@ -948,6 +998,7 @@ Match with `errors.Is`. Wrappers preserve the sentinel.
 | `ErrFrozen` | I/O while frozen |
 | `ErrRevoked` | grant is gone |
 | `ErrLost` | grant's environment ended without a revoke; Revoke, then Ensure again |
+| `ErrRefused` | the loopback port refused the connection |
 | `ErrBusy` | the grant already runs 32 processes |
 | `ErrClosed` | attachment or content reader closed, or input to a process that exited (not revoke) |
 | `ErrNotFound` | path missing from the projection, or no process has that tag |
@@ -958,7 +1009,7 @@ Match with `errors.Is`. Wrappers preserve the sentinel.
 | `ErrConnection` | remote session lost |
 | `ErrNetwork` | allowlist requested, host offers none |
 
-Do not log tokens, tree bodies, or process input and output.
+Do not log tokens, tree bodies, process input and output, or port traffic.
 
 ### Limits
 
@@ -983,6 +1034,7 @@ Do not log tokens, tree bodies, or process input and output.
 | Path segments | 64 |
 | One segment | 255 bytes |
 | Running processes per grant | 32 |
+| Open port connections per grant | 64 |
 | Output history per stream | 1 MiB by default, 4 MiB at most |
 | Process tag | 1–64 characters `[A-Za-z0-9._-:]` |
 

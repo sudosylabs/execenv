@@ -1,6 +1,18 @@
 # Changelog
 
-## Unreleased
+## Unreleased (v0.6.0)
+
+### Added
+
+- `Env.ConnectPort` opens a half-closeable TCP byte stream to a grant's
+  IPv4 loopback, including with `NetworkNone`. `Env.ListPorts` reports
+  listening loopback and wildcard TCP ports with process tags when
+  available. Isolated hosts need images baked with the matching guest
+  helper.
+- Each grant supports up to `MaxPortConns` (64) open port connections.
+  `Limits.PortBytes` sets a shared limit per direction and can be changed
+  on running streams through `UpdateLimits`.
+
 
 ### Changed
 
