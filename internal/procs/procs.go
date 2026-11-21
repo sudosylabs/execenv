@@ -69,8 +69,9 @@ type proc struct {
 	exit      execenv.ExitStatus
 	streaming int
 	attached  int
-	grace     *time.Timer
-	timeout   *time.Timer
+	deadlines Deadlines
+	timer     *time.Timer
+	blocked   bool // the backend refused a deadline signal until reopen
 }
 
 func (m *Manager) guard() error {
@@ -127,19 +128,18 @@ func (m *Manager) Start(ctx context.Context, spec execenv.ProcessSpec) (execenv.
 	if spec.PTY == nil && !spec.Stdin {
 		_ = backend.CloseInput()
 	}
-	placeholder.runLocked(backend, time.Now(), nil)
+	placeholder.runLocked(backend, time.Now(), nil, nil)
 	return placeholder.infoLocked(), nil
 }
 
 // Adopted is a process a restarted host finds still held by the guest.
 type Adopted struct {
-	Spec    execenv.ProcessSpec
-	Started time.Time
-	// Input is how much input it has taken; From is where each stream's
-	// output resumes; Until is where each stream stood when it was found.
-	Input uint64
-	From  map[execenv.Stream]uint64
-	Until map[execenv.Stream]uint64
+	Spec execenv.ProcessSpec
+	Info execenv.ProcessInfo
+	// From is where each stream's output resumes.
+	From map[execenv.Stream]uint64
+	// Deadlines, when available, are the previous manager's deadlines.
+	Deadlines *Deadlines
 }
 
 // adoptCatchUp bounds how long Adopt waits for the output a process had
@@ -163,10 +163,11 @@ func (m *Manager) Adopt(a Adopted, backend Backend) error {
 	if _, ok := m.procs[spec.Tag]; ok {
 		return execenv.ErrConflict
 	}
-	p := &proc{m: m, spec: spec, input: a.Input}
+	p := &proc{m: m, spec: spec, input: a.Info.Input, exited: !a.Info.Running, exit: a.Info.Exit}
 	p.cond = sync.NewCond(&m.mu)
 	m.procs[spec.Tag] = p
-	p.runLocked(backend, a.Started, a.From)
+	p.runLocked(backend, a.Info.Started, a.From, a.Deadlines)
+	p.deliverDeadlinesLocked(time.Now())
 	// Readers resume at offsets they had before the restart, so Adopt
 	// returns once the history reaches where the process stood.
 	expired := false
@@ -177,7 +178,7 @@ func (m *Manager) Adopt(a Adopted, backend Backend) error {
 		m.mu.Unlock()
 	})
 	defer timer.Stop()
-	for !expired && p.streaming > 0 && !p.caughtUp(a.Until) {
+	for !expired && p.streaming > 0 && !p.caughtUp(a.Info.Output) {
 		p.cond.Wait()
 	}
 	return nil
@@ -194,7 +195,7 @@ func (p *proc) caughtUp(until map[execenv.Stream]uint64) bool {
 
 // runLocked starts reading backend's output from the offsets in from and
 // arms the process's timeout and grace.
-func (p *proc) runLocked(backend Backend, started time.Time, from map[execenv.Stream]uint64) {
+func (p *proc) runLocked(backend Backend, started time.Time, from map[execenv.Stream]uint64, deadlines *Deadlines) {
 	p.backend = backend
 	p.started = started
 	p.rings = make(map[execenv.Stream]*ring.Ring)
@@ -207,14 +208,15 @@ func (p *proc) runLocked(backend Backend, started time.Time, from map[execenv.St
 		go p.pump(name, r)
 	}
 	go p.wait()
-	if p.spec.Timeout > 0 {
-		left := max(time.Until(started.Add(p.spec.Timeout)), 0)
-		p.timeout = time.AfterFunc(left, func() {
-			_ = backend.Signal(execenv.SignalTerminate)
-			time.AfterFunc(killDelay, func() { _ = backend.Signal(execenv.SignalKill) })
-		})
+	if deadlines != nil {
+		p.deadlines = *deadlines
+	} else {
+		if p.spec.Timeout > 0 {
+			p.deadlines.timeout = started.Add(p.spec.Timeout)
+		}
+		p.armGraceLocked()
 	}
-	p.armGraceLocked()
+	p.scheduleDeadlineLocked()
 	if p.m.ended != nil {
 		_ = backend.Signal(execenv.SignalKill)
 	}
@@ -245,33 +247,8 @@ func (p *proc) wait() {
 	p.m.mu.Lock()
 	defer p.m.mu.Unlock()
 	p.exited, p.exit = true, status
-	if p.timeout != nil {
-		p.timeout.Stop()
-	}
-	if p.grace != nil {
-		p.grace.Stop()
-	}
+	p.stopDeadlineLocked()
 	p.cond.Broadcast()
-}
-
-// armGraceLocked starts the detach grace when nothing is attached.
-func (p *proc) armGraceLocked() {
-	if p.spec.DetachGrace <= 0 || p.attached > 0 || p.exited {
-		return
-	}
-	if p.grace != nil {
-		p.grace.Stop()
-	}
-	backend := p.backend
-	p.grace = time.AfterFunc(p.spec.DetachGrace, func() {
-		p.m.mu.Lock()
-		idle := p.attached == 0 && !p.exited
-		p.m.mu.Unlock()
-		if idle {
-			_ = backend.Signal(execenv.SignalHangup)
-			time.AfterFunc(killDelay, func() { _ = backend.Signal(execenv.SignalKill) })
-		}
-	})
 }
 
 func (p *proc) infoLocked() execenv.ProcessInfo {
@@ -439,13 +416,21 @@ func (m *Manager) Signal(tag string, s execenv.Signal) error {
 func (m *Manager) Freeze() {
 	m.mu.Lock()
 	m.frozen = true
+	for _, p := range m.procs {
+		p.stopDeadlineLocked()
+	}
 	m.mu.Unlock()
 }
 
 func (m *Manager) Thaw() {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.frozen = false
-	m.mu.Unlock()
+	now := time.Now()
+	for _, p := range m.procs {
+		p.blocked = false
+		p.deliverDeadlinesLocked(now)
+	}
 }
 
 // End kills every process and fails every call and attachment with cause.
@@ -458,6 +443,7 @@ func (m *Manager) End(cause error) {
 	m.ended = cause
 	var backends []Backend
 	for _, p := range m.procs {
+		p.stopDeadlineLocked()
 		if p.backend != nil && !p.exited {
 			backends = append(backends, p.backend)
 		}
@@ -510,8 +496,11 @@ func (m *Manager) Attach(tag string, from map[execenv.Stream]uint64) (execenv.At
 		}
 	}
 	p.attached++
-	if p.grace != nil {
-		p.grace.Stop()
+	// Reattaching cancels the grace only until its deadline. A HUP
+	// already due must still be delivered on thaw.
+	if p.deadlines.grace.After(time.Now()) {
+		p.deadlines.grace = time.Time{}
+		p.scheduleDeadlineLocked()
 	}
 	return a, nil
 }
@@ -581,6 +570,7 @@ func (a *attachment) Close() error {
 	a.closed = true
 	a.p.attached--
 	a.p.armGraceLocked()
+	a.p.scheduleDeadlineLocked()
 	a.p.cond.Broadcast()
 	return nil
 }

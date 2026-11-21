@@ -67,6 +67,7 @@ func (e *environment) suspend(ctx context.Context, done execenv.ControlReceipt) 
 	// word to the guest, and taken over again on resume.
 	e.mu.Lock()
 	old := e.procs
+	e.suspendedDeadlines = old.SuspendDeadlines()
 	e.procs = procs.New(e.startProcess)
 	e.procs.Freeze()
 	e.inst, e.client = nil, nil
@@ -143,10 +144,10 @@ func (e *environment) resume(ctx context.Context) error {
 	if err := client.Reopen(ctx); err != nil {
 		return err
 	}
-	e.manager().Thaw()
 	if err := e.adoptProcesses(ctx, client); err != nil {
 		return err
 	}
+	e.manager().Thaw()
 	_ = os.RemoveAll(e.suspendDir())
 	e.mu.Lock()
 	e.adoptPending, e.frozen = false, false

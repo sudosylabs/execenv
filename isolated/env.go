@@ -51,6 +51,8 @@ type environment struct {
 	// suspended says the grant's machine is saved to disk and stopped; a
 	// thaw restores it.
 	suspended bool
+	// Deadlines retained while this host holds a saved guest.
+	suspendedDeadlines map[string]procs.Deadlines
 }
 
 func (e *environment) ID() execenv.ID { return e.id }
@@ -247,7 +249,6 @@ func (e *environment) thaw(ctx context.Context) error {
 		e.mu.Unlock()
 		return execenv.Error("thaw", errors.Join(err, pauseErr))
 	}
-	e.manager().Thaw()
 	if pending {
 		if err := e.adoptProcesses(ctx, client); err != nil {
 			return execenv.Error("thaw", err)
@@ -256,6 +257,7 @@ func (e *environment) thaw(ctx context.Context) error {
 		e.adoptPending = false
 		e.mu.Unlock()
 	}
+	e.manager().Thaw()
 	e.mu.Lock()
 	e.frozen = false
 	e.mu.Unlock()

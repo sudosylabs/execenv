@@ -13,6 +13,12 @@
   `Limits.PortBytes` sets a shared limit per direction and can be changed
   on running streams through `UpdateLimits`.
 
+### Fixed
+
+- Process timeouts and detach grace that expire while a grant is frozen
+  take effect on thaw, before caller input resumes. A forced kill that
+  falls due during a freeze is also retried on thaw. A restarted host
+  applies overdue timeouts when it takes over running processes.
 
 ### Changed
 

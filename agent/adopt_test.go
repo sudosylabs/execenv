@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -66,7 +67,7 @@ func TestRestartedHostAdoptsTheGuestsProcesses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := adopted.Adopt(procs.Adopted{Spec: gp.Spec, Started: gp.Info.Started, Input: gp.Info.Input, From: gp.First, Until: gp.Info.Output}, backend); err != nil {
+	if err := adopted.Adopt(procs.Adopted{Spec: gp.Spec, Info: gp.Info, From: gp.First}, backend); err != nil {
 		t.Fatal(err)
 	}
 	att, err := adopted.Attach("sh", map[execenv.Stream]uint64{execenv.StreamPTY: before.Output[execenv.StreamPTY]})
@@ -95,5 +96,50 @@ func TestRestartedHostAdoptsTheGuestsProcesses(t *testing.T) {
 	page, err := second.ObserveProcesses(t.Context(), 0, 10)
 	if err != nil || len(page.Events) != 1 || page.Events[0].PID != 9 {
 		t.Fatalf("process log after the restart = %+v, %v", page, err)
+	}
+}
+
+func TestAdoptionAppliesTimeoutThatExpiredWhileDisconnected(t *testing.T) {
+	a, err := agent.New(agent.Config{Home: t.TempDir(), Barrier: quiescent{}, Processes: newFakeProcesses()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(a.Close)
+	first, conn := link(t, a)
+	spec := execenv.ProcessSpec{Tag: "overdue", Argv: []string{"sleep", "30"}, Timeout: 250 * time.Millisecond}
+	if _, err := first.Start(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(spec.Timeout + 100*time.Millisecond)
+
+	second, newConn := link(t, a)
+	t.Cleanup(func() { _ = newConn.Close() })
+	held, err := second.Processes(t.Context())
+	if err != nil || len(held) != 1 || !held[0].Info.Running {
+		t.Fatalf("Processes() after reconnect = %+v, %v", held, err)
+	}
+	gp := held[0]
+	backend, err := second.Adopt(gp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := procs.New(second.Start)
+	t.Cleanup(func() { m.End(execenv.ErrClosed) })
+	if err := m.Adopt(procs.Adopted{Spec: gp.Spec, Info: gp.Info, From: gp.First}, backend); err != nil {
+		t.Fatal(err)
+	}
+	att, err := m.Attach(spec.Tag, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer att.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	event, err := att.Next(ctx)
+	if err != nil || event.Kind != execenv.OutputExit || event.Exit.Signal != int(syscall.SIGTERM) {
+		t.Fatalf("adopted process event = %+v, %v", event, err)
 	}
 }
