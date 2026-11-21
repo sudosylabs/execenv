@@ -10,10 +10,13 @@ import (
 	"github.com/sudosylabs/execenv/agent"
 	"github.com/sudosylabs/execenv/internal/control"
 	"github.com/sudosylabs/execenv/internal/lifetime"
+	"github.com/sudosylabs/execenv/internal/portconn"
 	"github.com/sudosylabs/execenv/internal/procs"
 )
 
 type environment struct {
+	ports portconn.Set
+
 	control *control.State
 	// procs keeps the grant's processes: their history and input on the
 	// host, the processes themselves in the guest.
@@ -48,6 +51,8 @@ type environment struct {
 	// suspended says the grant's machine is saved to disk and stopped; a
 	// thaw restores it.
 	suspended bool
+	// Deadlines retained while this host holds a saved guest.
+	suspendedDeadlines map[string]procs.Deadlines
 }
 
 func (e *environment) ID() execenv.ID { return e.id }
@@ -119,14 +124,16 @@ func (e *environment) watch() {
 	if inst == nil {
 		return
 	}
+	done := inst.Done()
 	select {
 	case <-e.gone:
 		return
-	case <-inst.Done():
+	case <-done:
 	}
-	// A suspend stops the machine on purpose.
+	// A suspend stops the machine on purpose. A restored instance may
+	// report a new completion channel.
 	e.mu.Lock()
-	current := e.inst == inst
+	current := e.inst == inst && inst.Done() == done
 	e.mu.Unlock()
 	if current {
 		e.host.lose(e)
@@ -171,6 +178,7 @@ func (e *environment) freeze(ctx context.Context) error {
 	suspended := e.suspended
 	e.mu.Unlock()
 	e.manager().Freeze()
+	e.ports.End(execenv.ErrFrozen)
 	if paused || suspended {
 		return nil
 	}
@@ -243,7 +251,6 @@ func (e *environment) thaw(ctx context.Context) error {
 		e.mu.Unlock()
 		return execenv.Error("thaw", errors.Join(err, pauseErr))
 	}
-	e.manager().Thaw()
 	if pending {
 		if err := e.adoptProcesses(ctx, client); err != nil {
 			return execenv.Error("thaw", err)
@@ -252,6 +259,7 @@ func (e *environment) thaw(ctx context.Context) error {
 		e.adoptPending = false
 		e.mu.Unlock()
 	}
+	e.manager().Thaw()
 	e.mu.Lock()
 	e.frozen = false
 	e.mu.Unlock()
@@ -283,8 +291,10 @@ func (e *environment) stop(cause error) error {
 	e.client = nil
 	inst := e.inst
 	e.mu.Unlock()
-	// Processes end with the cause before the verdict is out, so a reader
-	// whose link broke sees why.
+	// Record the port cause before process teardown can cancel more
+	// traffic on the shared guest link.
+	e.ports.End(cause)
+	// Process readers also see the grant's verdict.
 	e.manager().End(cause)
 	e.goneOnce.Do(func() { close(e.gone) })
 	if client != nil {
@@ -306,8 +316,7 @@ func (e *environment) stop(cause error) error {
 	return nil
 }
 
-// UpdateLimits replaces the grant's disk and network limits in its running
-// machine.
+// UpdateLimits replaces the grant's disk, network and port limits.
 func (e *environment) UpdateLimits(ctx context.Context, fence execenv.ProjectionFence, limits execenv.Limits) error {
 	if err := execenv.ValidateLimits(limits); err != nil {
 		return execenv.Error("update_limits", err)
@@ -315,17 +324,23 @@ func (e *environment) UpdateLimits(ctx context.Context, fence execenv.Projection
 	err := e.control.Run(ctx, fence, func() error {
 		e.mu.Lock()
 		inst := e.inst
-		network := e.spec.Network
+		network := e.spec.Network == execenv.NetworkAllowlist
+		previous := e.spec.Limits
 		e.mu.Unlock()
 		if inst == nil {
 			return execenv.Error("update_limits", execenv.ErrUnavailable)
 		}
-		if err := inst.UpdateLimits(ctx, limits, network == execenv.NetworkAllowlist); err != nil {
-			return execenv.Error("update_limits", err)
+		diskChanged := limits.DiskBytes != previous.DiskBytes || limits.DiskOps != previous.DiskOps
+		networkChanged := network && limits.NetworkBytes != previous.NetworkBytes
+		if diskChanged || networkChanged {
+			if err := inst.UpdateLimits(ctx, limits, network); err != nil {
+				return execenv.Error("update_limits", err)
+			}
 		}
 		e.mu.Lock()
 		e.spec.Limits = limits
 		e.mu.Unlock()
+		e.ports.SetLimit(limits.PortBytes)
 		return nil
 	})
 	if err == nil {

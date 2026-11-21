@@ -46,6 +46,7 @@ message Limits {
   TokenBucket disk_ops = 1;
   TokenBucket disk_bytes = 2;
   TokenBucket network_bytes = 3;
+  TokenBucket port_bytes = 4;
 }
 
 enum Resource {

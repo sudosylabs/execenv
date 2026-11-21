@@ -22,7 +22,7 @@ import (
 )
 
 // protocol is the major version of the schema in proto/execenv/v1.
-const protocol = 1
+const protocol = 2
 
 // Features this host offers. A client names the ones it needs in Hello.
 const (
@@ -36,10 +36,11 @@ const (
 	FeatureObservationTag = "observation_tag"
 	// FeatureOverwrite is a host whose projection can overwrite the
 	// guest's unconfirmed changes and discard their observations.
-	FeatureOverwrite = "projection_overwrite"
+	FeatureOverwrite       = "projection_overwrite"
+	FeaturePortConnections = "port_connections"
 )
 
-var features = []string{FeatureControl, FeatureJournal, FeatureProcess, FeatureProcessLog, FeatureSeed, FeatureFiles, FeatureScreen, FeatureGrants, FeatureObserveWait, FeatureObservationTag, FeatureOverwrite}
+var features = []string{FeaturePortConnections, FeatureControl, FeatureJournal, FeatureProcess, FeatureProcessLog, FeatureSeed, FeatureFiles, FeatureScreen, FeatureGrants, FeatureObserveWait, FeatureObservationTag, FeatureOverwrite}
 
 // Window sizes for HTTP/2 flow control. The host receives uploads and
 // keystrokes; uploads need the large window.
@@ -71,6 +72,7 @@ func Serve(ctx context.Context, ln net.Listener, inner execenv.Host, cfg ServerC
 	mux.Handle(execenvv1connect.NewControlServiceHandler(h, options))
 	mux.Handle(execenvv1connect.NewJournalServiceHandler(h, options))
 	mux.Handle(execenvv1connect.NewProcessServiceHandler(h, options))
+	mux.Handle(execenvv1connect.NewPortServiceHandler(h, options, connect.WithReadMaxBytes(wire.MaxPortMessage)))
 	mux.Handle(execenvv1connect.NewProcessLogServiceHandler(h, options))
 	mux.Handle(execenvv1connect.NewFileServiceHandler(h, options))
 

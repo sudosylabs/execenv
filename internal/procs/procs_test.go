@@ -38,8 +38,12 @@ func (p *pipeProc) Write(b []byte) (int, error) {
 func (p *pipeProc) CloseInput() error                            { return nil }
 func (p *pipeProc) Resize(context.Context, execenv.Window) error { return nil }
 func (p *pipeProc) Signal(execenv.Signal) error                  { p.exit(); return nil }
-func (p *pipeProc) Wait() execenv.ExitStatus                     { <-p.done; return execenv.ExitStatus{Signal: 9} }
-func (p *pipeProc) PID() int                                     { return 1 }
+func (p *pipeProc) Wait() (execenv.ExitStatus, time.Time) {
+	<-p.done
+	return execenv.ExitStatus{Signal: 9}, time.Time{}
+}
+func (p *pipeProc) Started() time.Time { return time.Time{} }
+func (p *pipeProc) PID() int           { return 1 }
 func (p *pipeProc) Screen(context.Context) (execenv.Screen, error) {
 	return execenv.Screen{Offset: 1}, nil
 }

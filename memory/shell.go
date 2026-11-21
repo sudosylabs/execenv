@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sudosylabs/execenv"
 )
@@ -26,16 +27,18 @@ import (
 // commands; exit ends the shell with status 0, and a hangup ends it by
 // SIGHUP.
 type shell struct {
-	mu     sync.Mutex
-	cond   *sync.Cond
-	out    []byte
-	line   []byte
-	vars   map[string]string
-	win    execenv.Window
-	exited bool
-	closed bool
-	log    *processLog
-	pid    int
+	mu      sync.Mutex
+	cond    *sync.Cond
+	out     []byte
+	line    []byte
+	vars    map[string]string
+	win     execenv.Window
+	exited  bool
+	closed  bool
+	started time.Time
+	ended   time.Time
+	log     *processLog
+	pid     int
 	// command is set when the shell stands for one command a Start ran:
 	// the log has that command as the shell's own start, so running it
 	// logs nothing more.
@@ -57,7 +60,7 @@ type shell struct {
 // newShell starts a fake shell under tag. With argv it stands for that one
 // command, which the log records as the tagged process, as a guest's does.
 func newShell(win execenv.Window, log *processLog, terminal bool, tag string, argv []string, write func(path string, data []byte, appending bool) error) *shell {
-	s := &shell{vars: make(map[string]string), win: win, log: log, terminal: terminal, command: len(argv) > 0, write: write}
+	s := &shell{started: time.Now(), vars: make(map[string]string), win: win, log: log, terminal: terminal, command: len(argv) > 0, write: write}
 	s.cond = sync.NewCond(&s.mu)
 	started := []string{"/bin/sh", "-l"}
 	if len(argv) > 0 {
@@ -132,6 +135,7 @@ func (s *shell) Resize(ctx context.Context, win execenv.Window) error {
 func (s *shell) Close() error {
 	s.mu.Lock()
 	if !s.closed && !s.exited {
+		s.ended = time.Now()
 		s.log.killed(s.pid, 1)
 	}
 	s.closed = true
@@ -156,6 +160,7 @@ func (s *shell) run(line string) {
 			}
 		}
 		s.exited = true
+		s.ended = time.Now()
 		s.log.exit(s.pid, s.code)
 		return
 	}

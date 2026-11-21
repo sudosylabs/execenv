@@ -379,6 +379,7 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		treeDir: treeDir,
 		started: time.Now(),
 	}
+	env.ports.SetLimit(spec.Limits.PortBytes)
 	env.public = env
 	env.procs = procs.New(env.startProcess)
 	if err := env.dial(launchCtx); err != nil {

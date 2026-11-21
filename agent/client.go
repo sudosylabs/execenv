@@ -28,6 +28,7 @@ type Client struct {
 	link      *watchedConn
 	transport *http.Transport
 	agent     guestv1connect.AgentServiceClient
+	ports     guestv1connect.AgentServiceClient
 	ctx       context.Context
 	cancel    context.CancelFunc
 
@@ -47,6 +48,7 @@ func NewClient(conn net.Conn) *Client {
 		link:      link,
 		transport: transport,
 		agent:     guestv1connect.NewAgentServiceClient(httpClient, linkBase),
+		ports:     guestv1connect.NewAgentServiceClient(httpClient, linkBase, connect.WithReadMaxBytes(wire.MaxPortMessage)),
 		ctx:       ctx,
 		cancel:    cancel,
 	}

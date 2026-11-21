@@ -134,6 +134,32 @@ func runProcessAPI(t *testing.T, factory Factory) {
 		}
 	})
 
+	t.Run("processes report the retained exit time", func(t *testing.T) {
+		host := factory(t, Config{})
+		env, fence := occupyRunning(t, host, "exit-time")
+		sh := StartShell(t, env, fence, "clock")
+		running, err := env.Process(t.Context(), "clock")
+		if err != nil || !running.Running || running.Started.IsZero() || !running.Ended.IsZero() {
+			t.Fatalf("running Process(clock) = %+v, %v", running, err)
+		}
+		if err := sh.Type("exit 7"); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		if _, exit, err := drain(ctx, sh.Attachment()); err != nil || exit.Code != 7 {
+			t.Fatalf("shell exit = %+v, %v", exit, err)
+		}
+		ended, err := env.Process(ctx, "clock")
+		if err != nil || ended.Running || ended.Ended.IsZero() || ended.Ended.Before(running.Started) || !ended.Started.Equal(running.Started) {
+			t.Fatalf("exited Process(clock) = %+v, %v; started at %v", ended, err, running.Started)
+		}
+		listed, err := env.ListProcesses(ctx)
+		if err != nil || len(listed) != 1 || !listed[0].Ended.Equal(ended.Ended) {
+			t.Fatalf("ListProcesses() = %+v, %v; want original exit time %v", listed, err, ended.Ended)
+		}
+	})
+
 	t.Run("a terminal's screen redraws it and continues from its offset", func(t *testing.T) {
 		host := factory(t, Config{})
 		env, fence := occupyRunning(t, host, "screen")

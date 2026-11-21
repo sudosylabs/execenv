@@ -80,6 +80,9 @@ type Limits struct {
 	// NetworkBytes limits the grant's network device in each direction. It
 	// has no effect on a grant with NetworkNone.
 	NetworkBytes TokenBucket
+	// PortBytes limits all of a grant's port connections together, with
+	// an independent bucket for each direction.
+	PortBytes TokenBucket
 }
 
 // IdleAction is what a host does with a grant that has been idle for its
@@ -126,7 +129,7 @@ func ValidateResources(r Resources) error {
 
 // ValidateLimits refuses negative rates or bursts.
 func ValidateLimits(l Limits) error {
-	for _, b := range []TokenBucket{l.DiskOps, l.DiskBytes, l.NetworkBytes} {
+	for _, b := range []TokenBucket{l.DiskOps, l.DiskBytes, l.NetworkBytes, l.PortBytes} {
 		if b.Rate < 0 || b.Burst < 0 {
 			return ErrInvalid
 		}

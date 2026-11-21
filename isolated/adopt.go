@@ -121,12 +121,16 @@ func (h *Host) adopt(ctx context.Context, s grantState, inst instance) error {
 		treeDir: filepath.Join(h.cfg.WorkDir, "grants", string(s.Spec.ID), workspaceName),
 		started: s.Started,
 	}
+	env.ports.SetLimit(s.Spec.Limits.PortBytes)
 	env.public = env
 	env.procs = procs.New(env.startProcess)
 	// A grant not running when its host went away is frozen in its guest
 	// too: the guest's gate outlives the link.
 	env.frozen = s.Paused || s.Receipt.State != execenv.ControlRunning
 	env.paused = s.Paused
+	if env.frozen {
+		env.procs.Freeze()
+	}
 	if s.Paused {
 		env.adoptPending = true
 	} else {
@@ -139,9 +143,6 @@ func (h *Host) adopt(ctx context.Context, s grantState, inst instance) error {
 			h.pool.Release(s.Spec.ID)
 			return err
 		}
-	}
-	if env.frozen {
-		env.procs.Freeze()
 	}
 	if s.Spec.WallTimeout > 0 || s.Spec.IdleTimeout > 0 {
 		wall := s.Spec.WallTimeout
@@ -187,6 +188,7 @@ func (h *Host) adoptSuspended(s grantState) error {
 		suspended:    true,
 		adoptPending: true,
 	}
+	env.ports.SetLimit(s.Spec.Limits.PortBytes)
 	env.public = env
 	env.procs = procs.New(env.startProcess)
 	env.procs.Freeze()
@@ -208,16 +210,25 @@ func (e *environment) adoptProcesses(ctx context.Context, client *agent.Client) 
 	if err != nil {
 		return err
 	}
+	e.mu.Lock()
+	manager, deadlines := e.procs, e.suspendedDeadlines
+	e.mu.Unlock()
 	for _, gp := range held {
 		b, err := client.Adopt(gp)
 		if err != nil {
 			return err
 		}
-		adopted := procs.Adopted{Spec: gp.Spec, Started: gp.Info.Started, Input: gp.Info.Input, From: gp.First, Until: gp.Info.Output}
-		if err := e.manager().Adopt(adopted, guestProcess{Backend: b, env: e, link: client.Done()}); err != nil {
+		adopted := procs.Adopted{Spec: gp.Spec, Info: gp.Info, From: gp.First}
+		if saved, ok := deadlines[gp.Spec.Tag]; ok {
+			adopted.Deadlines = &saved
+		}
+		if err := manager.Adopt(adopted, guestProcess{Backend: b, env: e, link: client.Done()}); err != nil {
 			return err
 		}
 	}
+	e.mu.Lock()
+	e.suspendedDeadlines = nil
+	e.mu.Unlock()
 	return nil
 }
 

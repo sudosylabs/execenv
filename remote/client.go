@@ -51,6 +51,8 @@ type Client struct {
 	// files carries file metadata; bulkFiles carries file bodies.
 	files     execenvv1connect.FileServiceClient
 	bulkFiles execenvv1connect.FileServiceClient
+	ports     execenvv1connect.PortServiceClient
+	portList  execenvv1connect.PortServiceClient
 	procs     execenvv1connect.ProcessServiceClient
 	process   execenvv1connect.ProcessLogServiceClient
 }
@@ -81,6 +83,8 @@ func New(cfg Config) (*Client, error) {
 		bulkHost:   execenvv1connect.NewHostServiceClient(bulk, base),
 		files:      execenvv1connect.NewFileServiceClient(interactive, base),
 		bulkFiles:  execenvv1connect.NewFileServiceClient(bulk, base),
+		ports:      execenvv1connect.NewPortServiceClient(bulk, base, connect.WithReadMaxBytes(wire.MaxPortMessage)),
+		portList:   execenvv1connect.NewPortServiceClient(interactive, base),
 		procs:      execenvv1connect.NewProcessServiceClient(interactive, base),
 		process:    execenvv1connect.NewProcessLogServiceClient(interactive, base),
 	}

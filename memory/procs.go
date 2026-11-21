@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/internal/procs"
@@ -116,14 +117,16 @@ func (p *shellProc) Signal(s execenv.Signal) error {
 	return p.sh.Close()
 }
 
-func (p *shellProc) Wait() execenv.ExitStatus {
+func (p *shellProc) Wait() (execenv.ExitStatus, time.Time) {
 	<-p.done
 	p.sh.mu.Lock()
 	defer p.sh.mu.Unlock()
 	if p.sh.signal != 0 {
-		return execenv.ExitStatus{Signal: p.sh.signal}
+		return execenv.ExitStatus{Signal: p.sh.signal}, p.sh.ended
 	}
-	return execenv.ExitStatus{Code: p.sh.code}
+	return execenv.ExitStatus{Code: p.sh.code}, p.sh.ended
 }
+
+func (p *shellProc) Started() time.Time { return p.sh.started }
 
 func (p *shellProc) PID() int { return p.sh.pid }

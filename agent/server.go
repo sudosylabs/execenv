@@ -174,6 +174,7 @@ func New(cfg Config) (*Agent, error) {
 			source, tagOf = kernel, tags
 		}
 	}
+	s.processTag = tagOf
 	if group != nil {
 		fs.Own = group.OwnHome
 		// A real guest watches its workspace, so an idle one is not walked,
@@ -247,8 +248,26 @@ func Serve(ctx context.Context, conn net.Conn, cfg Config) error {
 func (s *server) serveLink(ctx context.Context, conn net.Conn, handler guestv1connect.AgentServiceHandler) {
 	link := watch(conn)
 	mux := http.NewServeMux()
-	mux.Handle(guestv1connect.NewAgentServiceHandler(handler))
-	srv := linkServer(mux)
+	mux.Handle(guestv1connect.NewAgentServiceHandler(handler, connect.WithConditionalHandlerOptions(func(spec connect.Spec) []connect.HandlerOption {
+		if spec.Procedure == guestv1connect.AgentServiceDialPortProcedure {
+			return []connect.HandlerOption{connect.WithReadMaxBytes(wire.MaxPortMessage)}
+		}
+		return nil
+	})))
+	// Output has one reader per process. Finish the old link's readers
+	// before a replacement link can attach at its saved offsets.
+	var output sync.RWMutex
+	closing := false
+	srv := linkServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == guestv1connect.AgentServiceOutputProcedure {
+			output.RLock()
+			defer output.RUnlock()
+			if closing {
+				return
+			}
+		}
+		mux.ServeHTTP(w, r)
+	}))
 	served := make(chan struct{})
 	go func() {
 		_ = srv.Serve(&oneConn{conn: link})
@@ -262,12 +281,16 @@ func (s *server) serveLink(ctx context.Context, conn net.Conn, handler guestv1co
 	_ = link.Close()
 	_ = srv.Close()
 	<-served
+	output.Lock()
+	closing = true
+	output.Unlock()
 }
 
 type server struct {
 	// launches is each running process Start created, pid to launch, for
 	// the process log.
 	launches    sync.Map
+	processTag  func(int) string
 	home        string
 	scratch     string
 	workload    *workload.Group

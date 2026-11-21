@@ -3,11 +3,13 @@ package isolated
 import (
 	"context"
 	"os"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/execenvtest"
+	"github.com/sudosylabs/execenv/internal/procs"
 )
 
 // An idle grant set to suspend is saved and releases its CPU and memory;
@@ -194,4 +196,68 @@ func TestIdleSuspendOfAFrozenGrant(t *testing.T) {
 		t.Fatalf("Process() after resume = %+v, %v", info, err)
 	}
 	typeAndExpect(t, env, thawed, "sh", info, "echo $kept-y", "frozen-y")
+}
+
+func TestProcessDeadlinesAcrossIsolatedSuspend(t *testing.T) {
+	host := testHost(t, func() error { return nil }, &recordingLauncher{})
+	env, err := host.Ensure(t.Context(), execenv.Spec{ID: "suspended-deadline", Image: "default"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant := env.(*environment)
+	// The manager before suspend sees an earlier time. Resume creates a
+	// new manager with wall time, simulating an hour spent on disk.
+	grant.mu.Lock()
+	grant.procs = procs.NewWithClock(grant.startProcess, func() time.Time { return time.Now().Add(-time.Hour) })
+	grant.mu.Unlock()
+	fence := runningFence(t, env)
+	for _, process := range []execenv.ProcessSpec{
+		{Tag: "hard-timeout", Argv: []string{"sleep", "30"}, Timeout: 30 * time.Minute},
+		{Tag: "attached-grace", Argv: []string{"sleep", "30"}, DetachGrace: time.Minute},
+	} {
+		if _, err := env.Start(t.Context(), fence, process); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := env.AttachProcess(t.Context(), "attached-grace", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer before.Close()
+	fence.FenceRevision++
+	if _, err := env.Control(t.Context(), execenv.ControlRequest{Fence: fence, State: execenv.ControlFrozen}); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := grant.control.Suspend(t.Context(), func(done execenv.ControlReceipt) error {
+		return grant.suspend(t.Context(), done)
+	})
+	if err != nil || !saved {
+		t.Fatalf("suspend = %v, %v", saved, err)
+	}
+	fence.FenceRevision++
+	if _, err := env.Control(t.Context(), execenv.ControlRequest{Fence: fence, State: execenv.ControlRunning}); err != nil {
+		t.Fatal(err)
+	}
+	a, err := env.AttachProcess(t.Context(), "hard-timeout", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	for {
+		out, err := a.Next(ctx)
+		if err != nil {
+			t.Fatalf("waiting for overdue timeout: %v", err)
+		}
+		if out.Kind == execenv.OutputExit {
+			if out.Exit.Signal != int(syscall.SIGTERM) {
+				t.Fatalf("exit after resume = %+v, want SIGTERM", out.Exit)
+			}
+			break
+		}
+	}
+	if info, err := env.Process(ctx, "attached-grace"); err != nil || !info.Running {
+		t.Fatalf("detach grace elapsed during suspend: %+v, %v", info, err)
+	}
 }

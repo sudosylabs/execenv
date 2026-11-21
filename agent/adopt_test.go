@@ -2,8 +2,11 @@ package agent_test
 
 import (
 	"context"
+	"errors"
 	"net"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -66,7 +69,7 @@ func TestRestartedHostAdoptsTheGuestsProcesses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := adopted.Adopt(procs.Adopted{Spec: gp.Spec, Started: gp.Info.Started, Input: gp.Info.Input, From: gp.First, Until: gp.Info.Output}, backend); err != nil {
+	if err := adopted.Adopt(procs.Adopted{Spec: gp.Spec, Info: gp.Info, From: gp.First}, backend); err != nil {
 		t.Fatal(err)
 	}
 	att, err := adopted.Attach("sh", map[execenv.Stream]uint64{execenv.StreamPTY: before.Output[execenv.StreamPTY]})
@@ -95,5 +98,187 @@ func TestRestartedHostAdoptsTheGuestsProcesses(t *testing.T) {
 	page, err := second.ObserveProcesses(t.Context(), 0, 10)
 	if err != nil || len(page.Events) != 1 || page.Events[0].PID != 9 {
 		t.Fatalf("process log after the restart = %+v, %v", page, err)
+	}
+}
+
+func TestAdoptionAppliesTimeoutThatExpiredWhileDisconnected(t *testing.T) {
+	a, err := agent.New(agent.Config{Home: t.TempDir(), Barrier: quiescent{}, Processes: newFakeProcesses()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(a.Close)
+	first, conn := link(t, a)
+	spec := execenv.ProcessSpec{Tag: "overdue", Argv: []string{"sleep", "30"}, Timeout: time.Minute}
+	if _, err := first.Start(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	second, newConn := link(t, a)
+	t.Cleanup(func() { _ = newConn.Close() })
+	held, err := second.Processes(t.Context())
+	if err != nil || len(held) != 1 || !held[0].Info.Running {
+		t.Fatalf("Processes() after reconnect = %+v, %v", held, err)
+	}
+	gp := held[0]
+	backend, err := second.Adopt(gp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := &deadlineClock{base: gp.Info.Started}
+	clock.advance(spec.Timeout)
+	m := procs.NewWithClock(second.Start, clock.now)
+	t.Cleanup(func() { m.End(execenv.ErrClosed) })
+	if err := m.Adopt(procs.Adopted{Spec: gp.Spec, Info: gp.Info, From: gp.First}, backend); err != nil {
+		t.Fatal(err)
+	}
+	att, err := m.Attach(spec.Tag, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer att.Close()
+	expectDeadlineExit(t, att, execenv.ExitStatus{Signal: int(syscall.SIGTERM)})
+}
+
+// A link cut during an attempt does not confirm process exit. Keep the
+// old backend's synthetic exit separate from the retained process state,
+// as the isolated host does during suspension and restoration.
+type interruptedKill struct {
+	procs.Backend
+	disconnect func() error
+	wait       <-chan struct{}
+	result     chan error
+}
+
+func (b interruptedKill) Wait() (execenv.ExitStatus, time.Time) {
+	<-b.wait
+	return b.Backend.Wait()
+}
+
+func (b interruptedKill) Signal(signal execenv.Signal) error {
+	if signal != execenv.SignalKill {
+		return b.Backend.Signal(signal)
+	}
+	_ = b.disconnect()
+	err := b.Backend.Signal(signal)
+	b.result <- err
+	return err
+}
+
+func TestDeadlineRetriesInterruptedKillOnNewLink(t *testing.T) {
+	home := t.TempDir()
+	a, err := agent.New(agent.Config{Home: home, Barrier: quiescent{}, Processes: newFakeProcesses()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(a.Close)
+	first, _ := link(t, a)
+	wait := make(chan struct{})
+	defer close(wait)
+	result := make(chan error, 1)
+	clock := &deadlineClock{base: time.Now()}
+	m := procs.NewWithClock(func(ctx context.Context, spec execenv.ProcessSpec) (procs.Backend, error) {
+		b, err := first.Start(ctx, spec)
+		return interruptedKill{Backend: b, disconnect: first.Close, wait: wait, result: result}, err
+	}, clock.now)
+	spec := execenv.ProcessSpec{
+		Tag: "interrupted-kill", Timeout: time.Minute, PTY: &execenv.Window{},
+		Argv: []string{"sh", "-c", "trap 'echo term-trapped' TERM; echo ready > ready; while :; do sleep 1; done"},
+	}
+	if _, err := m.Start(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	att, err := m.Attach(spec.Tag, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer att.Close()
+	waitFile(t, filepath.Join(home, "ready"))
+	clock.advance(spec.Timeout)
+	m.Thaw()
+	expectDeadlineOutput(t, att, "term-trapped")
+	clock.advance(5 * time.Second)
+	m.Thaw()
+	select {
+	case err := <-result:
+		if !errors.Is(err, execenv.ErrClosed) {
+			t.Fatalf("KILL after link close = %v, want ErrClosed", err)
+		}
+	default:
+		t.Fatal("KILL was not attempted")
+	}
+	m.Freeze()
+	saved := m.SuspendDeadlines()[spec.Tag]
+
+	second, conn := link(t, a)
+	defer conn.Close()
+	held, err := second.Processes(t.Context())
+	if err != nil || len(held) != 1 || !held[0].Info.Running {
+		t.Fatalf("held after reconnect = %v, %v", held, err)
+	}
+	backend, err := second.Adopt(held[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := procs.NewWithClock(second.Start, clock.now)
+	restored.Freeze()
+	if err := restored.Adopt(procs.Adopted{Spec: held[0].Spec, Info: held[0].Info, From: held[0].First, Deadlines: &saved}, backend); err != nil {
+		t.Fatal(err)
+	}
+	restored.Thaw()
+	after, err := restored.Attach(spec.Tag, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer after.Close()
+	expectDeadlineExit(t, after, execenv.ExitStatus{Signal: int(syscall.SIGKILL)})
+}
+
+func TestAdoptionRetainsProcessExitTime(t *testing.T) {
+	a, err := agent.New(agent.Config{Home: t.TempDir(), Barrier: quiescent{}, Processes: newFakeProcesses()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(a.Close)
+	first, oldConn := link(t, a)
+	m := procs.New(first.Start)
+	spec := execenv.ProcessSpec{Tag: "finished", Argv: []string{"sh", "-c", "exit 7"}}
+	if _, err := m.Start(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	att, err := m.Attach(spec.Tag, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer att.Close()
+	expectDeadlineExit(t, att, execenv.ExitStatus{Code: 7})
+	before, err := m.Process(spec.Tag)
+	if err != nil || before.Ended.IsZero() || before.Ended.Before(before.Started) {
+		t.Fatalf("Process before adoption = %+v, %v", before, err)
+	}
+	if err := oldConn.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	second, conn := link(t, a)
+	defer conn.Close()
+	held, err := second.Processes(t.Context())
+	if err != nil || len(held) != 1 || held[0].Info.Running || !held[0].Info.Ended.Equal(before.Ended) {
+		t.Fatalf("guest process after reconnect = %+v, %v", held, err)
+	}
+	gp := held[0]
+	backend, err := second.Adopt(gp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := procs.New(second.Start)
+	if err := restored.Adopt(procs.Adopted{Spec: gp.Spec, Info: gp.Info, From: gp.First}, backend); err != nil {
+		t.Fatal(err)
+	}
+	after, err := restored.Process(spec.Tag)
+	if err != nil || after.Running || !after.Ended.Equal(before.Ended) || !after.Started.Equal(before.Started) || after.Exit != before.Exit {
+		t.Fatalf("adopted Process = %+v, %v; before %+v", after, err, before)
 	}
 }

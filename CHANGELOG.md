@@ -1,6 +1,37 @@
 # Changelog
 
-## Unreleased
+## Unreleased (v0.6.0)
+
+### Added
+
+- `ProcessInfo.Ended` reports when a process exited and stays zero while
+  the process is running.
+
+- The `Env` interface adds `ConnectPort` and `ListPorts`. A port
+  connection supports half-close and reaches the grant's IPv4 or IPv6
+  loopback, including with `NetworkNone`. A refused connection returns
+  `ErrRefused`. Listener discovery includes process tags when available.
+- Local tests can register a listener and optional tag with
+  `memory.Host.RegisterPortListener`. Remote clients now require the
+  `port_connections` feature and the updated protocol. Isolated hosts
+  require images baked with the matching guest helper.
+- Each grant supports up to `MaxPortConns` (64) open port connections.
+  Further opens return `ErrBusy`.
+  `Limits.PortBytes` sets a shared limit per direction and can be changed
+  on running streams through `UpdateLimits`.
+
+### Fixed
+
+- A port connection interrupted by grant loss reports `ErrLost`.
+
+- Freeze and suspend pause detach grace. Process timeouts continue to
+  count wall-clock time, including while the host is down. Reattaching
+  cancels pending detach grace.
+- Thaw gives overdue deadline signals up to two seconds before accepting
+  input. Failed signals keep retrying, including a kill interrupted by a
+  link close during a reconnect.
+- Port connections use a sliding 256 KiB credit window in each direction.
+  The host's dial timeout returns `ErrConnection`.
 
 ### Changed
 

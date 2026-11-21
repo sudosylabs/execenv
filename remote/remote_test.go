@@ -390,3 +390,27 @@ func (e blockingEnv) ControlStatus(ctx context.Context) (execenv.ControlReceipt,
 		return e.Env.ControlStatus(ctx)
 	}
 }
+
+func TestPortConformance(t *testing.T) {
+	host, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Capacity: execenv.DefaultGrant})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execenvtest.RunPorts(t, serveInner(t, host), execenvtest.LocalPortListener(host))
+}
+
+func TestListeningPortsConformance(t *testing.T) {
+	host, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Capacity: execenv.DefaultGrant})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execenvtest.RunListeningPorts(t, serveInner(t, host), execenvtest.LocalPortListener(host))
+}
+
+func TestPortLimitsConformance(t *testing.T) {
+	host, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Capacity: execenv.DefaultGrant})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execenvtest.RunPortLimits(t, serveInner(t, host), execenvtest.LocalPortListener(host))
+}

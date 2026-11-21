@@ -190,11 +190,11 @@ func bucketFrom(b *execenvv1.TokenBucket) execenv.TokenBucket {
 }
 
 func LimitsTo(l execenv.Limits) *execenvv1.Limits {
-	return &execenvv1.Limits{DiskOps: bucketTo(l.DiskOps), DiskBytes: bucketTo(l.DiskBytes), NetworkBytes: bucketTo(l.NetworkBytes)}
+	return &execenvv1.Limits{DiskOps: bucketTo(l.DiskOps), DiskBytes: bucketTo(l.DiskBytes), NetworkBytes: bucketTo(l.NetworkBytes), PortBytes: bucketTo(l.PortBytes)}
 }
 
 func LimitsFrom(l *execenvv1.Limits) execenv.Limits {
-	return execenv.Limits{DiskOps: bucketFrom(l.GetDiskOps()), DiskBytes: bucketFrom(l.GetDiskBytes()), NetworkBytes: bucketFrom(l.GetNetworkBytes())}
+	return execenv.Limits{DiskOps: bucketFrom(l.GetDiskOps()), DiskBytes: bucketFrom(l.GetDiskBytes()), NetworkBytes: bucketFrom(l.GetNetworkBytes()), PortBytes: bucketFrom(l.GetPortBytes())}
 }
 
 var idleActions = map[execenv.IdleAction]execenvv1.IdleAction{

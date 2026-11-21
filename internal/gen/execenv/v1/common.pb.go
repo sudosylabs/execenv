@@ -415,6 +415,7 @@ type Limits struct {
 	DiskOps       *TokenBucket           `protobuf:"bytes,1,opt,name=disk_ops,json=diskOps,proto3" json:"disk_ops,omitempty"`
 	DiskBytes     *TokenBucket           `protobuf:"bytes,2,opt,name=disk_bytes,json=diskBytes,proto3" json:"disk_bytes,omitempty"`
 	NetworkBytes  *TokenBucket           `protobuf:"bytes,3,opt,name=network_bytes,json=networkBytes,proto3" json:"network_bytes,omitempty"`
+	PortBytes     *TokenBucket           `protobuf:"bytes,4,opt,name=port_bytes,json=portBytes,proto3" json:"port_bytes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -466,6 +467,13 @@ func (x *Limits) GetDiskBytes() *TokenBucket {
 func (x *Limits) GetNetworkBytes() *TokenBucket {
 	if x != nil {
 		return x.NetworkBytes
+	}
+	return nil
+}
+
+func (x *Limits) GetPortBytes() *TokenBucket {
+	if x != nil {
+		return x.PortBytes
 	}
 	return nil
 }
@@ -630,12 +638,14 @@ const file_execenv_v1_common_proto_rawDesc = "" +
 	"disk_bytes\x18\x03 \x01(\x03R\tdiskBytes\"7\n" +
 	"\vTokenBucket\x12\x12\n" +
 	"\x04rate\x18\x01 \x01(\x03R\x04rate\x12\x14\n" +
-	"\x05burst\x18\x02 \x01(\x03R\x05burst\"\xb2\x01\n" +
+	"\x05burst\x18\x02 \x01(\x03R\x05burst\"\xea\x01\n" +
 	"\x06Limits\x122\n" +
 	"\bdisk_ops\x18\x01 \x01(\v2\x17.execenv.v1.TokenBucketR\adiskOps\x126\n" +
 	"\n" +
 	"disk_bytes\x18\x02 \x01(\v2\x17.execenv.v1.TokenBucketR\tdiskBytes\x12<\n" +
-	"\rnetwork_bytes\x18\x03 \x01(\v2\x17.execenv.v1.TokenBucketR\fnetworkBytes\"o\n" +
+	"\rnetwork_bytes\x18\x03 \x01(\v2\x17.execenv.v1.TokenBucketR\fnetworkBytes\x126\n" +
+	"\n" +
+	"port_bytes\x18\x04 \x01(\v2\x17.execenv.v1.TokenBucketR\tportBytes\"o\n" +
 	"\tShortfall\x120\n" +
 	"\bresource\x18\x01 \x01(\x0e2\x14.execenv.v1.ResourceR\bresource\x12\x1c\n" +
 	"\trequested\x18\x02 \x01(\x03R\trequested\x12\x12\n" +
@@ -685,13 +695,14 @@ var file_execenv_v1_common_proto_depIdxs = []int32{
 	6, // 0: execenv.v1.Limits.disk_ops:type_name -> execenv.v1.TokenBucket
 	6, // 1: execenv.v1.Limits.disk_bytes:type_name -> execenv.v1.TokenBucket
 	6, // 2: execenv.v1.Limits.network_bytes:type_name -> execenv.v1.TokenBucket
-	1, // 3: execenv.v1.Shortfall.resource:type_name -> execenv.v1.Resource
-	8, // 4: execenv.v1.ErrorDetail.shortfall:type_name -> execenv.v1.Shortfall
-	5, // [5:5] is the sub-list for method output_type
-	5, // [5:5] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	6, // 3: execenv.v1.Limits.port_bytes:type_name -> execenv.v1.TokenBucket
+	1, // 4: execenv.v1.Shortfall.resource:type_name -> execenv.v1.Resource
+	8, // 5: execenv.v1.ErrorDetail.shortfall:type_name -> execenv.v1.Shortfall
+	6, // [6:6] is the sub-list for method output_type
+	6, // [6:6] is the sub-list for method input_type
+	6, // [6:6] is the sub-list for extension type_name
+	6, // [6:6] is the sub-list for extension extendee
+	0, // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_execenv_v1_common_proto_init() }
