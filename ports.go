@@ -11,3 +11,11 @@ type PortConn interface {
 	// Port is the port that was requested.
 	Port() int
 }
+
+// ListeningPort describes a listening TCP socket in the grant.
+type ListeningPort struct {
+	Port    int
+	Address string
+	// Tag names the owning process when known.
+	Tag string
+}

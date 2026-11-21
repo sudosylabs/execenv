@@ -19,6 +19,13 @@ func Serve(listener *net.TCPListener, mode string) {
 		if err != nil {
 			return
 		}
+		if mode == "accept-one" {
+			_ = listener.Close()
+			defer conn.Close()
+			_, _ = io.WriteString(conn, "accepted")
+			_, _ = io.Copy(io.Discard, conn)
+			return
+		}
 		go func() {
 			defer conn.Close()
 			switch mode {

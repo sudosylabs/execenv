@@ -42,6 +42,7 @@ service AgentService {
   rpc ProcessScreen(ProcessScreenRequest) returns (execenv.v1.Screen);
 
   rpc DialPort(stream execenv.v1.PortFrame) returns (stream execenv.v1.PortFrame);
+  rpc ListeningPorts(Empty) returns (execenv.v1.ListeningPortsResponse);
 
   // Freeze closes I/O before the host pauses the machine; Thaw reopens it.
   rpc Freeze(FreezeRequest) returns (FreezeResponse);

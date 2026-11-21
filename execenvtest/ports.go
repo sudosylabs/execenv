@@ -221,3 +221,51 @@ func RunPorts(t *testing.T, host execenv.Host, listen PortListener) {
 		testEnd(execenv.ErrRevoked, func() error { return env.Revoke(ctx) })
 	})
 }
+
+// RunListeningPorts checks the listener snapshot and excludes established
+// connections after their listener has closed.
+func RunListeningPorts(t *testing.T, host execenv.Host, listen PortListener) {
+	t.Helper()
+	env, fence := occupyRunning(t, host, "listening-ports")
+	loopback, stop := listen(t, env, fence, "127.0.0.1", "hold")
+	wildcard, _ := listen(t, env, fence, "0.0.0.0", "hold")
+	one, _ := listen(t, env, fence, "127.0.0.1", "accept-one")
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	list := func() map[int]string {
+		t.Helper()
+		ports, err := env.ListPorts(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		byPort := make(map[int]string)
+		last := 0
+		for _, p := range ports {
+			if p.Port <= last {
+				t.Fatalf("unexpected port order or duplicate: %v", ports)
+			}
+			byPort[p.Port] = p.Address
+			last = p.Port
+		}
+		return byPort
+	}
+	ports := list()
+	if ports[loopback] != "127.0.0.1" || ports[wildcard] != "0.0.0.0" || ports[one] != "127.0.0.1" {
+		t.Fatalf("expected loopback %d, wildcard %d and one-shot %d in %v", loopback, wildcard, one, ports)
+	}
+	stop()
+	conn, err := env.ConnectPort(ctx, fence, one)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	buf := make([]byte, len("accepted"))
+	if _, err := io.ReadFull(conn, buf); err != nil || string(buf) != "accepted" {
+		t.Fatalf("accept after listener closed = %q, %v", buf, err)
+	}
+	ports = list()
+	if ports[loopback] != "" || ports[one] != "" || ports[wildcard] != "0.0.0.0" {
+		t.Fatalf("closed or connected sockets listed, or wildcard missing: %v", ports)
+	}
+}

@@ -49,6 +49,11 @@ func (w *watched) ConnectPort(ctx context.Context, f execenv.ProjectionFence, po
 	return w.Env.ConnectPort(ctx, f, port)
 }
 
+func (w *watched) ListPorts(ctx context.Context) ([]execenv.ListeningPort, error) {
+	w.t.Touch()
+	return w.Env.ListPorts(ctx)
+}
+
 func (w *watched) Control(ctx context.Context, r execenv.ControlRequest) (execenv.ControlReceipt, error) {
 	w.t.Touch()
 	return w.Env.Control(ctx, r)

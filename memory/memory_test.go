@@ -118,3 +118,11 @@ func TestPortConformance(t *testing.T) {
 	}
 	execenvtest.RunPorts(t, host, execenvtest.LocalPortListener(host))
 }
+
+func TestListeningPortsConformance(t *testing.T) {
+	host, err := memory.New(memory.Config{Images: []execenv.Image{"default"}, Capacity: execenv.DefaultGrant})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execenvtest.RunListeningPorts(t, host, execenvtest.LocalPortListener(host))
+}

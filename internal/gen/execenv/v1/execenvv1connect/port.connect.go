@@ -35,11 +35,14 @@ const (
 const (
 	// PortServiceConnectPortProcedure is the fully-qualified name of the PortService's ConnectPort RPC.
 	PortServiceConnectPortProcedure = "/execenv.v1.PortService/ConnectPort"
+	// PortServiceListPortsProcedure is the fully-qualified name of the PortService's ListPorts RPC.
+	PortServiceListPortsProcedure = "/execenv.v1.PortService/ListPorts"
 )
 
 // PortServiceClient is a client for the execenv.v1.PortService service.
 type PortServiceClient interface {
 	ConnectPort(context.Context) *connect.BidiStreamForClient[v1.PortFrame, v1.PortFrame]
+	ListPorts(context.Context, *connect.Request[v1.ListPortsRequest]) (*connect.Response[v1.ListeningPortsResponse], error)
 }
 
 // NewPortServiceClient constructs a client for the execenv.v1.PortService service. By default, it
@@ -59,12 +62,19 @@ func NewPortServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(portServiceMethods.ByName("ConnectPort")),
 			connect.WithClientOptions(opts...),
 		),
+		listPorts: connect.NewClient[v1.ListPortsRequest, v1.ListeningPortsResponse](
+			httpClient,
+			baseURL+PortServiceListPortsProcedure,
+			connect.WithSchema(portServiceMethods.ByName("ListPorts")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // portServiceClient implements PortServiceClient.
 type portServiceClient struct {
 	connectPort *connect.Client[v1.PortFrame, v1.PortFrame]
+	listPorts   *connect.Client[v1.ListPortsRequest, v1.ListeningPortsResponse]
 }
 
 // ConnectPort calls execenv.v1.PortService.ConnectPort.
@@ -72,9 +82,15 @@ func (c *portServiceClient) ConnectPort(ctx context.Context) *connect.BidiStream
 	return c.connectPort.CallBidiStream(ctx)
 }
 
+// ListPorts calls execenv.v1.PortService.ListPorts.
+func (c *portServiceClient) ListPorts(ctx context.Context, req *connect.Request[v1.ListPortsRequest]) (*connect.Response[v1.ListeningPortsResponse], error) {
+	return c.listPorts.CallUnary(ctx, req)
+}
+
 // PortServiceHandler is an implementation of the execenv.v1.PortService service.
 type PortServiceHandler interface {
 	ConnectPort(context.Context, *connect.BidiStream[v1.PortFrame, v1.PortFrame]) error
+	ListPorts(context.Context, *connect.Request[v1.ListPortsRequest]) (*connect.Response[v1.ListeningPortsResponse], error)
 }
 
 // NewPortServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -90,10 +106,18 @@ func NewPortServiceHandler(svc PortServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(portServiceMethods.ByName("ConnectPort")),
 		connect.WithHandlerOptions(opts...),
 	)
+	portServiceListPortsHandler := connect.NewUnaryHandler(
+		PortServiceListPortsProcedure,
+		svc.ListPorts,
+		connect.WithSchema(portServiceMethods.ByName("ListPorts")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/execenv.v1.PortService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case PortServiceConnectPortProcedure:
 			portServiceConnectPortHandler.ServeHTTP(w, r)
+		case PortServiceListPortsProcedure:
+			portServiceListPortsHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -105,4 +129,8 @@ type UnimplementedPortServiceHandler struct{}
 
 func (UnimplementedPortServiceHandler) ConnectPort(context.Context, *connect.BidiStream[v1.PortFrame, v1.PortFrame]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("execenv.v1.PortService.ConnectPort is not implemented"))
+}
+
+func (UnimplementedPortServiceHandler) ListPorts(context.Context, *connect.Request[v1.ListPortsRequest]) (*connect.Response[v1.ListeningPortsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.v1.PortService.ListPorts is not implemented"))
 }

@@ -174,6 +174,7 @@ func New(cfg Config) (*Agent, error) {
 			source, tagOf = kernel, tags
 		}
 	}
+	s.processTag = tagOf
 	if group != nil {
 		fs.Own = group.OwnHome
 		// A real guest watches its workspace, so an idle one is not walked,
@@ -273,6 +274,7 @@ type server struct {
 	// launches is each running process Start created, pid to launch, for
 	// the process log.
 	launches    sync.Map
+	processTag  func(int) string
 	home        string
 	scratch     string
 	workload    *workload.Group

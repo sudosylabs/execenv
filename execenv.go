@@ -218,4 +218,7 @@ type Env interface {
 	// ConnectPort opens a stream to the grant's IPv4 loopback. The fence
 	// is checked when it opens. The context controls the stream's lifetime.
 	ConnectPort(ctx context.Context, fence ProjectionFence, port int) (PortConn, error)
+	// ListPorts returns listening TCP sockets on loopback or wildcard
+	// addresses, sorted by port with one entry per port.
+	ListPorts(ctx context.Context) ([]ListeningPort, error)
 }

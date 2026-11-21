@@ -191,6 +191,162 @@ func (x *PortOpen) GetPort() int32 {
 	return 0
 }
 
+type ListPortsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Epoch         string                 `protobuf:"bytes,2,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListPortsRequest) Reset() {
+	*x = ListPortsRequest{}
+	mi := &file_execenv_v1_port_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListPortsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListPortsRequest) ProtoMessage() {}
+
+func (x *ListPortsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_execenv_v1_port_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListPortsRequest.ProtoReflect.Descriptor instead.
+func (*ListPortsRequest) Descriptor() ([]byte, []int) {
+	return file_execenv_v1_port_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *ListPortsRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *ListPortsRequest) GetEpoch() string {
+	if x != nil {
+		return x.Epoch
+	}
+	return ""
+}
+
+type ListeningPortsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Ports         []*ListeningPort       `protobuf:"bytes,1,rep,name=ports,proto3" json:"ports,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListeningPortsResponse) Reset() {
+	*x = ListeningPortsResponse{}
+	mi := &file_execenv_v1_port_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListeningPortsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListeningPortsResponse) ProtoMessage() {}
+
+func (x *ListeningPortsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_execenv_v1_port_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListeningPortsResponse.ProtoReflect.Descriptor instead.
+func (*ListeningPortsResponse) Descriptor() ([]byte, []int) {
+	return file_execenv_v1_port_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *ListeningPortsResponse) GetPorts() []*ListeningPort {
+	if x != nil {
+		return x.Ports
+	}
+	return nil
+}
+
+type ListeningPort struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Port          int32                  `protobuf:"varint,1,opt,name=port,proto3" json:"port,omitempty"`
+	Address       string                 `protobuf:"bytes,2,opt,name=address,proto3" json:"address,omitempty"`
+	Tag           string                 `protobuf:"bytes,3,opt,name=tag,proto3" json:"tag,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListeningPort) Reset() {
+	*x = ListeningPort{}
+	mi := &file_execenv_v1_port_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListeningPort) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListeningPort) ProtoMessage() {}
+
+func (x *ListeningPort) ProtoReflect() protoreflect.Message {
+	mi := &file_execenv_v1_port_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListeningPort.ProtoReflect.Descriptor instead.
+func (*ListeningPort) Descriptor() ([]byte, []int) {
+	return file_execenv_v1_port_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *ListeningPort) GetPort() int32 {
+	if x != nil {
+		return x.Port
+	}
+	return 0
+}
+
+func (x *ListeningPort) GetAddress() string {
+	if x != nil {
+		return x.Address
+	}
+	return ""
+}
+
+func (x *ListeningPort) GetTag() string {
+	if x != nil {
+		return x.Tag
+	}
+	return ""
+}
+
 var File_execenv_v1_port_proto protoreflect.FileDescriptor
 
 const file_execenv_v1_port_proto_rawDesc = "" +
@@ -206,9 +362,19 @@ const file_execenv_v1_port_proto_rawDesc = "" +
 	"\apayload\"G\n" +
 	"\bPortOpen\x12'\n" +
 	"\x05fence\x18\x01 \x01(\v2\x11.execenv.v1.FenceR\x05fence\x12\x12\n" +
-	"\x04port\x18\x02 \x01(\x05R\x04port2N\n" +
+	"\x04port\x18\x02 \x01(\x05R\x04port\"8\n" +
+	"\x10ListPortsRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
+	"\x05epoch\x18\x02 \x01(\tR\x05epoch\"I\n" +
+	"\x16ListeningPortsResponse\x12/\n" +
+	"\x05ports\x18\x01 \x03(\v2\x19.execenv.v1.ListeningPortR\x05ports\"O\n" +
+	"\rListeningPort\x12\x12\n" +
+	"\x04port\x18\x01 \x01(\x05R\x04port\x12\x18\n" +
+	"\aaddress\x18\x02 \x01(\tR\aaddress\x12\x10\n" +
+	"\x03tag\x18\x03 \x01(\tR\x03tag2\x9d\x01\n" +
 	"\vPortService\x12?\n" +
-	"\vConnectPort\x12\x15.execenv.v1.PortFrame\x1a\x15.execenv.v1.PortFrame(\x010\x01BAZ?github.com/sudosylabs/execenv/internal/gen/execenv/v1;execenvv1b\x06proto3"
+	"\vConnectPort\x12\x15.execenv.v1.PortFrame\x1a\x15.execenv.v1.PortFrame(\x010\x01\x12M\n" +
+	"\tListPorts\x12\x1c.execenv.v1.ListPortsRequest\x1a\".execenv.v1.ListeningPortsResponseBAZ?github.com/sudosylabs/execenv/internal/gen/execenv/v1;execenvv1b\x06proto3"
 
 var (
 	file_execenv_v1_port_proto_rawDescOnce sync.Once
@@ -222,22 +388,28 @@ func file_execenv_v1_port_proto_rawDescGZIP() []byte {
 	return file_execenv_v1_port_proto_rawDescData
 }
 
-var file_execenv_v1_port_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_execenv_v1_port_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_execenv_v1_port_proto_goTypes = []any{
-	(*PortFrame)(nil), // 0: execenv.v1.PortFrame
-	(*PortOpen)(nil),  // 1: execenv.v1.PortOpen
-	(*Fence)(nil),     // 2: execenv.v1.Fence
+	(*PortFrame)(nil),              // 0: execenv.v1.PortFrame
+	(*PortOpen)(nil),               // 1: execenv.v1.PortOpen
+	(*ListPortsRequest)(nil),       // 2: execenv.v1.ListPortsRequest
+	(*ListeningPortsResponse)(nil), // 3: execenv.v1.ListeningPortsResponse
+	(*ListeningPort)(nil),          // 4: execenv.v1.ListeningPort
+	(*Fence)(nil),                  // 5: execenv.v1.Fence
 }
 var file_execenv_v1_port_proto_depIdxs = []int32{
 	1, // 0: execenv.v1.PortFrame.open:type_name -> execenv.v1.PortOpen
-	2, // 1: execenv.v1.PortOpen.fence:type_name -> execenv.v1.Fence
-	0, // 2: execenv.v1.PortService.ConnectPort:input_type -> execenv.v1.PortFrame
-	0, // 3: execenv.v1.PortService.ConnectPort:output_type -> execenv.v1.PortFrame
-	3, // [3:4] is the sub-list for method output_type
-	2, // [2:3] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	5, // 1: execenv.v1.PortOpen.fence:type_name -> execenv.v1.Fence
+	4, // 2: execenv.v1.ListeningPortsResponse.ports:type_name -> execenv.v1.ListeningPort
+	0, // 3: execenv.v1.PortService.ConnectPort:input_type -> execenv.v1.PortFrame
+	2, // 4: execenv.v1.PortService.ListPorts:input_type -> execenv.v1.ListPortsRequest
+	0, // 5: execenv.v1.PortService.ConnectPort:output_type -> execenv.v1.PortFrame
+	3, // 6: execenv.v1.PortService.ListPorts:output_type -> execenv.v1.ListeningPortsResponse
+	5, // [5:7] is the sub-list for method output_type
+	3, // [3:5] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_execenv_v1_port_proto_init() }
@@ -258,7 +430,7 @@ func file_execenv_v1_port_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_execenv_v1_port_proto_rawDesc), len(file_execenv_v1_port_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

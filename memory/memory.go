@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -68,7 +69,7 @@ type Host struct {
 
 type environment struct {
 	ports     portconn.Set
-	listeners map[int]*net.TCPListener
+	listeners map[netip.AddrPort]*net.TCPListener
 
 	control *control.State
 	mu      sync.Mutex
@@ -468,6 +469,7 @@ func (e *environment) stop(cause error) error {
 	e.frozen = false
 	e.procs.End(cause)
 	e.ports.End(cause)
+	e.listeners = nil
 	e.journalMu.Lock()
 	e.journal.Close()
 	e.journalMu.Unlock()

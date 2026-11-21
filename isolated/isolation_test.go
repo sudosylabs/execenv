@@ -358,3 +358,9 @@ func TestLivePortConformance(t *testing.T) {
 	t.Cleanup(func() { revokeAll(host) })
 	execenvtest.RunPorts(t, host, execenvtest.GuestPortListener(t))
 }
+
+func TestLiveListeningPortsConformance(t *testing.T) {
+	host := liveHost(t, 1, "")
+	t.Cleanup(func() { revokeAll(host) })
+	execenvtest.RunListeningPorts(t, host, execenvtest.GuestPortListener(t))
+}

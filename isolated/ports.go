@@ -35,3 +35,12 @@ func (e *environment) portError(err error) error {
 	}
 	return err
 }
+
+func (e *environment) ListPorts(ctx context.Context) ([]execenv.ListeningPort, error) {
+	client, err := e.live("list_ports")
+	if err != nil {
+		return nil, err
+	}
+	ports, err := client.ListeningPorts(ctx)
+	return ports, execenv.Error("list_ports", e.portError(err))
+}
