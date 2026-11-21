@@ -56,7 +56,11 @@ func (s *stubInstance) Save(_ context.Context, dir string) error {
 	return nil
 }
 
-func (s *stubInstance) Done() <-chan struct{} { return s.exited }
+func (s *stubInstance) Done() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.exited
+}
 
 // Machine names the stub by its socket, which a restarted host finds again.
 func (s *stubInstance) Machine() machine {

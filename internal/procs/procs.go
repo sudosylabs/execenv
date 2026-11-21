@@ -43,16 +43,25 @@ const killDelay = 5 * time.Second
 // Manager is one grant's processes.
 type Manager struct {
 	start Starter
+	now   func() time.Time
 
-	mu     sync.Mutex
-	procs  map[string]*proc
-	frozen bool
-	ended  error
+	mu          sync.Mutex
+	procs       map[string]*proc
+	frozen      bool
+	ended       error
+	delivering  int
+	pendingThaw int
+	thawEpoch   uint64
 }
 
 // New returns a manager that starts processes with start.
 func New(start Starter) *Manager {
-	return &Manager{start: start, procs: make(map[string]*proc)}
+	return NewWithClock(start, time.Now)
+}
+
+// NewWithClock uses now for process deadline calculations.
+func NewWithClock(start Starter, now func() time.Time) *Manager {
+	return &Manager{start: start, now: now, procs: make(map[string]*proc)}
 }
 
 type proc struct {
@@ -63,22 +72,26 @@ type proc struct {
 	rings   map[execenv.Stream]*ring.Ring
 	cond    *sync.Cond
 
-	input     uint64
-	inputMu   sync.Mutex
-	exited    bool
-	exit      execenv.ExitStatus
-	streaming int
-	attached  int
-	deadlines Deadlines
-	timer     *time.Timer
-	blocked   bool // the backend refused a deadline signal until reopen
+	input       uint64
+	inputMu     sync.Mutex
+	exited      bool
+	exit        execenv.ExitStatus
+	streaming   int
+	attached    int
+	deadlines   Deadlines
+	timer       *time.Timer
+	blocked     bool // the backend refused a deadline signal until reopen
+	retryAt     [deadlineCount]time.Time
+	inFlight    chan struct{}
+	flightKind  deadlineKind
+	thawPending [deadlineCount]bool
 }
 
 func (m *Manager) guard() error {
 	if m.ended != nil {
 		return m.ended
 	}
-	if m.frozen {
+	if m.frozen || m.delivering != 0 || m.pendingThaw != 0 {
 		return execenv.ErrFrozen
 	}
 	return nil
@@ -120,16 +133,21 @@ func (m *Manager) Start(ctx context.Context, spec execenv.ProcessSpec) (execenv.
 
 	backend, err := m.start(ctx, spec)
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if err != nil {
 		delete(m.procs, spec.Tag)
+		m.mu.Unlock()
 		return execenv.ProcessInfo{}, err
 	}
 	if spec.PTY == nil && !spec.Stdin {
 		_ = backend.CloseInput()
 	}
-	placeholder.runLocked(backend, time.Now(), nil, nil)
-	return placeholder.infoLocked(), nil
+	placeholder.runLocked(backend, m.now(), nil, nil)
+	info, ended := placeholder.infoLocked(), m.ended
+	m.mu.Unlock()
+	if ended != nil {
+		_ = backend.Signal(execenv.SignalKill)
+	}
+	return info, nil
 }
 
 // Adopted is a process a restarted host finds still held by the guest.
@@ -155,19 +173,29 @@ func (m *Manager) Adopt(a Adopted, backend Backend) error {
 		spec.HistoryBytes = execenv.DefaultHistoryBytes
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	// A frozen grant adopts too: its processes were already running.
 	if m.ended != nil {
-		return m.ended
+		err := m.ended
+		m.mu.Unlock()
+		return err
 	}
 	if _, ok := m.procs[spec.Tag]; ok {
+		m.mu.Unlock()
 		return execenv.ErrConflict
 	}
 	p := &proc{m: m, spec: spec, input: a.Info.Input, exited: !a.Info.Running, exit: a.Info.Exit}
 	p.cond = sync.NewCond(&m.mu)
 	m.procs[spec.Tag] = p
 	p.runLocked(backend, a.Info.Started, a.From, a.Deadlines)
-	p.deliverDeadlinesLocked(time.Now())
+	if !m.frozen {
+		p.markPendingLocked(m.now())
+	}
+	m.delivering++
+	m.mu.Unlock()
+	p.deliverDeadlines(true)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.delivering--
 	// Readers resume at offsets they had before the restart, so Adopt
 	// returns once the history reaches where the process stood.
 	expired := false
@@ -210,16 +238,16 @@ func (p *proc) runLocked(backend Backend, started time.Time, from map[execenv.St
 	go p.wait()
 	if deadlines != nil {
 		p.deadlines = *deadlines
+		if !p.m.frozen {
+			p.deadlines = p.deadlines.resume(p.m.now())
+		}
 	} else {
 		if p.spec.Timeout > 0 {
-			p.deadlines.timeout = started.Add(p.spec.Timeout)
+			p.deadlines.at[timeoutDeadline] = started.Add(p.spec.Timeout)
 		}
 		p.armGraceLocked()
 	}
 	p.scheduleDeadlineLocked()
-	if p.m.ended != nil {
-		_ = backend.Signal(execenv.SignalKill)
-	}
 }
 
 func (p *proc) pump(name execenv.Stream, r io.Reader) {
@@ -247,6 +275,7 @@ func (p *proc) wait() {
 	p.m.mu.Lock()
 	defer p.m.mu.Unlock()
 	p.exited, p.exit = true, status
+	p.clearPendingLocked()
 	p.stopDeadlineLocked()
 	p.cond.Broadcast()
 }
@@ -320,6 +349,10 @@ func (m *Manager) WriteInput(tag string, offset uint64, data []byte) (uint64, er
 	p.inputMu.Lock()
 	defer p.inputMu.Unlock()
 	m.mu.Lock()
+	if err := m.guard(); err != nil {
+		m.mu.Unlock()
+		return 0, err
+	}
 	current, exited := p.input, p.exited
 	m.mu.Unlock()
 	if offset > current {
@@ -424,13 +457,25 @@ func (m *Manager) Freeze() {
 
 func (m *Manager) Thaw() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.frozen = false
-	now := time.Now()
+	m.delivering++
+	m.thawEpoch++
+	procs := make([]*proc, 0, len(m.procs))
+	now := m.now()
 	for _, p := range m.procs {
 		p.blocked = false
-		p.deliverDeadlinesLocked(now)
+		clear(p.retryAt[:])
+		p.deadlines = p.deadlines.resume(now)
+		p.markPendingLocked(now)
+		procs = append(procs, p)
 	}
+	m.mu.Unlock()
+	for _, p := range procs {
+		p.deliverDeadlines(true)
+	}
+	m.mu.Lock()
+	m.delivering--
+	m.mu.Unlock()
 }
 
 // End kills every process and fails every call and attachment with cause.
@@ -444,6 +489,7 @@ func (m *Manager) End(cause error) {
 	var backends []Backend
 	for _, p := range m.procs {
 		p.stopDeadlineLocked()
+		p.clearPendingLocked()
 		if p.backend != nil && !p.exited {
 			backends = append(backends, p.backend)
 		}
@@ -495,13 +541,14 @@ func (m *Manager) Attach(tag string, from map[execenv.Stream]uint64) (execenv.At
 			return nil, execenv.ErrInvalid
 		}
 	}
-	p.attached++
-	// Reattaching cancels the grace only until its deadline. A HUP
-	// already due must still be delivered on thaw.
-	if p.deadlines.grace.After(time.Now()) {
-		p.deadlines.grace = time.Time{}
-		p.scheduleDeadlineLocked()
+	// Once a detach signal has been claimed it may already be in
+	// transit. Allow reattachment when that attempt has resolved.
+	if p.inFlight != nil && p.flightKind.detach() {
+		return nil, execenv.ErrBusy
 	}
+	p.attached++
+	p.clearGraceLocked()
+	p.scheduleDeadlineLocked()
 	return a, nil
 }
 

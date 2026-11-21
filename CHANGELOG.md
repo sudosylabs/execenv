@@ -23,6 +23,9 @@
   take effect on thaw, before caller input resumes. A forced kill that
   falls due during a freeze is also retried on thaw. A restarted host
   applies overdue timeouts when it takes over running processes.
+- Reattaching cancels pending detach grace. Suspend pauses the grace
+  clock while process timeouts continue to count wall-clock time.
+  Failed deadline signals are retried.
 
 ### Changed
 

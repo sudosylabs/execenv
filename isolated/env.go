@@ -124,14 +124,16 @@ func (e *environment) watch() {
 	if inst == nil {
 		return
 	}
+	done := inst.Done()
 	select {
 	case <-e.gone:
 		return
-	case <-inst.Done():
+	case <-done:
 	}
-	// A suspend stops the machine on purpose.
+	// A suspend stops the machine on purpose. A restored instance may
+	// report a new completion channel.
 	e.mu.Lock()
-	current := e.inst == inst
+	current := e.inst == inst && inst.Done() == done
 	e.mu.Unlock()
 	if current {
 		e.host.lose(e)

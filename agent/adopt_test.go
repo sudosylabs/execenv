@@ -106,14 +106,13 @@ func TestAdoptionAppliesTimeoutThatExpiredWhileDisconnected(t *testing.T) {
 	}
 	t.Cleanup(a.Close)
 	first, conn := link(t, a)
-	spec := execenv.ProcessSpec{Tag: "overdue", Argv: []string{"sleep", "30"}, Timeout: 250 * time.Millisecond}
+	spec := execenv.ProcessSpec{Tag: "overdue", Argv: []string{"sleep", "30"}, Timeout: time.Minute}
 	if _, err := first.Start(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
 	if err := conn.Close(); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(spec.Timeout + 100*time.Millisecond)
 
 	second, newConn := link(t, a)
 	t.Cleanup(func() { _ = newConn.Close() })
@@ -126,7 +125,9 @@ func TestAdoptionAppliesTimeoutThatExpiredWhileDisconnected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := procs.New(second.Start)
+	clock := &deadlineClock{base: gp.Info.Started}
+	clock.advance(spec.Timeout)
+	m := procs.NewWithClock(second.Start, clock.now)
 	t.Cleanup(func() { m.End(execenv.ErrClosed) })
 	if err := m.Adopt(procs.Adopted{Spec: gp.Spec, Info: gp.Info, From: gp.First}, backend); err != nil {
 		t.Fatal(err)
@@ -136,10 +137,5 @@ func TestAdoptionAppliesTimeoutThatExpiredWhileDisconnected(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer att.Close()
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
-	defer cancel()
-	event, err := att.Next(ctx)
-	if err != nil || event.Kind != execenv.OutputExit || event.Exit.Signal != int(syscall.SIGTERM) {
-		t.Fatalf("adopted process event = %+v, %v", event, err)
-	}
+	expectDeadlineExit(t, att, execenv.ExitStatus{Signal: int(syscall.SIGTERM)})
 }

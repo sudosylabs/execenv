@@ -152,7 +152,8 @@ type Processes interface {
 	Process(ctx context.Context, tag string) (ProcessInfo, error)
 	ListProcesses(ctx context.Context) ([]ProcessInfo, error)
 	// AttachProcess reads tag's output from the given offsets; a stream not
-	// named starts at the oldest byte still held.
+	// named starts at the oldest byte still held. If a detach signal is
+	// already in flight, AttachProcess returns ErrBusy until it resolves.
 	AttachProcess(ctx context.Context, tag string, from map[Stream]uint64) (Attachment, error)
 	// WriteInput appends data at offset. Bytes the process already took are
 	// dropped, so a caller resending after a lost connection duplicates
