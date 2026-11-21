@@ -39,7 +39,11 @@ func (e *environment) suspend(ctx context.Context, done execenv.ControlReceipt) 
 	e.mu.Lock()
 	inst, client := e.inst, e.client
 	s, ok := inst.(saver)
+	var deadlines map[string]procs.Deadlines
 	if ok {
+		// Save can break the link. Preserve any pending deadline before
+		// the old backend has a chance to report that it ended.
+		deadlines = e.procs.SuspendDeadlines()
 		// Saving breaks the guest link: it is detached first, so that is
 		// not taken for a loss.
 		e.client = nil
@@ -67,7 +71,7 @@ func (e *environment) suspend(ctx context.Context, done execenv.ControlReceipt) 
 	// word to the guest, and taken over again on resume.
 	e.mu.Lock()
 	old := e.procs
-	e.suspendedDeadlines = old.SuspendDeadlines()
+	e.suspendedDeadlines = deadlines
 	e.procs = procs.New(e.startProcess)
 	e.procs.Freeze()
 	e.inst, e.client = nil, nil

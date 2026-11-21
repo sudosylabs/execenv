@@ -199,11 +199,12 @@ func (b *guestBackend) Signal(s execenv.Signal) error {
 	ctx, cancel := b.client.call(context.Background())
 	defer cancel()
 	_, err := b.client.agent.SignalProcess(ctx, connect.NewRequest(&guestv1.SignalRequest{Tag: b.tag, Signal: string(s)}))
-	err = b.client.failure("signal", err)
-	if errors.Is(err, execenv.ErrClosed) {
-		return nil
+	// Only a response from the guest can confirm that the process exited.
+	// A local link hangup also uses ErrClosed and must remain retryable.
+	if errors.Is(wire.HostError("signal", err), execenv.ErrClosed) {
+		return procs.ErrProcessExited
 	}
-	return err
+	return b.client.failure("signal", err)
 }
 
 func (b *guestBackend) Wait() execenv.ExitStatus {

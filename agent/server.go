@@ -254,7 +254,20 @@ func (s *server) serveLink(ctx context.Context, conn net.Conn, handler guestv1co
 		}
 		return nil
 	})))
-	srv := linkServer(mux)
+	// Output has one reader per process. Finish the old link's readers
+	// before a replacement link can attach at its saved offsets.
+	var output sync.RWMutex
+	closing := false
+	srv := linkServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == guestv1connect.AgentServiceOutputProcedure {
+			output.RLock()
+			defer output.RUnlock()
+			if closing {
+				return
+			}
+		}
+		mux.ServeHTTP(w, r)
+	}))
 	served := make(chan struct{})
 	go func() {
 		_ = srv.Serve(&oneConn{conn: link})
@@ -268,6 +281,9 @@ func (s *server) serveLink(ctx context.Context, conn net.Conn, handler guestv1co
 	_ = link.Close()
 	_ = srv.Close()
 	<-served
+	output.Lock()
+	closing = true
+	output.Unlock()
 }
 
 type server struct {

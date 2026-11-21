@@ -9,6 +9,7 @@ package procs
 
 import (
 	"context"
+	"errors"
 	"io"
 	"sync"
 	"time"
@@ -40,6 +41,9 @@ type Starter func(ctx context.Context, spec execenv.ProcessSpec) (Backend, error
 // killDelay is how long a timed-out process has between TERM and KILL.
 const killDelay = 5 * time.Second
 
+// ErrProcessExited reports that a backend confirmed the process exited.
+var ErrProcessExited = errors.New("process exited")
+
 // Manager is one grant's processes.
 type Manager struct {
 	start Starter
@@ -49,7 +53,8 @@ type Manager struct {
 	procs       map[string]*proc
 	frozen      bool
 	ended       error
-	delivering  int
+	thawDone    chan struct{}
+	thawUntil   time.Time
 	pendingThaw int
 	thawEpoch   uint64
 }
@@ -82,7 +87,7 @@ type proc struct {
 	timer       *time.Timer
 	blocked     bool // the backend refused a deadline signal until reopen
 	retryAt     [deadlineCount]time.Time
-	inFlight    chan struct{}
+	inFlight    bool
 	flightKind  deadlineKind
 	thawPending [deadlineCount]bool
 }
@@ -91,7 +96,7 @@ func (m *Manager) guard() error {
 	if m.ended != nil {
 		return m.ended
 	}
-	if m.frozen || m.delivering != 0 || m.pendingThaw != 0 {
+	if m.frozen || (m.pendingThaw != 0 && m.now().Before(m.thawUntil)) {
 		return execenv.ErrFrozen
 	}
 	return nil
@@ -142,6 +147,7 @@ func (m *Manager) Start(ctx context.Context, spec execenv.ProcessSpec) (execenv.
 		_ = backend.CloseInput()
 	}
 	placeholder.runLocked(backend, m.now(), nil, nil)
+	placeholder.scheduleDeadlineLocked()
 	info, ended := placeholder.infoLocked(), m.ended
 	m.mu.Unlock()
 	if ended != nil {
@@ -187,15 +193,10 @@ func (m *Manager) Adopt(a Adopted, backend Backend) error {
 	p.cond = sync.NewCond(&m.mu)
 	m.procs[spec.Tag] = p
 	p.runLocked(backend, a.Info.Started, a.From, a.Deadlines)
-	if !m.frozen {
-		p.markPendingLocked(m.now())
-	}
-	m.delivering++
 	m.mu.Unlock()
-	p.deliverDeadlines(true)
+	p.deliverDeadlines()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.delivering--
 	// Readers resume at offsets they had before the restart, so Adopt
 	// returns once the history reaches where the process stood.
 	expired := false
@@ -242,12 +243,14 @@ func (p *proc) runLocked(backend Backend, started time.Time, from map[execenv.St
 			p.deadlines = p.deadlines.resume(p.m.now())
 		}
 	} else {
+		if p.m.frozen {
+			p.deadlines.pause(p.m.now())
+		}
 		if p.spec.Timeout > 0 {
 			p.deadlines.at[timeoutDeadline] = started.Add(p.spec.Timeout)
 		}
 		p.armGraceLocked()
 	}
-	p.scheduleDeadlineLocked()
 }
 
 func (p *proc) pump(name execenv.Stream, r io.Reader) {
@@ -441,7 +444,11 @@ func (m *Manager) Signal(tag string, s execenv.Signal) error {
 	if err != nil {
 		return err
 	}
-	return p.backend.Signal(s)
+	err = p.backend.Signal(s)
+	if errors.Is(err, ErrProcessExited) {
+		return nil
+	}
+	return err
 }
 
 // Freeze refuses input and starts until Thaw. Output already produced
@@ -449,33 +456,49 @@ func (m *Manager) Signal(tag string, s execenv.Signal) error {
 func (m *Manager) Freeze() {
 	m.mu.Lock()
 	m.frozen = true
+	now := m.now()
 	for _, p := range m.procs {
+		p.deadlines.pause(now)
 		p.stopDeadlineLocked()
 	}
 	m.mu.Unlock()
 }
 
 func (m *Manager) Thaw() {
+	gateDeadline := time.Now().Add(thawGrace)
 	m.mu.Lock()
 	m.frozen = false
-	m.delivering++
 	m.thawEpoch++
-	procs := make([]*proc, 0, len(m.procs))
+	m.closeThawGateLocked()
 	now := m.now()
+	m.thawUntil = now.Add(thawGrace)
+	m.thawDone = make(chan struct{})
+	done := m.thawDone
+	m.pendingThaw = 0
 	for _, p := range m.procs {
 		p.blocked = false
 		clear(p.retryAt[:])
+		clear(p.thawPending[:])
 		p.deadlines = p.deadlines.resume(now)
 		p.markPendingLocked(now)
-		procs = append(procs, p)
+		p.scheduleDeadlineLocked()
+	}
+	if m.pendingThaw == 0 {
+		m.closeThawGateLocked()
 	}
 	m.mu.Unlock()
-	for _, p := range procs {
-		p.deliverDeadlines(true)
+
+	timer := time.NewTimer(time.Until(gateDeadline))
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+		m.mu.Lock()
+		if m.thawDone == done {
+			m.closeThawGateLocked()
+		}
+		m.mu.Unlock()
 	}
-	m.mu.Lock()
-	m.delivering--
-	m.mu.Unlock()
 }
 
 // End kills every process and fails every call and attachment with cause.
@@ -543,7 +566,7 @@ func (m *Manager) Attach(tag string, from map[execenv.Stream]uint64) (execenv.At
 	}
 	// Once a detach signal has been claimed it may already be in
 	// transit. Allow reattachment when that attempt has resolved.
-	if p.inFlight != nil && p.flightKind.detach() {
+	if !p.exited && p.inFlight && p.flightKind.detach() {
 		return nil, execenv.ErrBusy
 	}
 	p.attached++

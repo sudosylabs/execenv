@@ -47,10 +47,15 @@ func socketError(err error) error {
 // Dial tries only literal loopback addresses. The memory adapter selects
 // which families its registered listeners can actually accept.
 func Dial(ctx context.Context, port int, ipv4, ipv6 bool) (execenv.PortConn, error) {
+	dialer := net.Dialer{}
+	return dialLoopback(ctx, port, ipv4, ipv6, DialTimeout, dialer.DialContext)
+}
+
+func dialLoopback(ctx context.Context, port int, ipv4, ipv6 bool, timeout time.Duration, dial func(context.Context, string, string) (net.Conn, error)) (execenv.PortConn, error) {
 	if !Valid(port) {
 		return nil, execenv.ErrInvalid
 	}
-	ctx, cancel := context.WithTimeout(ctx, DialTimeout)
+	ctx, cancel := context.WithTimeoutCause(ctx, timeout, execenv.ErrConnection)
 	defer cancel()
 	for _, target := range []struct {
 		enabled bool
@@ -60,13 +65,12 @@ func Dial(ctx context.Context, port int, ipv4, ipv6 bool) (execenv.PortConn, err
 		if !target.enabled {
 			continue
 		}
-		d := net.Dialer{}
-		conn, err := d.DialContext(ctx, target.network, net.JoinHostPort(target.host, strconv.Itoa(port)))
+		conn, err := dial(ctx, target.network, net.JoinHostPort(target.host, strconv.Itoa(port)))
 		switch {
 		case err == nil:
 			return tcpConn{conn.(*net.TCPConn), port}, nil
 		case ctx.Err() != nil:
-			return nil, ctx.Err()
+			return nil, context.Cause(ctx)
 		case errors.Is(err, syscall.ECONNREFUSED):
 			continue
 		case target.network == "tcp6" && (errors.Is(err, syscall.EAFNOSUPPORT) || errors.Is(err, syscall.EADDRNOTAVAIL) || errors.Is(err, syscall.ENETUNREACH)):

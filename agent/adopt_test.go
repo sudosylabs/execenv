@@ -2,7 +2,9 @@ package agent_test
 
 import (
 	"context"
+	"errors"
 	"net"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -138,4 +140,98 @@ func TestAdoptionAppliesTimeoutThatExpiredWhileDisconnected(t *testing.T) {
 	}
 	defer att.Close()
 	expectDeadlineExit(t, att, execenv.ExitStatus{Signal: int(syscall.SIGTERM)})
+}
+
+// A link cut during an attempt does not confirm process exit. Keep the
+// old backend's synthetic exit separate from the retained process state,
+// as the isolated host does during suspension and restoration.
+type interruptedKill struct {
+	procs.Backend
+	disconnect func() error
+	wait       <-chan struct{}
+	result     chan error
+}
+
+func (b interruptedKill) Wait() execenv.ExitStatus {
+	<-b.wait
+	return b.Backend.Wait()
+}
+
+func (b interruptedKill) Signal(signal execenv.Signal) error {
+	if signal != execenv.SignalKill {
+		return b.Backend.Signal(signal)
+	}
+	_ = b.disconnect()
+	err := b.Backend.Signal(signal)
+	b.result <- err
+	return err
+}
+
+func TestDeadlineRetriesInterruptedKillOnNewLink(t *testing.T) {
+	home := t.TempDir()
+	a, err := agent.New(agent.Config{Home: home, Barrier: quiescent{}, Processes: newFakeProcesses()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(a.Close)
+	first, _ := link(t, a)
+	wait := make(chan struct{})
+	defer close(wait)
+	result := make(chan error, 1)
+	clock := &deadlineClock{base: time.Now()}
+	m := procs.NewWithClock(func(ctx context.Context, spec execenv.ProcessSpec) (procs.Backend, error) {
+		b, err := first.Start(ctx, spec)
+		return interruptedKill{Backend: b, disconnect: first.Close, wait: wait, result: result}, err
+	}, clock.now)
+	spec := execenv.ProcessSpec{
+		Tag: "interrupted-kill", Timeout: time.Minute, PTY: &execenv.Window{},
+		Argv: []string{"sh", "-c", "trap 'echo term-trapped' TERM; echo ready > ready; while :; do sleep 1; done"},
+	}
+	if _, err := m.Start(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	att, err := m.Attach(spec.Tag, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer att.Close()
+	waitFile(t, filepath.Join(home, "ready"))
+	clock.advance(spec.Timeout)
+	m.Thaw()
+	expectDeadlineOutput(t, att, "term-trapped")
+	clock.advance(5 * time.Second)
+	m.Thaw()
+	select {
+	case err := <-result:
+		if !errors.Is(err, execenv.ErrClosed) {
+			t.Fatalf("KILL after link close = %v, want ErrClosed", err)
+		}
+	default:
+		t.Fatal("KILL was not attempted")
+	}
+	m.Freeze()
+	saved := m.SuspendDeadlines()[spec.Tag]
+
+	second, conn := link(t, a)
+	defer conn.Close()
+	held, err := second.Processes(t.Context())
+	if err != nil || len(held) != 1 || !held[0].Info.Running {
+		t.Fatalf("held after reconnect = %v, %v", held, err)
+	}
+	backend, err := second.Adopt(held[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := procs.NewWithClock(second.Start, clock.now)
+	restored.Freeze()
+	if err := restored.Adopt(procs.Adopted{Spec: held[0].Spec, Info: held[0].Info, From: held[0].First, Deadlines: &saved}, backend); err != nil {
+		t.Fatal(err)
+	}
+	restored.Thaw()
+	after, err := restored.Attach(spec.Tag, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer after.Close()
+	expectDeadlineExit(t, after, execenv.ExitStatus{Signal: int(syscall.SIGKILL)})
 }

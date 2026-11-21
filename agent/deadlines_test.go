@@ -80,6 +80,11 @@ func TestProcessDeadlinesAfterReopen(t *testing.T) {
 				t.Fatal(err)
 			}
 			m.Thaw()
+			if spec.DetachGrace > 0 {
+				// The grace interval begins to run again after thaw.
+				clock.advance(spec.DetachGrace)
+				m.Thaw()
+			}
 			att, err := m.Attach(spec.Tag, nil)
 			if err != nil {
 				t.Fatal(err)

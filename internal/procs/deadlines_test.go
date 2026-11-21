@@ -236,8 +236,8 @@ func TestDeadlineRetriesFailedKillWhileRunning(t *testing.T) {
 		time.Sleep(killDelay)
 		m.Thaw()
 		expectDeadlineSignal(t, p, execenv.SignalKill)
-		if _, err := m.WriteInput("p", 0, []byte("blocked")); !errors.Is(err, execenv.ErrFrozen) {
-			t.Fatalf("input before KILL retry = %v", err)
+		if _, err := m.WriteInput("p", 0, []byte("ready")); err != nil {
+			t.Fatalf("input after first KILL attempt = %v", err)
 		}
 		time.Sleep(deadlineRetry)
 		synctest.Wait()
@@ -253,8 +253,8 @@ func TestDeadlineSuspendPausesDetachGrace(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		old.Freeze()
 		time.Sleep(time.Second / 2)
+		old.Freeze()
 		saved := old.SuspendDeadlines()["p"]
 		oldProc.exit()
 		time.Sleep(time.Hour)
@@ -265,6 +265,58 @@ func TestDeadlineSuspendPausesDetachGrace(t *testing.T) {
 			t.Fatal(err)
 		}
 		m.Thaw()
+		expectNoDeadlineSignal(t, p)
+		time.Sleep(time.Second / 2)
+		synctest.Wait()
+		expectDeadlineSignal(t, p, execenv.SignalHangup)
+	})
+}
+
+func TestDeadlineThawGateExpiresWhileSignalIsBlocked(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m, p := newDeadlineProc(t)
+		gate := make(chan struct{})
+		release := sync.OnceFunc(func() { close(gate) })
+		defer release()
+		p.onSignal = func(execenv.Signal) error { <-gate; return execenv.ErrUnavailable }
+		if _, err := m.Start(t.Context(), execenv.ProcessSpec{Tag: "p", PTY: &execenv.Window{}, Timeout: time.Second}); err != nil {
+			t.Fatal(err)
+		}
+		m.Freeze()
+		time.Sleep(time.Second)
+		thawed := make(chan struct{})
+		go func() { m.Thaw(); close(thawed) }()
+		synctest.Wait()
+		expectDeadlineSignal(t, p, execenv.SignalTerminate)
+		if _, err := m.WriteInput("p", 0, []byte("blocked")); !errors.Is(err, execenv.ErrFrozen) {
+			t.Fatalf("input while first attempt pending = %v", err)
+		}
+		time.Sleep(2 * time.Second)
+		<-thawed
+		if _, err := m.WriteInput("p", 0, []byte("ready")); err != nil {
+			t.Fatalf("input after thaw gate expired = %v", err)
+		}
+		release()
+		synctest.Wait()
+		time.Sleep(deadlineRetry)
+		synctest.Wait()
+		expectDeadlineSignal(t, p, execenv.SignalTerminate)
+		m.Freeze()
+	})
+}
+
+func TestPlainFreezePausesDetachGrace(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m, p := newDeadlineProc(t)
+		spec := execenv.ProcessSpec{Tag: "p", PTY: &execenv.Window{}, DetachGrace: time.Second, Timeout: time.Second}
+		if _, err := m.Start(t.Context(), spec); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(time.Second / 2)
+		m.Freeze()
+		time.Sleep(time.Hour)
+		m.Thaw()
+		expectDeadlineSignal(t, p, execenv.SignalTerminate)
 		expectNoDeadlineSignal(t, p)
 		time.Sleep(time.Second / 2)
 		synctest.Wait()

@@ -15,13 +15,11 @@ import (
 	"github.com/sudosylabs/execenv/internal/portconn"
 )
 
-// Limit a stream to one chunk of credit per direction. The receive pump
-// can always drain that chunk and read credits and FINs for the other
-// direction, independent of whether the application is reading.
-const portWindow = portconn.ChunkSize
+// Credit includes both buffered data and bytes the sender can still send.
+const portWindow = 256 << 10
 
 // MaxPortMessage leaves room for the frame's protobuf overhead.
-const MaxPortMessage = portWindow + 256
+const MaxPortMessage = portconn.ChunkSize + 256
 
 type portStream interface {
 	Send(*execenvv1.PortFrame) error
@@ -89,7 +87,7 @@ func (f *portFlow) accept(frame *execenvv1.PortFrame) error {
 		f.credit += int(part.Credit)
 	case *execenvv1.PortFrame_Data:
 		n := len(part.Data)
-		if f.fin || n == 0 || n > f.granted {
+		if f.fin || n == 0 || n > portconn.ChunkSize || n > f.granted {
 			return execenv.ErrInvalid
 		}
 		f.granted -= n
@@ -112,33 +110,37 @@ func (f *portFlow) read(p []byte) (int, error) {
 	}
 	for {
 		f.mu.Lock()
+		outstanding := f.granted + len(f.in)
+		amount := 0
+		if outstanding < portWindow/2 && !f.fin && f.ctx.Err() == nil {
+			// Only the reader replenishes credit. A throttled relay
+			// cannot call read again until it has paid for the last read.
+			amount = portWindow - outstanding
+			f.granted += amount
+		}
+		var n int
 		if len(f.in) > 0 {
-			n := copy(p, f.in)
+			n = copy(p, f.in)
 			f.in = f.in[n:]
 			if len(f.in) == 0 {
 				f.in = nil
 			}
-			f.mu.Unlock()
+		}
+		fin, changed := f.fin, f.change
+		f.mu.Unlock()
+		if amount > 0 {
+			if err := f.send(&execenvv1.PortFrame{Payload: &execenvv1.PortFrame_Credit{Credit: uint32(amount)}}); err != nil && !errors.Is(err, io.EOF) {
+				return n, err
+			}
+		}
+		if n > 0 {
 			return n, nil
 		}
 		if err := context.Cause(f.ctx); err != nil {
-			f.mu.Unlock()
 			return 0, err
 		}
-		if f.fin {
-			f.mu.Unlock()
+		if fin {
 			return 0, io.EOF
-		}
-		grant := f.granted == 0
-		if grant {
-			f.granted = min(len(p), portWindow)
-		}
-		amount, changed := f.granted, f.change
-		f.mu.Unlock()
-		if grant {
-			if err := f.send(&execenvv1.PortFrame{Payload: &execenvv1.PortFrame_Credit{Credit: uint32(amount)}}); err != nil && !errors.Is(err, io.EOF) {
-				return 0, err
-			}
 		}
 		select {
 		case <-f.ctx.Done():
@@ -227,7 +229,7 @@ func ServePort(ctx context.Context, stream portStream, open func(*execenvv1.Port
 	inputDone := make(chan struct{})
 	go func() {
 		defer close(inputDone)
-		if _, err := io.CopyBuffer(struct{ io.Writer }{conn}, portInput{flow}, make([]byte, portWindow)); err != nil {
+		if _, err := io.CopyBuffer(struct{ io.Writer }{conn}, portInput{flow}, make([]byte, portconn.ChunkSize)); err != nil {
 			cancel(err)
 		} else if err := conn.CloseWrite(); err != nil {
 			cancel(err)
@@ -255,13 +257,13 @@ type portInput struct{ *portFlow }
 func (p portInput) Read(b []byte) (int, error) { return p.read(b) }
 
 func (f *portFlow) copyFrom(conn execenv.PortConn) error {
-	buf := make([]byte, portWindow)
+	buf := make([]byte, portconn.ChunkSize)
 	for {
 		n, err := f.available()
 		if err != nil {
 			return err
 		}
-		n, err = conn.Read(buf[:n])
+		n, err = conn.Read(buf[:min(n, len(buf))])
 		if n > 0 {
 			if sendErr := f.data(buf[:n]); sendErr != nil {
 				return sendErr
@@ -280,7 +282,7 @@ func (f *portFlow) copyFrom(conn execenv.PortConn) error {
 func OpenPort(ctx, parent context.Context, timeout time.Duration, dial func(context.Context) *portClient, request *execenvv1.PortOpen, mapError func(error) error) (execenv.PortConn, error) {
 	ctx, cancel := context.WithCancelCause(ctx)
 	stop := context.AfterFunc(parent, func() { cancel(execenv.ErrConnection) })
-	timer := time.AfterFunc(timeout, func() { cancel(context.DeadlineExceeded) })
+	timer := time.AfterFunc(timeout, func() { cancel(execenv.ErrConnection) })
 	stream := dial(ctx)
 	err := stream.Send(&execenvv1.PortFrame{Payload: &execenvv1.PortFrame_Open{Open: request}})
 	if err == nil || errors.Is(err, io.EOF) {
@@ -350,7 +352,7 @@ func (c *framedPort) Write(p []byte) (int, error) {
 		if err != nil {
 			return n, err
 		}
-		size := min(len(p), credit)
+		size := min(len(p), credit, portconn.ChunkSize)
 		if err := c.data(p[:size]); err != nil {
 			return n, c.sendError(err)
 		}

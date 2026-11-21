@@ -19,13 +19,14 @@
 
 ### Fixed
 
-- Process timeouts and detach grace that expire while a grant is frozen
-  take effect on thaw, before caller input resumes. A forced kill that
-  falls due during a freeze is also retried on thaw. A restarted host
-  applies overdue timeouts when it takes over running processes.
-- Reattaching cancels pending detach grace. Suspend pauses the grace
-  clock while process timeouts continue to count wall-clock time.
-  Failed deadline signals are retried.
+- Freeze and suspend pause detach grace. Process timeouts continue to
+  count wall-clock time, including while the host is down. Reattaching
+  cancels pending detach grace.
+- Thaw gives overdue deadline signals up to two seconds before accepting
+  input. Failed signals keep retrying, including a kill interrupted by a
+  link close during a reconnect.
+- Port connections use a sliding 256 KiB credit window in each direction.
+  The host's dial timeout returns `ErrConnection`.
 
 ### Changed
 

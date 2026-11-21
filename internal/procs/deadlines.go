@@ -17,7 +17,10 @@ const (
 	deadlineCount
 )
 
-const deadlineRetry = 100 * time.Millisecond
+const (
+	deadlineRetry = 100 * time.Millisecond
+	thawGrace     = 2 * time.Second
+)
 
 var deadlineSignals = [deadlineCount]execenv.Signal{
 	timeoutDeadline: execenv.SignalTerminate,
@@ -30,8 +33,8 @@ func (k deadlineKind) detach() bool { return k == graceDeadline || k == graceKil
 
 // Deadlines holds absolute process deadlines across a guest suspend.
 type Deadlines struct {
-	at          [deadlineCount]time.Time
-	suspendedAt time.Time
+	at       [deadlineCount]time.Time
+	pausedAt time.Time
 }
 
 // SuspendDeadlines snapshots the deadlines before dropping host handles.
@@ -47,31 +50,52 @@ func (m *Manager) SuspendDeadlines() map[string]Deadlines {
 			continue
 		}
 		d := p.deadlines
-		d.suspendedAt = now
+		d.pause(now)
 		if p.attached > 0 && p.spec.DetachGrace > 0 {
-			d.at[graceDeadline] = now.Add(p.spec.DetachGrace)
+			d.at[graceDeadline] = d.pausedAt.Add(p.spec.DetachGrace)
 		}
 		out[tag] = d
 	}
 	return out
 }
 
+func (d *Deadlines) pause(now time.Time) {
+	if d.pausedAt.IsZero() {
+		d.pausedAt = now
+	}
+}
+
 func (d Deadlines) resume(now time.Time) Deadlines {
-	if !d.suspendedAt.IsZero() {
+	if !d.pausedAt.IsZero() {
 		for _, kind := range []deadlineKind{graceDeadline, graceKill} {
 			if !d.at[kind].IsZero() {
-				d.at[kind] = d.at[kind].Add(now.Sub(d.suspendedAt))
+				d.at[kind] = d.at[kind].Add(now.Sub(d.pausedAt))
 			}
 		}
-		d.suspendedAt = time.Time{}
+		d.pausedAt = time.Time{}
 	}
 	return d
 }
 
 func (p *proc) armGraceLocked() {
 	if p.spec.DetachGrace > 0 && p.attached == 0 && !p.exited && p.deadlines.at[graceDeadline].IsZero() {
-		p.deadlines.at[graceDeadline] = p.m.now().Add(p.spec.DetachGrace)
+		p.deadlines.at[graceDeadline] = p.detachNowLocked().Add(p.spec.DetachGrace)
 	}
+}
+
+func (p *proc) detachNowLocked() time.Time {
+	if !p.deadlines.pausedAt.IsZero() {
+		return p.deadlines.pausedAt
+	}
+	return p.m.now()
+}
+
+func (m *Manager) closeThawGateLocked() {
+	if m.thawDone != nil {
+		close(m.thawDone)
+		m.thawDone = nil
+	}
+	m.thawUntil = time.Time{}
 }
 
 func (p *proc) clearGraceLocked() {
@@ -100,9 +124,16 @@ func (p *proc) clearPendingLocked() {
 
 func (p *proc) clearDeadlineLocked(kind deadlineKind) {
 	p.deadlines.at[kind], p.retryAt[kind] = time.Time{}, time.Time{}
+	p.finishAttemptLocked(kind)
+}
+
+func (p *proc) finishAttemptLocked(kind deadlineKind) {
 	if p.thawPending[kind] {
 		p.thawPending[kind] = false
 		p.m.pendingThaw--
+		if p.m.pendingThaw == 0 {
+			p.m.closeThawGateLocked()
+		}
 	}
 }
 
@@ -137,18 +168,17 @@ func (p *proc) nextDeadlineLocked() (deadlineKind, time.Time) {
 
 func (p *proc) scheduleDeadlineLocked() {
 	p.stopDeadlineLocked()
-	if !p.canDeliverLocked() || p.inFlight != nil {
+	if !p.canDeliverLocked() || p.inFlight {
 		return
 	}
 	if _, next := p.nextDeadlineLocked(); !next.IsZero() {
-		p.timer = time.AfterFunc(next.Sub(p.m.now()), func() { p.deliverDeadlines(false) })
+		p.timer = time.AfterFunc(next.Sub(p.m.now()), p.deliverDeadlines)
 	}
 }
 
 // deliverDeadlines claims a signal under the mutex and sends it outside.
-// Thaw waits for any attempt already in flight without blocking the
-// manager's output pumps, attachments, or freeze and teardown operations.
-func (p *proc) deliverDeadlines(wait bool) {
+// Deadline workers never block the manager's lock on backend I/O.
+func (p *proc) deliverDeadlines() {
 	m := p.m
 	for {
 		m.mu.Lock()
@@ -156,13 +186,9 @@ func (p *proc) deliverDeadlines(wait bool) {
 			m.mu.Unlock()
 			return
 		}
-		if inFlight := p.inFlight; inFlight != nil {
+		if p.inFlight {
 			m.mu.Unlock()
-			if !wait {
-				return
-			}
-			<-inFlight
-			continue
+			return
 		}
 		kind, next := p.nextDeadlineLocked()
 		if next.IsZero() || next.After(m.now()) {
@@ -171,7 +197,7 @@ func (p *proc) deliverDeadlines(wait bool) {
 			return
 		}
 		p.stopDeadlineLocked()
-		p.inFlight = make(chan struct{})
+		p.inFlight = true
 		p.flightKind = kind
 		epoch := m.thawEpoch
 		m.mu.Unlock()
@@ -180,8 +206,8 @@ func (p *proc) deliverDeadlines(wait bool) {
 
 		m.mu.Lock()
 		p.recordDeadlineLocked(kind, epoch, err)
-		close(p.inFlight)
-		p.inFlight = nil
+		p.finishAttemptLocked(kind)
+		p.inFlight = false
 		m.mu.Unlock()
 	}
 }
@@ -198,12 +224,13 @@ func (p *proc) recordDeadlineLocked(kind deadlineKind, epoch uint64, err error) 
 			kill := timeoutKill
 			if kind == graceDeadline {
 				kill = graceKill
+				now = p.detachNowLocked()
 			}
 			if p.deadlines.at[kill].IsZero() {
 				p.deadlines.at[kill] = now.Add(killDelay)
 			}
 		}
-	case errors.Is(err, execenv.ErrClosed) || errors.Is(err, execenv.ErrNotFound):
+	case errors.Is(err, ErrProcessExited) || errors.Is(err, execenv.ErrNotFound):
 		p.clearPendingLocked()
 	case epoch != p.m.thawEpoch:
 		// The signal crossed a reopen. Recheck immediately on the new link.
