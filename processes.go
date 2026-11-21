@@ -30,6 +30,8 @@ const (
 const (
 	// MaxProcesses is how many started processes a grant runs at once.
 	MaxProcesses = 32
+	// MaxPortConns is how many port connections a grant can hold at once.
+	MaxPortConns = 64
 	// DefaultHistoryBytes and MaxHistoryBytes bound the output kept per
 	// stream for resume.
 	DefaultHistoryBytes = 1 << 20

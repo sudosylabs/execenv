@@ -41,8 +41,11 @@ func Dial(ctx context.Context, port int) (execenv.PortConn, error) {
 // Set tracks the connections one grant can end together. The caller
 // serializes Add and End with changes to the grant's running state.
 type Set struct {
-	mu    sync.Mutex
-	conns map[*held]struct{}
+	mu      sync.Mutex
+	conns   map[*held]struct{}
+	limit   execenv.TokenBucket
+	buckets [2]bucket
+	changed chan struct{}
 }
 
 func (s *Set) Add(ctx context.Context, conn execenv.PortConn, mapError func(error) error) execenv.PortConn {
@@ -97,6 +100,9 @@ func (c *held) close() {
 	c.once.Do(func() {
 		c.stop()
 		_ = c.PortConn.Close()
+		c.set.mu.Lock()
+		delete(c.set.conns, c)
+		c.set.mu.Unlock()
 	})
 }
 
@@ -105,7 +111,6 @@ func (c *held) end(cause error) {
 	if c.cause == nil {
 		c.cause = cause
 		close(c.done)
-		delete(c.set.conns, c)
 	}
 	c.set.mu.Unlock()
 	c.close()
@@ -120,7 +125,6 @@ func (c *held) half(read bool) {
 	}
 	done := c.readDone && c.writeDone
 	if done {
-		delete(c.set.conns, c)
 	}
 	c.set.mu.Unlock()
 	if done {
@@ -135,11 +139,36 @@ func (c *held) failure(err error) error {
 	return err
 }
 
+func (c *held) status(dir direction) error {
+	c.set.mu.Lock()
+	defer c.set.mu.Unlock()
+	if c.cause != nil {
+		return c.cause
+	}
+	if dir == fromGuest && c.readDone {
+		return io.EOF
+	}
+	if dir == toGuest && c.writeDone {
+		return execenv.ErrClosed
+	}
+	return nil
+}
+
 func (c *held) Read(p []byte) (int, error) {
-	if err := c.Err(); err != nil {
+	if err := c.status(fromGuest); err != nil {
 		return 0, err
 	}
-	n, err := c.PortConn.Read(p)
+	if len(p) == 0 {
+		return 0, nil
+	}
+	n, err := c.PortConn.Read(p[:min(len(p), ChunkSize)])
+	for left := n; left > 0; {
+		allowed, limitErr := c.allow(fromGuest, left)
+		if limitErr != nil {
+			return 0, limitErr
+		}
+		left -= allowed
+	}
 	if cause := c.Err(); cause != nil {
 		return n, cause
 	}
@@ -150,14 +179,29 @@ func (c *held) Read(p []byte) (int, error) {
 }
 
 func (c *held) Write(p []byte) (int, error) {
-	if err := c.Err(); err != nil {
+	if err := c.status(toGuest); err != nil {
 		return 0, err
 	}
-	n, err := c.PortConn.Write(p)
-	if cause := c.Err(); cause != nil {
-		return n, cause
+	written := 0
+	for len(p) != 0 {
+		allowed, err := c.allow(toGuest, min(len(p), ChunkSize))
+		if err != nil {
+			return written, err
+		}
+		n, err := c.PortConn.Write(p[:allowed])
+		written += n
+		if cause := c.Err(); cause != nil {
+			return written, cause
+		}
+		if err != nil {
+			return written, c.failure(err)
+		}
+		if n != allowed {
+			return written, io.ErrShortWrite
+		}
+		p = p[n:]
 	}
-	return n, c.failure(err)
+	return written, nil
 }
 
 func (c *held) CloseWrite() error {

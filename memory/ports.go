@@ -55,6 +55,9 @@ func (e *environment) ConnectPort(ctx context.Context, fence execenv.ProjectionF
 		e.mu.Lock()
 		registered := e.hasPortListener(uint16(port))
 		e.mu.Unlock()
+		if e.ports.Full() {
+			return execenv.ErrCapacity
+		}
 		if !registered {
 			return execenv.ErrRefused
 		}

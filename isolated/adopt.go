@@ -121,6 +121,7 @@ func (h *Host) adopt(ctx context.Context, s grantState, inst instance) error {
 		treeDir: filepath.Join(h.cfg.WorkDir, "grants", string(s.Spec.ID), workspaceName),
 		started: s.Started,
 	}
+	env.ports.SetLimit(s.Spec.Limits.PortBytes)
 	env.public = env
 	env.procs = procs.New(env.startProcess)
 	// A grant not running when its host went away is frozen in its guest
@@ -187,6 +188,7 @@ func (h *Host) adoptSuspended(s grantState) error {
 		suspended:    true,
 		adoptPending: true,
 	}
+	env.ports.SetLimit(s.Spec.Limits.PortBytes)
 	env.public = env
 	env.procs = procs.New(env.startProcess)
 	env.procs.Freeze()

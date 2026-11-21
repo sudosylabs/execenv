@@ -85,7 +85,6 @@ type environment struct {
 	started   time.Time
 	procs     *procs.Manager
 	processes *processLog
-	limits    execenv.Limits
 	timer     *lifetime.Timer
 	// public is what callers hold: the environment, watched for activity.
 	public execenv.Env
@@ -281,11 +280,11 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		started:   time.Now(),
 		host:      h,
 		processes: newProcessLog(),
-		limits:    spec.Limits,
 		grantDir:  grantDir,
 		workspace: workspace,
 		dirty:     newDirty(),
 	}
+	env.ports.SetLimit(spec.Limits.PortBytes)
 	env.journal = journal.New(workspace, store, lockBarrier{&env.guestMu}, nil)
 	env.dirty.touch()
 	env.journal.Watch(env.dirty)
@@ -384,9 +383,7 @@ func (e *environment) UpdateLimits(ctx context.Context, fence execenv.Projection
 		return execenv.Error("update_limits", err)
 	}
 	return e.control.Run(ctx, fence, func() error {
-		e.mu.Lock()
-		e.limits = limits
-		e.mu.Unlock()
+		e.ports.SetLimit(limits.PortBytes)
 		return nil
 	})
 }

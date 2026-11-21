@@ -18,6 +18,9 @@ func (e *environment) ConnectPort(ctx context.Context, fence execenv.ProjectionF
 		if err != nil {
 			return err
 		}
+		if e.ports.Full() {
+			return execenv.ErrCapacity
+		}
 		raw, err := client.DialPort(ctx, port)
 		if err != nil {
 			return err

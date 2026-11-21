@@ -39,3 +39,8 @@ func TestPortConnectionEndsOnLinkLoss(t *testing.T) {
 		t.Fatalf("Read() = %v, want ErrLost", err)
 	}
 }
+
+func TestPortLimitsConformance(t *testing.T) {
+	host := testHost(t, func() error { return nil }, &recordingLauncher{})
+	execenvtest.RunPortLimits(t, host, execenvtest.LocalPortListener(nil))
+}

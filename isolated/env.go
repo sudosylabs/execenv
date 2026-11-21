@@ -311,8 +311,7 @@ func (e *environment) stop(cause error) error {
 	return nil
 }
 
-// UpdateLimits replaces the grant's disk and network limits in its running
-// machine.
+// UpdateLimits replaces the grant's disk, network and port limits.
 func (e *environment) UpdateLimits(ctx context.Context, fence execenv.ProjectionFence, limits execenv.Limits) error {
 	if err := execenv.ValidateLimits(limits); err != nil {
 		return execenv.Error("update_limits", err)
@@ -320,17 +319,23 @@ func (e *environment) UpdateLimits(ctx context.Context, fence execenv.Projection
 	err := e.control.Run(ctx, fence, func() error {
 		e.mu.Lock()
 		inst := e.inst
-		network := e.spec.Network
+		network := e.spec.Network == execenv.NetworkAllowlist
+		previous := e.spec.Limits
 		e.mu.Unlock()
 		if inst == nil {
 			return execenv.Error("update_limits", execenv.ErrUnavailable)
 		}
-		if err := inst.UpdateLimits(ctx, limits, network == execenv.NetworkAllowlist); err != nil {
-			return execenv.Error("update_limits", err)
+		diskChanged := limits.DiskBytes != previous.DiskBytes || limits.DiskOps != previous.DiskOps
+		networkChanged := network && limits.NetworkBytes != previous.NetworkBytes
+		if diskChanged || networkChanged {
+			if err := inst.UpdateLimits(ctx, limits, network); err != nil {
+				return execenv.Error("update_limits", err)
+			}
 		}
 		e.mu.Lock()
 		e.spec.Limits = limits
 		e.mu.Unlock()
+		e.ports.SetLimit(limits.PortBytes)
 		return nil
 	})
 	if err == nil {

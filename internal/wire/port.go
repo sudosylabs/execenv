@@ -15,7 +15,7 @@ import (
 	"github.com/sudosylabs/execenv/internal/portconn"
 )
 
-const portChunk = 32 << 10
+const portChunk = portconn.ChunkSize
 
 // MaxPortMessage leaves room for a data frame's protobuf overhead.
 const MaxPortMessage = portChunk + 256
