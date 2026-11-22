@@ -1,6 +1,8 @@
 package execenv_test
 
 import (
+	"debug/elf"
+	"encoding/binary"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -210,6 +212,49 @@ func TestBakeScriptIsCIOnlyAndFailsClosed(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "docker or podman") {
 		t.Fatalf("error = %s", out)
+	}
+}
+
+func TestBakeRejectsDynamicAgent(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("readelf"); err != nil {
+		t.Skip("bake requires readelf")
+	}
+	dir := t.TempDir()
+	// An ELF64 header followed by a single PT_INTERP program header.
+	const headerSize, programHeaderSize = 64, 56
+	const interpreter = "/lib64/ld-linux-x86-64.so.2\x00"
+	header := make([]byte, headerSize+programHeaderSize)
+	copy(header, []byte{0x7f, 'E', 'L', 'F', byte(elf.ELFCLASS64), byte(elf.ELFDATA2LSB), byte(elf.EV_CURRENT)})
+	binary.LittleEndian.PutUint16(header[16:], uint16(elf.ET_EXEC))
+	binary.LittleEndian.PutUint16(header[18:], uint16(elf.EM_X86_64))
+	binary.LittleEndian.PutUint32(header[20:], uint32(elf.EV_CURRENT))
+	binary.LittleEndian.PutUint64(header[32:], headerSize)
+	binary.LittleEndian.PutUint16(header[52:], headerSize)
+	binary.LittleEndian.PutUint16(header[54:], programHeaderSize)
+	binary.LittleEndian.PutUint16(header[56:], 1)
+	programHeader := header[headerSize:]
+	binary.LittleEndian.PutUint32(programHeader, uint32(elf.PT_INTERP))
+	binary.LittleEndian.PutUint64(programHeader[8:], uint64(len(header)))
+	binary.LittleEndian.PutUint64(programHeader[32:], uint64(len(interpreter)))
+	binary.LittleEndian.PutUint64(programHeader[40:], uint64(len(interpreter)))
+	agent := filepath.Join(dir, "agent")
+	if err := os.WriteFile(agent, append(header, interpreter...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A stub satisfies the tool lookup. A rejected bake never runs it.
+	if err := os.WriteFile(filepath.Join(dir, "docker"), []byte("#!/bin/sh\nexit 99\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outDir := filepath.Join(dir, "out")
+	cmd := exec.Command("scripts/bake", "--out", outDir, "--kernel", agent, "--agent", agent)
+	cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	out, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "agent must be statically linked (build with CGO_ENABLED=0)") {
+		t.Fatalf("bake error = %v, output = %s", err, out)
+	}
+	if _, err := os.Stat(outDir); !os.IsNotExist(err) {
+		t.Fatalf("bake created output for a dynamic agent, stat error = %v", err)
 	}
 }
 

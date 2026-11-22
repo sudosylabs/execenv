@@ -7,7 +7,7 @@
 #   scripts/bake --out DIR --kernel vmlinux --agent ./execenv \
 #     --dockerfile scripts/testdata/Dockerfile --id fixture
 #
-# Requires docker or podman, mkfs.ext4, tar, and a linux execenv binary.
+# Requires docker or podman, mkfs.ext4, tar, readelf, and a linux execenv binary.
 set -eu
 
 DEFAULT_ID=default
@@ -68,13 +68,19 @@ elif command -v podman >/dev/null 2>&1; then
 else
 	die "bake requires docker or podman on the CI runner (not on the grant host)"
 fi
-need_cmd tar
-need_cmd mkfs.ext4
-need_cmd sha256sum
-
 # ELF magic: CI must pass a linux execenv, not a macOS/Windows binary.
 elf=$(dd if="$AGENT" bs=4 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')
 [ "$elf" = "7f454c46" ] || die "agent is not a linux ELF binary (build GOOS=linux)"
+
+need_cmd readelf
+headers=$(LC_ALL=C readelf --wide --program-headers "$AGENT") || die "could not read agent ELF program headers"
+if printf '%s\n' "$headers" | grep -q '^[[:space:]]*INTERP[[:space:]]'; then
+	die "agent must be statically linked (build with CGO_ENABLED=0)"
+fi
+
+need_cmd tar
+need_cmd mkfs.ext4
+need_cmd sha256sum
 
 if [ -z "$SOURCE" ] && [ -z "$DOCKERFILE" ]; then
 	SOURCE=$DEFAULT_SOURCE
