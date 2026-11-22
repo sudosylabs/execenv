@@ -169,6 +169,39 @@ func TestTrackerTagsDescendants(t *testing.T) {
 	}
 }
 
+func TestTrackerKeepsTagsWhenLaunchAndDescendantExitBeforeProcRead(t *testing.T) {
+	proc := fakeProc{}
+	tr := newTestTracker(proc)
+	tr.launched = func(pid int) (launch, bool) {
+		if pid == 10 {
+			return launch{tag: "writer", argv: []string{"sh"}, dir: "/workspace"}, true
+		}
+		return launch{}, false
+	}
+	// All three have already exited by the time the tracker reads their
+	// fork events. Only PID 10 has a launch record from the helper.
+	events := run(t, tr, proc,
+		same(fork(testAgent, 10)),
+		same(execOf(10)), // workload bootstrap
+		same(execOf(10)), // sh
+		same(fork(10, 11)),
+		same(exitOf(11, 0)),
+		same(exitOf(10, 0)),
+		same(fork(testAgent, 12)),
+		same(execOf(12)),
+		same(exitOf(12, 0)),
+	)
+	if got, want := summary(events), []string{"start sh", "exit 0"}; !slices.Equal(got, want) {
+		t.Errorf("events = %q, want %q", got, want)
+	}
+	tr.launched = nil // the helper has since discarded its launch record
+	for pid, want := range map[int]string{10: "writer", 11: "writer", 12: ""} {
+		if got := tr.tagOf(pid); got != want {
+			t.Errorf("tagOf(%d) after exit = %q, want %q", pid, got, want)
+		}
+	}
+}
+
 // Processes outside the workload hierarchy, the helper and init among them,
 // are never recorded; threads are not processes.
 func TestTrackerFiltersByWorkloadHierarchy(t *testing.T) {

@@ -238,19 +238,26 @@ func (t *tracker) inWorkload(pid int) bool {
 	return err == nil && (path == t.group || strings.HasPrefix(path, t.group+"/"))
 }
 
-// admit returns the tracked workload process tgid, adding one that the
-// lineage missed but the hierarchy proves.
+// admit returns the tracked workload process tgid, adding one proven by
+// a direct launch or the workload hierarchy.
 func (t *tracker) admit(tgid, parent int) *member {
 	if m := t.member[tgid]; m != nil {
 		return m
 	}
-	if !t.inWorkload(tgid) {
+	// The helper starts these children in the workload cgroup. A fork
+	// identifying one can establish membership after /proc is gone.
+	var known launch
+	var launched bool
+	if parent == t.agent && t.launched != nil {
+		known, launched = t.launched(tgid)
+	}
+	if !launched && !t.inWorkload(tgid) {
 		return nil
 	}
 	if parent == 0 {
 		parent, _ = t.proc.parent(tgid)
 	}
-	m := &member{parent: parent, launch: parent == t.agent}
+	m := &member{parent: parent, tag: known.tag, launch: parent == t.agent}
 	t.member[tgid] = m
 	return m
 }
