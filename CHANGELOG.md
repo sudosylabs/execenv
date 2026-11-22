@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased (v0.6.0)
+## Unreleased (v0.6.1)
+
+### Fixed
+
+- The v0.6.0 guest agent was dynamically linked, so the fixture image
+  and musl-based Images could not boot. Release binaries are now static,
+  and the bake rejects guest agents that require an ELF interpreter.
+
+## v0.6.0
 
 ### Added
 

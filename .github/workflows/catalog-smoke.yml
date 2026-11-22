@@ -4,6 +4,7 @@ name: catalog-smoke
 on:
   pull_request:
     paths:
+      - "Makefile"
       - "catalog/**"
       - "scripts/bake"
       - "scripts/guest.sh"
@@ -17,6 +18,7 @@ on:
     branches:
       - main
     paths:
+      - "Makefile"
       - "catalog/**"
       - "scripts/bake"
       - "scripts/guest.sh"
@@ -39,7 +41,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Linux Agent
-        run: GOOS=linux GOARCH=amd64 go build -o execenv ./cmd/execenv
+        run: GOOS=linux GOARCH=amd64 make build
       - uses: actions/upload-artifact@v4
         with:
           name: linux-binaries

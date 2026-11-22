@@ -27,6 +27,12 @@ jobs:
           TAG: ${{ github.ref_name }}
           BUILD: ${{ github.run_number }}
         run: GOOS=linux GOARCH=amd64 make build
+      - name: Verify linux binaries are static
+        run: |
+          for binary in execenv execenvctl; do
+            file "$binary" | grep -q 'statically linked' \
+              || { echo "$binary must be statically linked" >&2; exit 1; }
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: linux-binaries

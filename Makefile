@@ -30,8 +30,8 @@ generated: generate
 	@test -z "$$(git status --porcelain -- internal/gen)" || (echo "internal/gen has untracked files: run make generate and commit" >&2; exit 1)
 
 build:
-	go build -ldflags '$(LDFLAGS)' -o execenv ./cmd/execenv
-	go build -ldflags '$(LDFLAGS)' -o execenvctl ./cmd/execenvctl
+	CGO_ENABLED=0 go build -ldflags '$(LDFLAGS)' -o execenv ./cmd/execenv
+	CGO_ENABLED=0 go build -ldflags '$(LDFLAGS)' -o execenvctl ./cmd/execenvctl
 
 test:
 	go test ./...
