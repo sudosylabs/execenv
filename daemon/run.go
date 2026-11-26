@@ -31,6 +31,7 @@ func Run(ctx context.Context, cfg Config, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	defer ln.Close()
 	return serveListener(ctx, ln, inner, cfg, logger)
 }
 

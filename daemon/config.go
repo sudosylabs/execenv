@@ -7,6 +7,7 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -196,7 +197,9 @@ func (cfg *Config) validate() error {
 			return execenv.Error("config", execenv.ErrInvalid)
 		}
 	case securityLocal:
-		if cfg.Token == "" || cfg.TLSClientCA != "" {
+		host, _, err := net.SplitHostPort(cfg.Listen)
+		if err != nil || !strings.EqualFold(host, "localhost") && !net.ParseIP(host).IsLoopback() ||
+			cfg.Token == "" || cfg.TLSClientCA != "" {
 			return execenv.Error("config", execenv.ErrInvalid)
 		}
 	default:

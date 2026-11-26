@@ -97,6 +97,9 @@ func (o Options) resolved() Options {
 	}
 	if out.Listen == "" {
 		out.Listen = defaultListen
+		if out.Insecure {
+			out.Listen = "127.0.0.1:8443"
+		}
 	}
 	return out
 }

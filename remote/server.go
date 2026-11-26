@@ -62,8 +62,19 @@ func Serve(ctx context.Context, ln net.Listener, inner execenv.Host, cfg ServerC
 	if err := validateServer(cfg); err != nil {
 		return err
 	}
-	if inner == nil {
+	if inner == nil || ln == nil {
 		return execenv.Error("serve", execenv.ErrInvalid)
+	}
+	switch cfg.Security {
+	case SecurityTLS:
+		if err := execenv.RequireIsolated(inner); err != nil {
+			return err
+		}
+	case SecurityInsecureLocal:
+		addr, ok := ln.Addr().(*net.TCPAddr)
+		if !ok || !addr.IP.IsLoopback() {
+			return execenv.Error("serve", execenv.ErrInvalid)
+		}
 	}
 	h := &server{inner: inner, cfg: cfg, envs: make(map[execenv.ID]execenv.Env)}
 	mux := http.NewServeMux()

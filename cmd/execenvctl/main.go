@@ -68,7 +68,11 @@ func newBootstrap(opts *ctl.Options) *cobra.Command {
 		Long:  "Verify the isolation device, install runtime and supervisor binaries, write host config and a systemd unit. Does not fetch catalog disks. A missing device fails closed (no container fallback).",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return ctl.Bootstrap(*opts, cmd.OutOrStdout())
+			cfg := *opts
+			if !cmd.Flags().Changed("listen") {
+				cfg.Listen = ""
+			}
+			return ctl.Bootstrap(cfg, cmd.OutOrStdout())
 		},
 	}
 	cmd.Flags().StringVar(&opts.Device, "device", opts.Device, "isolation device path")

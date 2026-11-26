@@ -35,7 +35,7 @@ func TestMutualTLSAuthenticatesWithoutToken(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go func() {
-		_ = remote.Serve(ctx, ln, inner, remote.ServerConfig{
+		_ = remote.Serve(ctx, ln, tlsFixtureHost{inner}, remote.ServerConfig{
 			Security: remote.SecurityTLS,
 			TLS: &tls.Config{
 				Certificates: []tls.Certificate{serverCert},
@@ -62,6 +62,13 @@ func TestMutualTLSAuthenticatesWithoutToken(t *testing.T) {
 	if _, err := client.Ready(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// The fixture exercises authentication without allocating an isolated machine.
+type tlsFixtureHost struct{ execenv.Host }
+
+func (tlsFixtureHost) Capabilities() execenv.Capabilities {
+	return execenv.Capabilities{Isolated: true}
 }
 
 func certificateAuthority(t *testing.T) (*x509.Certificate, *ecdsa.PrivateKey) {
