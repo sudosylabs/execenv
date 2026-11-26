@@ -186,38 +186,43 @@ func TestLiveAllowlistDeniesFromGuest(t *testing.T) {
 	}
 	_ = resp.Body.Close()
 
-	term := execenvtest.OpenShell(t, env, runningFence(t, env), "sh")
-	// Quotes keep the terminal's echo from matching the result markers.
-	command := fmt.Sprintf("command -v wget >/dev/null || { echo NO_\"\"WGET; exit 0; }; "+
-		"wget -q -T 2 -O /dev/null %s || { echo ALLOW_\"\"FAILED; exit 0; }; "+
-		"wget -q -T 2 -O /dev/null %s && echo LEAK\"\"ED || echo DEN\"\"IED\n", allowedURL, deniedURL)
-	if _, err := term.Write([]byte(command)); err != nil {
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+	defer cancel()
+	fence := runningFence(t, env)
+	command := fmt.Sprintf("command -v wget >/dev/null || { echo NO_WGET; exit 0; }; "+
+		"wget -q -T 2 -O /dev/null %s || { echo ALLOW_FAILED; exit 0; }; "+
+		"wget -q -T 2 -O /dev/null %s && echo LEAKED || echo DENIED", allowedURL, deniedURL)
+	if _, err := env.Start(ctx, fence, execenv.ProcessSpec{
+		Tag: "allowlist-proof", Argv: []string{"/bin/sh", "-c", command},
+	}); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(8 * time.Second)
-	var buf []byte
-	tmp := make([]byte, 256)
-	for time.Now().Before(deadline) {
-		n, _ := term.Read(tmp)
-		if n > 0 {
-			buf = append(buf, tmp[:n]...)
-			if strings.Contains(string(buf), "NO_WGET") {
-				t.Skip("fixture image has no wget")
-			}
-			if strings.Contains(string(buf), "ALLOW_FAILED") {
-				t.Fatal("guest could not reach the allowed test listener")
-			}
-			if strings.Contains(string(buf), "LEAKED") {
-				t.Fatal("guest reached a dest that is not on the host allowlist")
-			}
-			if strings.Contains(string(buf), "DENIED") {
-				return
-			}
-		}
-		time.Sleep(50 * time.Millisecond)
+	output, err := env.AttachProcess(ctx, "allowlist-proof", nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(string(buf), "DENIED") {
-		t.Fatal("guest did not report that the dest was denied")
+	defer output.Close()
+	var result strings.Builder
+	for {
+		event, err := output.Next(ctx)
+		if err != nil {
+			t.Fatalf("guest did not report an allowlist result: %v", err)
+		}
+		if event.Kind == execenv.OutputExit {
+			break
+		}
+		result.Write(event.Data)
+	}
+	switch strings.TrimSpace(result.String()) {
+	case "NO_WGET":
+		t.Skip("fixture image has no wget")
+	case "ALLOW_FAILED":
+		t.Fatal("guest could not reach the allowed test listener")
+	case "LEAKED":
+		t.Fatal("guest reached a destination outside the allowlist")
+	case "DENIED":
+	default:
+		t.Fatal("guest did not report an allowlist result")
 	}
 }
 
