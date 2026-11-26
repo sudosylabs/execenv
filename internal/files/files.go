@@ -29,7 +29,7 @@ type FS struct {
 	home  string
 	stage string
 	// Own, when set, hands a created path to the workload's user.
-	Own func(string) error
+	Own func(*os.Root, string) error
 	// transfers holds a lock per resumable transfer.
 	transfers sync.Map
 }
@@ -43,11 +43,16 @@ func New(home, stage string) (*FS, error) {
 	return &FS{home: home, stage: stage}, nil
 }
 
-func (f *FS) resolve(name string) (string, error) {
+func (f *FS) workspace() (*os.Root, error) {
+	root, err := os.OpenRoot(f.home)
+	return root, notFound(err)
+}
+
+func directoryPath(name string) (string, error) {
 	if name == "" {
-		return f.home, nil
+		return ".", nil
 	}
-	return execenv.ResolvePath(f.home, name)
+	return name, execenv.ValidatePath(name)
 }
 
 func notFound(err error) error {
@@ -57,8 +62,8 @@ func notFound(err error) error {
 	return content.DiskError(err)
 }
 
-func (f *FS) info(name, full string, digest bool) (execenv.FileInfo, error) {
-	st, err := os.Lstat(full)
+func info(root *os.Root, name, rel string, digest bool) (execenv.FileInfo, error) {
+	st, err := root.Lstat(rel)
 	if err != nil {
 		return execenv.FileInfo{}, notFound(err)
 	}
@@ -69,7 +74,7 @@ func (f *FS) info(name, full string, digest bool) (execenv.FileInfo, error) {
 	if !st.IsDir() {
 		out.Size = st.Size()
 		if digest {
-			file, err := os.Open(full)
+			file, err := openRegular(root, rel, st)
 			if err != nil {
 				return execenv.FileInfo{}, notFound(err)
 			}
@@ -86,11 +91,16 @@ func (f *FS) info(name, full string, digest bool) (execenv.FileInfo, error) {
 
 // Stat describes one path.
 func (f *FS) Stat(name string, digest bool) (execenv.FileInfo, error) {
-	full, err := f.resolve(name)
+	rel, err := directoryPath(name)
 	if err != nil {
 		return execenv.FileInfo{}, err
 	}
-	return f.info(name, full, digest)
+	root, err := f.workspace()
+	if err != nil {
+		return execenv.FileInfo{}, err
+	}
+	defer root.Close()
+	return info(root, name, rel, digest)
 }
 
 // List walks dir to depth.
@@ -98,24 +108,25 @@ func (f *FS) List(dir string, depth int, digest bool) ([]execenv.FileInfo, error
 	if depth < 1 {
 		depth = 1
 	}
-	full, err := f.resolve(dir)
+	rel, err := directoryPath(dir)
 	if err != nil {
 		return nil, err
 	}
+	root, err := f.workspace()
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
 	var out []execenv.FileInfo
-	var walk func(rel, abs string, level int) error
-	walk = func(rel, abs string, level int) error {
-		entries, err := os.ReadDir(abs)
+	var walk func(name, rel string, level int) error
+	walk = func(name, rel string, level int) error {
+		entries, err := fs.ReadDir(root.FS(), rel)
 		if err != nil {
 			return notFound(err)
 		}
 		for _, e := range entries {
-			name := e.Name()
-			childRel := name
-			if rel != "" {
-				childRel = rel + "/" + name
-			}
-			info, err := f.info(childRel, filepath.Join(abs, name), digest)
+			child := path.Join(name, e.Name())
+			entry, err := info(root, child, path.Join(rel, e.Name()), digest)
 			if errors.Is(err, execenv.ErrInvalid) {
 				continue // links and devices are not workspace files
 			}
@@ -125,16 +136,16 @@ func (f *FS) List(dir string, depth int, digest bool) ([]execenv.FileInfo, error
 			if len(out) >= execenv.MaxListEntries {
 				return execenv.ErrTooLarge
 			}
-			out = append(out, info)
-			if info.Dir && level < depth {
-				if err := walk(childRel, filepath.Join(abs, name), level+1); err != nil {
+			out = append(out, entry)
+			if entry.Dir && level < depth {
+				if err := walk(child, path.Join(rel, e.Name()), level+1); err != nil {
 					return err
 				}
 			}
 		}
 		return nil
 	}
-	if err := walk(dir, full, 1); err != nil {
+	if err := walk(dir, rel, 1); err != nil {
 		return nil, err
 	}
 	slices.SortFunc(out, func(a, b execenv.FileInfo) int { return strings.Compare(a.Path, b.Path) })
@@ -143,18 +154,22 @@ func (f *FS) List(dir string, depth int, digest bool) ([]execenv.FileInfo, error
 
 // ReadFile opens a regular file at offset.
 func (f *FS) ReadFile(name string, offset int64) (io.ReadCloser, error) {
-	full, err := f.resolve(name)
-	if err != nil || name == "" {
+	if execenv.ValidatePath(name) != nil {
 		return nil, execenv.ErrInvalid
 	}
-	st, err := os.Lstat(full)
+	root, err := f.workspace()
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	st, err := root.Lstat(name)
 	if err != nil {
 		return nil, notFound(err)
 	}
 	if !st.Mode().IsRegular() || offset < 0 || offset > st.Size() {
 		return nil, execenv.ErrInvalid
 	}
-	file, err := os.Open(full)
+	file, err := openRegular(root, name, st)
 	if err != nil {
 		return nil, notFound(err)
 	}
@@ -168,13 +183,20 @@ func (f *FS) ReadFile(name string, offset int64) (io.ReadCloser, error) {
 // WriteFile stages body, checks the expected digest, then renames it into
 // place.
 func (f *FS) WriteFile(name string, body io.Reader, opts execenv.WriteOptions) (execenv.FileInfo, error) {
-	full, err := f.resolve(name)
-	if err != nil || name == "" {
+	if execenv.ValidatePath(name) != nil || body == nil {
 		return execenv.FileInfo{}, execenv.ErrInvalid
 	}
-	if st, err := os.Lstat(filepath.Dir(full)); err != nil || !st.IsDir() {
-		return execenv.FileInfo{}, execenv.ErrNotFound
+	root, err := f.workspace()
+	if err != nil {
+		return execenv.FileInfo{}, err
 	}
+	defer root.Close()
+	parent, err := openDirectory(root, path.Dir(name))
+	if err != nil {
+		return execenv.FileInfo{}, err
+	}
+	defer parent.Close()
+	base := path.Base(name)
 	var stage *os.File
 	if opts.TransferID == "" {
 		if opts.Offset != 0 {
@@ -223,7 +245,7 @@ func (f *FS) WriteFile(name string, body io.Reader, opts execenv.WriteOptions) (
 	if err != nil {
 		return execenv.FileInfo{}, content.DiskError(err)
 	}
-	if err := f.expect(full, opts.ExpectedSHA256); err != nil {
+	if err := expect(parent, base, opts.ExpectedSHA256); err != nil {
 		return execenv.FileInfo{}, err
 	}
 	mode := os.FileMode(0o644)
@@ -233,18 +255,23 @@ func (f *FS) WriteFile(name string, body io.Reader, opts execenv.WriteOptions) (
 	if err := os.Chmod(staged, mode); err != nil {
 		return execenv.FileInfo{}, err
 	}
-	if err := f.own(staged); err != nil {
+	staging, err := os.OpenRoot(f.stage)
+	if err != nil {
 		return execenv.FileInfo{}, err
 	}
-	if err := os.Rename(staged, full); err != nil {
+	defer staging.Close()
+	stagedName := filepath.Base(staged)
+	if err := f.own(staging, stagedName); err != nil {
+		return execenv.FileInfo{}, err
+	}
+	st, err := staging.Lstat(stagedName)
+	if err != nil {
+		return execenv.FileInfo{}, notFound(err)
+	}
+	if err := publish(staging, stagedName, parent, base); err != nil {
 		return execenv.FileInfo{}, content.DiskError(err)
 	}
-	st, _ := os.Lstat(full)
-	out := execenv.FileInfo{Path: name, Executable: opts.Executable, Size: size, SHA256: hex.EncodeToString(sum.Sum(nil))}
-	if st != nil {
-		out.Modified = st.ModTime()
-	}
-	return out, nil
+	return execenv.FileInfo{Path: name, Executable: opts.Executable, Size: size, SHA256: hex.EncodeToString(sum.Sum(nil)), Modified: st.ModTime()}, nil
 }
 
 // transfer is where a resumable write's bytes are kept.
@@ -310,21 +337,21 @@ func hashFile(path string, sum io.Writer) (int64, error) {
 	return io.Copy(sum, r)
 }
 
-func (f *FS) expect(full, want string) error {
+func expect(root *os.Root, name, want string) error {
 	if want == "" {
 		return nil
 	}
-	st, err := os.Lstat(full)
+	st, err := root.Lstat(name)
 	if want == execenv.ExpectAbsent {
-		if err == nil {
-			return execenv.ErrConflict
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
 		}
-		return nil
+		return execenv.ErrConflict
 	}
 	if err != nil || !st.Mode().IsRegular() {
 		return execenv.ErrConflict
 	}
-	file, err := os.Open(full)
+	file, err := openRegular(root, name, st)
 	if err != nil {
 		return execenv.ErrConflict
 	}
@@ -336,81 +363,89 @@ func (f *FS) expect(full, want string) error {
 	return nil
 }
 
-func (f *FS) own(full string) error {
+func (f *FS) own(root *os.Root, name string) error {
 	if f.Own == nil {
 		return nil
 	}
-	return f.Own(full)
+	return f.Own(root, name)
 }
 
 // MakeDirectory makes one directory, or every missing parent too.
 func (f *FS) MakeDirectory(name string, parents bool) error {
-	full, err := f.resolve(name)
-	if err != nil || name == "" {
+	if execenv.ValidatePath(name) != nil {
 		return execenv.ErrInvalid
 	}
+	root, err := f.workspace()
+	if err != nil {
+		return err
+	}
+	defer root.Close()
 	if parents {
 		parts := strings.Split(name, "/")
 		for i := range parts {
-			sub := filepath.Join(f.home, filepath.FromSlash(path.Join(parts[:i+1]...)))
-			if err := os.Mkdir(sub, 0o755); err != nil {
-				if st, serr := os.Lstat(sub); serr == nil && st.IsDir() {
+			sub := strings.Join(parts[:i+1], "/")
+			if err := root.Mkdir(sub, 0o755); err != nil {
+				if st, serr := root.Lstat(sub); serr == nil && st.IsDir() {
 					continue
 				}
 				return content.DiskError(err)
 			}
-			if err := f.own(sub); err != nil {
+			if err := f.own(root, sub); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
-	if err := os.Mkdir(full, 0o755); err != nil {
+	if err := root.Mkdir(name, 0o755); err != nil {
 		if errors.Is(err, fs.ErrExist) {
 			return execenv.ErrConflict
 		}
 		return notFound(err)
 	}
-	return f.own(full)
+	return f.own(root, name)
 }
 
 // Move renames from to to.
 func (f *FS) Move(from, to string) error {
-	src, err := f.resolve(from)
-	if err != nil || from == "" {
+	if execenv.ValidatePath(from) != nil || execenv.ValidatePath(to) != nil || strings.HasPrefix(to+"/", from+"/") {
 		return execenv.ErrInvalid
 	}
-	dst, err := f.resolve(to)
-	if err != nil || to == "" || strings.HasPrefix(to+"/", from+"/") {
-		return execenv.ErrInvalid
+	root, err := f.workspace()
+	if err != nil {
+		return err
 	}
-	if _, err := os.Lstat(src); err != nil {
+	defer root.Close()
+	if _, err := root.Lstat(from); err != nil {
 		return notFound(err)
 	}
-	if _, err := os.Lstat(dst); err == nil {
+	if _, err := root.Lstat(to); err == nil {
 		return execenv.ErrConflict
 	}
-	if st, err := os.Lstat(filepath.Dir(dst)); err != nil || !st.IsDir() {
+	if st, err := root.Lstat(path.Dir(to)); err != nil || !st.IsDir() {
 		return execenv.ErrNotFound
 	}
-	return content.DiskError(os.Rename(src, dst))
+	return content.DiskError(root.Rename(from, to))
 }
 
 // Remove deletes a file, or a directory: an empty one, or any with
 // recursive.
 func (f *FS) Remove(name string, recursive bool) error {
-	full, err := f.resolve(name)
-	if err != nil || name == "" {
+	if execenv.ValidatePath(name) != nil {
 		return execenv.ErrInvalid
 	}
-	st, err := os.Lstat(full)
+	root, err := f.workspace()
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	st, err := root.Lstat(name)
 	if err != nil {
 		return notFound(err)
 	}
 	if st.IsDir() && recursive {
-		return os.RemoveAll(full)
+		return root.RemoveAll(name)
 	}
-	if err := os.Remove(full); err != nil {
+	if err := root.Remove(name); err != nil {
 		if st.IsDir() {
 			return execenv.ErrConflict
 		}
@@ -421,13 +456,20 @@ func (f *FS) Remove(name string, recursive bool) error {
 
 // Import unpacks archive under dir, all or nothing.
 func (f *FS) Import(dir string, r io.Reader) error {
-	target, err := f.resolve(dir)
+	rel, err := directoryPath(dir)
 	if err != nil {
 		return err
 	}
-	if st, err := os.Lstat(target); err != nil || !st.IsDir() {
-		return execenv.ErrNotFound
+	workspace, err := f.workspace()
+	if err != nil {
+		return err
 	}
+	defer workspace.Close()
+	target, err := openDirectory(workspace, rel)
+	if err != nil {
+		return err
+	}
+	defer target.Close()
 	stage, err := os.MkdirTemp(f.stage, "import-")
 	if err != nil {
 		return content.DiskError(err)
@@ -467,27 +509,30 @@ func (f *FS) Import(dir string, r io.Reader) error {
 		return execenv.ErrInvalid
 	}
 	for _, top := range tops {
-		if _, err := os.Lstat(filepath.Join(target, top)); err == nil {
+		if _, err := target.Lstat(top); err == nil {
 			return execenv.ErrConflict
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return content.DiskError(err)
 		}
 	}
 	if f.Own != nil {
-		if err := filepath.WalkDir(stage, func(p string, _ fs.DirEntry, err error) error {
-			if err != nil || p == stage {
+		if err := fs.WalkDir(root.FS(), ".", func(p string, _ fs.DirEntry, err error) error {
+			if err != nil || p == "." {
 				return err
 			}
-			return f.Own(p)
+			return f.Own(root, p)
 		}); err != nil {
 			return err
 		}
 	}
 	var moved []string
 	for _, top := range tops {
-		if err := os.Rename(filepath.Join(stage, top), filepath.Join(target, top)); err != nil {
+		if err := publish(root, top, target, top); err != nil {
+			var rollback error
 			for _, back := range moved {
-				_ = os.Rename(filepath.Join(target, back), filepath.Join(stage, back))
+				rollback = errors.Join(rollback, publish(target, back, root, back))
 			}
-			return content.DiskError(err)
+			return errors.Join(content.DiskError(err), rollback)
 		}
 		moved = append(moved, top)
 	}
@@ -496,6 +541,11 @@ func (f *FS) Import(dir string, r io.Reader) error {
 
 // Export writes an archive of paths to w.
 func (f *FS) Export(paths []string, codec archive.Codec, w io.Writer) error {
+	root, err := f.workspace()
+	if err != nil {
+		return err
+	}
+	defer root.Close()
 	aw, err := archive.NewWriter(w, codec)
 	if err != nil {
 		return err
@@ -511,11 +561,10 @@ func (f *FS) Export(paths []string, codec archive.Codec, w io.Writer) error {
 				return err
 			}
 		}
-		full, err := f.resolve(name)
-		if err != nil {
+		if err := execenv.ValidatePath(name); err != nil {
 			return err
 		}
-		st, err := os.Lstat(full)
+		st, err := root.Lstat(name)
 		if err != nil {
 			return notFound(err)
 		}
@@ -524,7 +573,7 @@ func (f *FS) Export(paths []string, codec archive.Codec, w io.Writer) error {
 		case st.IsDir():
 			return aw.Dir(name)
 		case st.Mode().IsRegular():
-			file, err := os.Open(full)
+			file, err := openRegular(root, name, st)
 			if err != nil {
 				return notFound(err)
 			}
@@ -537,13 +586,21 @@ func (f *FS) Export(paths []string, codec archive.Codec, w io.Writer) error {
 		if err := execenv.ValidatePath(name); err != nil {
 			return err
 		}
-		full, _ := f.resolve(name)
-		err := filepath.WalkDir(full, func(p string, d fs.DirEntry, err error) error {
+		info, err := root.Lstat(name)
+		if err != nil {
+			return notFound(err)
+		}
+		if !info.IsDir() {
+			if err := add(name); err != nil {
+				return err
+			}
+			continue
+		}
+		err = fs.WalkDir(root.FS(), name, func(p string, _ fs.DirEntry, err error) error {
 			if err != nil {
 				return notFound(err)
 			}
-			rel, _ := filepath.Rel(f.home, p)
-			return add(filepath.ToSlash(rel))
+			return add(p)
 		})
 		if err != nil {
 			return err

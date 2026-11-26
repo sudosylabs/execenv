@@ -176,7 +176,7 @@ func New(cfg Config) (*Agent, error) {
 	}
 	s.processTag = tagOf
 	if group != nil {
-		fs.Own = group.OwnHome
+		fs.Own = group.OwnPath
 		// A real guest watches its workspace, so an idle one is not walked,
 		// and names the started process each change's writer descends from.
 		if w, err := workspace.New(cfg.Home, tagOf); err == nil && s.journal != nil {
