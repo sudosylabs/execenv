@@ -27,6 +27,7 @@ type stubInstance struct {
 	ln        net.Listener
 	conns     *trackedConns
 	cancel    context.CancelFunc
+	served    <-chan struct{}
 	// processes simulates the guest kernel's view of the workload.
 	processes *stubProcesses
 	// exited closes when the simulated machine ends: Stop, or die.
@@ -132,6 +133,7 @@ func (s *stubInstance) die() {
 		s.ln = nil
 	}
 	s.mu.Unlock()
+	<-s.served
 	s.exitOnce.Do(func() { close(s.exited) })
 }
 
@@ -155,7 +157,7 @@ func (s *stubInstance) Resume(context.Context) error {
 	return nil
 }
 
-func (s *stubInstance) Stop(context.Context) error {
+func (s *stubInstance) Stop(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.stopErr != nil {
@@ -174,6 +176,11 @@ func (s *stubInstance) Stop(context.Context) error {
 	if s.ln != nil {
 		_ = s.ln.Close()
 		s.ln = nil
+	}
+	select {
+	case <-s.served:
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 	if s.sock != "" {
 		_ = os.Remove(s.sock)
@@ -339,10 +346,15 @@ func startStubAgent(_ context.Context, req startRequest, journal, processLog boo
 		cfg.Processes = processes
 	}
 	conns := &trackedConns{Listener: ln}
+	served := make(chan struct{})
 	go func() {
+		defer close(served)
 		_ = agent.ListenAndServe(ctx, conns, cfg)
 	}()
-	return &stubInstance{sock: sock, net: netRecordOf(req.Attach), scratch: scratch, ln: ln, conns: conns, cancel: cancel, processes: processes, exited: make(chan struct{})}, nil
+	return &stubInstance{
+		sock: sock, net: netRecordOf(req.Attach), scratch: scratch, ln: ln, conns: conns,
+		cancel: cancel, served: served, processes: processes, exited: make(chan struct{}),
+	}, nil
 }
 
 // stubProcesses is the stub helper's process source. Run reports one
