@@ -26,12 +26,13 @@ type Timer struct {
 	idle   time.Duration
 	expire func(Reason)
 
-	mu      sync.Mutex
-	last    time.Time
-	holds   int
-	stopped bool
-	wall    *time.Timer
-	idleT   *time.Timer
+	mu       sync.Mutex
+	last     time.Time
+	holds    int
+	stopped  bool
+	checking bool
+	wall     *time.Timer
+	idleT    *time.Timer
 }
 
 // New creates an inert watcher. Start it after publishing the timer to
@@ -67,12 +68,7 @@ func (t *Timer) fire(r Reason) {
 
 func (t *Timer) checkIdle() {
 	t.mu.Lock()
-	if t.stopped {
-		t.mu.Unlock()
-		return
-	}
-	if t.holds > 0 {
-		t.idleT.Reset(t.idle)
+	if t.stopped || t.holds > 0 || t.checking {
 		t.mu.Unlock()
 		return
 	}
@@ -81,9 +77,19 @@ func (t *Timer) checkIdle() {
 		t.mu.Unlock()
 		return
 	}
-	t.idleT.Reset(t.idle)
+	t.checking = true
 	t.mu.Unlock()
 	t.expire(Idle)
+	t.mu.Lock()
+	t.checking = false
+	if !t.stopped && t.holds == 0 {
+		rest := t.idle - time.Since(t.last)
+		if rest <= 0 {
+			rest = t.idle
+		}
+		t.idleT.Reset(rest)
+	}
+	t.mu.Unlock()
 }
 
 // IdleDue rechecks the deadline when the caller acquires control of the grant.
@@ -117,10 +123,17 @@ func (t *Timer) ArmIdle(idle time.Duration) {
 		return
 	}
 	t.idle, t.last = idle, time.Now()
+	t.resetIdleLocked()
+}
+
+func (t *Timer) resetIdleLocked() {
+	if t.stopped || t.idle <= 0 || t.holds > 0 || t.checking {
+		return
+	}
 	if t.idleT == nil {
-		t.idleT = time.AfterFunc(idle, t.checkIdle)
+		t.idleT = time.AfterFunc(t.idle, t.checkIdle)
 	} else {
-		t.idleT.Reset(idle)
+		t.idleT.Reset(t.idle)
 	}
 }
 
@@ -139,6 +152,7 @@ func (t *Timer) Hold() func() {
 			t.mu.Lock()
 			t.holds--
 			t.last = time.Now()
+			t.resetIdleLocked()
 			t.mu.Unlock()
 		})
 	}

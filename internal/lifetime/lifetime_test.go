@@ -100,3 +100,23 @@ func TestStopSilencesTheTimer(t *testing.T) {
 	none.Touch()
 	none.Hold()()
 }
+
+func TestIdleDoesNotQueueCallbacksBehindAnOutstandingExpiry(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		got := make(chan Reason, 8)
+		unblock := make(chan struct{})
+		timer := New(func(r Reason) {
+			got <- r
+			<-unblock
+		})
+		timer.Start(0, time.Minute)
+		defer close(unblock)
+		defer timer.Stop()
+		<-got
+		time.Sleep(5 * time.Minute)
+		synctest.Wait()
+		if len(got) != 0 {
+			t.Fatal("new callbacks accumulated while the first one was blocked")
+		}
+	})
+}

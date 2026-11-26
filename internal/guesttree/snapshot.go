@@ -124,9 +124,9 @@ func Capture(home string, previous *Snapshot, observe Observe) (*Snapshot, error
 }
 
 // CaptureDirty is Capture for a tree that changed only at paths: it starts
-// from previous and reads again just those paths and what is under them,
-// so its cost is the change's, not the tree's. A path whose parent previous
-// does not hold, or "." itself, is a whole walk.
+// from previous and reads again just those paths and what is under them.
+// The in-memory indexes are rebuilt from the previous snapshot. A path
+// whose parent previous does not hold, or "." itself, is a whole walk.
 func CaptureDirty(home string, previous *Snapshot, observe Observe, paths []string) (*Snapshot, error) {
 	if previous == nil {
 		return Capture(home, previous, observe)
