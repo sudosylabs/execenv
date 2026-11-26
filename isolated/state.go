@@ -115,11 +115,12 @@ func saveState(workDir string, s grantState) error {
 		_ = os.Remove(tmp.Name())
 		return err
 	}
-	if dir, err := os.Open(filepath.Dir(path)); err == nil {
-		_ = dir.Sync()
-		_ = dir.Close()
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
 	}
-	return nil
+	defer dir.Close()
+	return dir.Sync()
 }
 
 // loadStates reads every grant's state file. A grant directory without a

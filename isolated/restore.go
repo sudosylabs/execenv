@@ -206,6 +206,11 @@ func (l *processLauncher) buildTemplate(ctx context.Context, image Image, shape 
 	}
 	inst, err := l.Start(ctx, req)
 	if err != nil {
+		if inst != nil {
+			stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			return errors.Join(err, inst.Stop(stopCtx))
+		}
 		return err
 	}
 	p := inst.(*processInstance)

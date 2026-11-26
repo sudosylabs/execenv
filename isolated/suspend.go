@@ -2,6 +2,7 @@ package isolated
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 
@@ -29,7 +30,7 @@ func (e *environment) suspend(ctx context.Context, done execenv.ControlReceipt) 
 	suspended := e.suspended
 	e.mu.Unlock()
 	if suspended {
-		return nil
+		return e.finishSuspend(ctx, done)
 	}
 	// Freezing a frozen grant gates nothing new: its guest was quiesced
 	// and its machine paused when it froze.
@@ -74,17 +75,36 @@ func (e *environment) suspend(ctx context.Context, done execenv.ControlReceipt) 
 	e.suspendedDeadlines = deadlines
 	e.procs = procs.New(e.startProcess)
 	e.procs.Freeze()
-	e.inst, e.client = nil, nil
-	e.suspended, e.adoptPending, e.paused = true, true, false
+	e.client = nil
+	e.suspended, e.adoptPending = true, true
 	e.mu.Unlock()
 	if client != nil {
 		_ = client.Close()
 	}
 	old.End(execenv.ErrFrozen)
-	e.persistReceipt(done)
+	return e.finishSuspend(ctx, done)
+}
+
+func (e *environment) finishSuspend(ctx context.Context, done execenv.ControlReceipt) error {
+	e.mu.Lock()
+	inst := e.inst
+	e.mu.Unlock()
+	if inst == nil {
+		return nil
+	}
+	if err := e.persistReceipt(done); err != nil {
+		return err
+	}
+	return e.stopSuspendedMachine(ctx, inst)
+}
+
+func (e *environment) stopSuspendedMachine(ctx context.Context, inst instance) error {
 	if err := inst.Stop(ctx); err != nil {
 		return err
 	}
+	e.mu.Lock()
+	e.inst, e.paused = nil, false
+	e.mu.Unlock()
 	e.host.pool.Release(e.id)
 	_ = e.host.pool.Reserve(e.id, execenv.Resources{DiskBytes: e.spec.Resources.DiskBytes})
 	// The caller holds the control lock; it records the state once the
@@ -97,6 +117,14 @@ func (e *environment) suspend(ctx context.Context, done execenv.ControlReceipt) 
 // thaw fails with ErrCapacity.
 func (e *environment) resume(ctx context.Context) error {
 	h := e.host
+	e.mu.Lock()
+	previous := e.inst
+	e.mu.Unlock()
+	if previous != nil {
+		if err := e.stopSuspendedMachine(ctx, previous); err != nil {
+			return err
+		}
+	}
 	h.pool.Release(e.id)
 	if err := h.pool.Reserve(e.id, e.spec.Resources); err != nil {
 		_ = h.pool.Reserve(e.id, execenv.Resources{DiskBytes: e.spec.Resources.DiskBytes})
@@ -128,6 +156,15 @@ func (e *environment) resume(ctx context.Context) error {
 		Restore:   &restoreFrom{Dir: e.suspendDir(), Own: true},
 	})
 	if err != nil {
+		if inst != nil {
+			e.mu.Lock()
+			e.inst = inst
+			e.mu.Unlock()
+			if stopErr := e.stopSuspendedMachine(ctx, inst); stopErr != nil {
+				return errors.Join(err, stopErr)
+			}
+			return err
+		}
 		if att != nil {
 			att.close()
 		}

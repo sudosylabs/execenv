@@ -133,7 +133,7 @@ func (e *environment) watch() {
 	// A suspend stops the machine on purpose. A restored instance may
 	// report a new completion channel.
 	e.mu.Lock()
-	current := e.inst == inst && inst.Done() == done
+	current := !e.suspended && e.inst == inst && inst.Done() == done
 	e.mu.Unlock()
 	if current {
 		e.host.lose(e)
@@ -321,7 +321,7 @@ func (e *environment) UpdateLimits(ctx context.Context, fence execenv.Projection
 	if err := execenv.ValidateLimits(limits); err != nil {
 		return execenv.Error("update_limits", err)
 	}
-	err := e.control.Run(ctx, fence, func() error {
+	return e.control.Run(ctx, fence, func() error {
 		e.mu.Lock()
 		inst := e.inst
 		network := e.spec.Network == execenv.NetworkAllowlist
@@ -341,12 +341,8 @@ func (e *environment) UpdateLimits(ctx context.Context, fence execenv.Projection
 		e.spec.Limits = limits
 		e.mu.Unlock()
 		e.ports.SetLimit(limits.PortBytes)
-		return nil
+		return e.persistReceipt(execenv.ControlReceipt{Fence: fence, State: execenv.ControlRunning, Confirmed: true})
 	})
-	if err == nil {
-		e.persist()
-	}
-	return err
 }
 
 func (e *environment) live(op string) (*agent.Client, error) {

@@ -2,6 +2,7 @@ package isolated
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"time"
@@ -28,10 +29,19 @@ func (h *Host) recover() error {
 	adopted := map[execenv.ID]instance{}
 	var keep []machine
 	for id, s := range states {
-		if s.Lost || s.Suspended {
+		if s.Lost || s.Suspended && s.Machine == (machine{}) {
 			continue
 		}
 		if inst, err := h.launch.Adopt(ctx, s.Machine); err == nil {
+			if s.Suspended || !s.Receipt.Confirmed || s.Receipt.State == execenv.ControlRevoked {
+				stopCtx, stop := context.WithTimeout(ctx, 5*time.Second)
+				err := inst.Stop(stopCtx)
+				stop()
+				if err != nil {
+					return err
+				}
+				continue
+			}
 			adopted[id] = inst
 			keep = append(keep, s.Machine)
 		}
@@ -47,7 +57,13 @@ func (h *Host) recover() error {
 		}
 	}
 	for id, s := range states {
-		if s.Suspended && !s.Lost {
+		if !s.Lost && s.Receipt.State == execenv.ControlRevoked {
+			if err := os.RemoveAll(filepath.Dir(statePath(h.cfg.WorkDir, id))); err != nil {
+				return err
+			}
+			continue
+		}
+		if s.Suspended && !s.Lost && s.Receipt.Confirmed {
 			if err := h.adoptSuspended(s); err != nil {
 				h.tombstone(s)
 			}
@@ -63,8 +79,11 @@ func (h *Host) recover() error {
 		cancel()
 		if err != nil {
 			stopCtx, stop := context.WithTimeout(ctx, 5*time.Second)
-			_ = inst.Stop(stopCtx)
+			stopErr := inst.Stop(stopCtx)
 			stop()
+			if stopErr != nil {
+				return errors.Join(err, stopErr)
+			}
 			h.tombstone(s)
 		}
 	}
@@ -124,6 +143,7 @@ func (h *Host) adopt(ctx context.Context, s grantState, inst instance) error {
 	env.ports.SetLimit(s.Spec.Limits.PortBytes)
 	env.public = env
 	env.procs = procs.New(env.startProcess)
+	env.control.SetPersistence(env.persistReceipt)
 	// A grant not running when its host went away is frozen in its guest
 	// too: the guest's gate outlives the link.
 	env.frozen = s.Paused || s.Receipt.State != execenv.ControlRunning
@@ -192,6 +212,7 @@ func (h *Host) adoptSuspended(s grantState) error {
 	env.public = env
 	env.procs = procs.New(env.startProcess)
 	env.procs.Freeze()
+	env.control.SetPersistence(env.persistReceipt)
 	if s.Spec.WallTimeout > 0 {
 		wall := max(s.Spec.WallTimeout-time.Since(s.Started), time.Nanosecond)
 		env.timer = lifetime.Start(wall, 0, func(r lifetime.Reason) { h.expire(env, r) })
@@ -232,25 +253,17 @@ func (e *environment) adoptProcesses(ctx context.Context, client *agent.Client) 
 	return nil
 }
 
-// persist records the grant's state for a restarted host. A failure is
-// not the caller's: the grant runs on, and only a restart would lose it.
-func (e *environment) persist() {
-	receipt, _ := e.control.Status(context.Background())
-	e.persistReceipt(receipt)
-}
-
-// persistReceipt is persist with the control receipt given, for a caller
-// that holds the control lock.
-func (e *environment) persistReceipt(receipt execenv.ControlReceipt) {
+// persistReceipt saves a grant before publication or under its control lock.
+func (e *environment) persistReceipt(receipt execenv.ControlReceipt) error {
 	e.mu.Lock()
-	if e.revoked || (e.inst == nil && !e.suspended) {
-		e.mu.Unlock()
-		return
-	}
 	s := grantState{Spec: e.spec, Epoch: e.control.Epoch(), Receipt: receipt, Started: e.started, Paused: e.paused, Suspended: e.suspended}
+	s.Lost = e.lost
 	if e.inst != nil {
 		s.Machine = e.inst.Machine()
 	}
 	e.mu.Unlock()
-	_ = saveState(e.host.cfg.WorkDir, s)
+	if err := saveState(e.host.cfg.WorkDir, s); err != nil {
+		return execenv.Error("grant state", errors.Join(execenv.ErrUnavailable, err))
+	}
+	return nil
 }

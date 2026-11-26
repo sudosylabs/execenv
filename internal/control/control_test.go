@@ -3,9 +3,51 @@ package control
 import (
 	"context"
 	"errors"
-	"github.com/sudosylabs/execenv"
 	"testing"
+
+	"github.com/sudosylabs/execenv"
 )
+
+func TestControlDurability(t *testing.T) {
+	s := New("grant")
+	fence := execenv.ProjectionFence{ExecutionGrantID: "grant", EnvironmentEpoch: s.Epoch(), FenceRevision: 1}
+	req := execenv.ControlRequest{Fence: fence, State: execenv.ControlRunning}
+	writeErr := errors.New("state write failed")
+	var durable execenv.ControlReceipt
+	writable := false
+	confirm := false
+	s.SetPersistence(func(receipt execenv.ControlReceipt) error {
+		if !writable || receipt.Confirmed && !confirm {
+			return writeErr
+		}
+		durable = receipt
+		return nil
+	})
+	if _, err := s.Execute(t.Context(), req, func() error {
+		t.Fatal("effect ran before durable intent")
+		return nil
+	}); !errors.Is(err, writeErr) {
+		t.Fatal(err)
+	}
+	writable = true
+	receipt, err := s.Execute(t.Context(), req, func() error {
+		if durable.Fence != fence || durable.Confirmed {
+			t.Fatalf("durable intent at effect start: %+v", durable)
+		}
+		return nil
+	})
+	if !errors.Is(err, writeErr) || receipt.Confirmed || receipt.Fence != fence {
+		t.Fatalf("undurable confirmation: %+v, %v", receipt, err)
+	}
+	if err := s.Run(t.Context(), fence, func() error { return nil }); !errors.Is(err, execenv.ErrFrozen) {
+		t.Fatalf("Run after failed confirmation: %v", err)
+	}
+	confirm = true
+	receipt, err = s.Execute(t.Context(), req, func() error { return nil })
+	if err != nil || !receipt.Confirmed || durable != receipt {
+		t.Fatalf("retry: %+v, %v; durable: %+v", receipt, err, durable)
+	}
+}
 
 func TestFailedIntentStillFencesOlderRequests(t *testing.T) {
 	s := New("grant")

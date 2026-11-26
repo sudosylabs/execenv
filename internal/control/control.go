@@ -24,6 +24,8 @@ type State struct {
 	seen atomic.Pointer[seen]
 	// changed, when set, is told after every operation.
 	changed atomic.Pointer[func()]
+	// save persists the intent and confirmation under the control lock.
+	save func(execenv.ControlReceipt) error
 }
 
 type seen struct {
@@ -81,6 +83,29 @@ func (s *State) release() {
 // OnChange has f told after every operation, once its lock is released.
 func (s *State) OnChange(f func()) { s.changed.Store(&f) }
 
+// SetPersistence installs the durable writer before the state is published.
+func (s *State) SetPersistence(save func(execenv.ControlReceipt) error) { s.save = save }
+
+func (s *State) transition(next execenv.ControlReceipt, effect func() error) error {
+	if s.save != nil {
+		if err := s.save(next); err != nil {
+			return err
+		}
+	}
+	s.receipt = next
+	if err := effect(); err != nil {
+		return err
+	}
+	next.Confirmed = true
+	if s.save != nil {
+		if err := s.save(next); err != nil {
+			return err
+		}
+	}
+	s.receipt = next
+	return nil
+}
+
 func (s *State) Status(ctx context.Context) (execenv.ControlReceipt, error) {
 	if err := s.acquire(ctx); err != nil {
 		return execenv.ControlReceipt{}, err
@@ -118,9 +143,7 @@ func (s *State) Execute(ctx context.Context, req execenv.ControlRequest, effect 
 	if req.Fence == old.Fence && old.Confirmed {
 		return old, nil
 	}
-	s.receipt = execenv.ControlReceipt{Fence: req.Fence, State: req.State}
-	err := effect()
-	s.receipt.Confirmed = err == nil
+	err := s.transition(execenv.ControlReceipt{Fence: req.Fence, State: req.State}, effect)
 	return s.receipt, err
 }
 
@@ -135,10 +158,9 @@ func (s *State) Revoke(ctx context.Context, effect func() error) error {
 	if s.receipt.State == execenv.ControlRevoked && s.receipt.Confirmed {
 		return nil
 	}
-	s.receipt.State, s.receipt.Confirmed = execenv.ControlRevoked, false
-	err := effect()
-	s.receipt.Confirmed = err == nil
-	return err
+	next := s.receipt
+	next.State, next.Confirmed = execenv.ControlRevoked, false
+	return s.transition(next, effect)
 }
 
 // Lose ends the epoch because its environment ended without a revoke. Like
@@ -172,14 +194,13 @@ func (s *State) Idle(ctx context.Context, effect func(done execenv.ControlReceip
 	if s.lost || s.receipt.State != execenv.ControlRunning || !s.receipt.Confirmed {
 		return false, nil
 	}
-	s.receipt.State, s.receipt.Confirmed = execenv.ControlFrozen, false
+	next := s.receipt
+	next.State, next.Confirmed = execenv.ControlFrozen, false
 	// done is what the grant's control records once effect succeeds, for an
 	// effect that must make it durable before it finishes.
-	done := s.receipt
+	done := next
 	done.Confirmed = true
-	err := effect(done)
-	s.receipt.Confirmed = err == nil
-	return true, err
+	return true, s.transition(next, func() error { return effect(done) })
 }
 
 // Suspend saves a confirmed frozen epoch on the host's own initiative, for
