@@ -264,14 +264,14 @@ func (e *remoteEnv) AttachProcess(ctx context.Context, tag string, from map[exec
 		cancel()
 		return nil, err
 	}
-	a := &remoteAttachment{env: e, stream: stream, cancel: cancel, events: make(chan attachEvent, 1)}
-	go a.pump()
+	a := &remoteAttachment{env: e, stream: stream, ctx: sctx, cancel: cancel, events: make(chan attachEvent, 1)}
 	e.mu.Lock()
 	if e.atts == nil {
 		e.atts = make(map[*remoteAttachment]struct{})
 	}
 	e.atts[a] = struct{}{}
 	e.mu.Unlock()
+	go a.pump()
 	if e.revoked.Load() {
 		a.end(execenv.ErrRevoked)
 	}
@@ -300,6 +300,7 @@ type attachEvent struct {
 type remoteAttachment struct {
 	env    *remoteEnv
 	stream *connect.ServerStreamForClient[execenvv1.OutputEvent]
+	ctx    context.Context
 	cancel context.CancelFunc
 	events chan attachEvent
 
@@ -310,13 +311,16 @@ type remoteAttachment struct {
 
 func (a *remoteAttachment) pump() {
 	defer close(a.events)
+	defer a.stream.Close()
 	for a.stream.Receive() {
 		out, ok := wire.OutputFrom(a.stream.Msg())
 		if !ok {
-			a.events <- attachEvent{err: execenv.ErrUnavailable}
+			a.deliver(attachEvent{err: execenv.ErrUnavailable})
 			return
 		}
-		a.events <- attachEvent{out: out}
+		if !a.deliver(attachEvent{out: out}) {
+			return
+		}
 	}
 	err := a.stream.Err()
 	switch {
@@ -327,7 +331,16 @@ func (a *remoteAttachment) pump() {
 	default:
 		err = wire.HostError("attach", err)
 	}
-	a.events <- attachEvent{err: err}
+	a.deliver(attachEvent{err: err})
+}
+
+func (a *remoteAttachment) deliver(ev attachEvent) bool {
+	select {
+	case a.events <- ev:
+		return true
+	case <-a.ctx.Done():
+		return false
+	}
 }
 
 func (a *remoteAttachment) Next(ctx context.Context) (execenv.Output, error) {
@@ -347,11 +360,16 @@ func (a *remoteAttachment) Next(ctx context.Context) (execenv.Output, error) {
 	select {
 	case got, ok := <-a.events:
 		if !ok {
+			if a.ctx.Err() != nil {
+				return execenv.Output{}, a.deadOr(execenv.ErrConnection)
+			}
 			return execenv.Output{}, a.deadOr(execenv.ErrClosed)
 		}
 		ev = got
 	case <-ctx.Done():
 		return execenv.Output{}, ctx.Err()
+	case <-a.ctx.Done():
+		return execenv.Output{}, a.deadOr(execenv.ErrConnection)
 	}
 	if ev.err != nil {
 		a.mu.Lock()
@@ -359,6 +377,9 @@ func (a *remoteAttachment) Next(ctx context.Context) (execenv.Output, error) {
 		a.mu.Unlock()
 		a.env.forget(a)
 		return execenv.Output{}, a.deadOr(ev.err)
+	}
+	if err := a.deadOr(nil); err != nil {
+		return execenv.Output{}, err
 	}
 	return ev.out, nil
 }
@@ -385,11 +406,6 @@ func (a *remoteAttachment) end(err error) {
 // Close detaches. The process keeps running on the host.
 func (a *remoteAttachment) Close() error {
 	a.end(execenv.ErrClosed)
-	// Let the pump finish so no goroutine outlives the attachment.
-	go func() {
-		for range a.events {
-		}
-	}()
 	return nil
 }
 

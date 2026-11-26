@@ -5,6 +5,7 @@ import (
 	"context"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -275,7 +276,10 @@ func (t *tracker) handle(event kernelEvent) (execenv.ProcessEvent, bool) {
 		}
 		delete(t.member, event.TGID)
 		// A reused pid is a new process: an ended one's tag is not its.
-		delete(t.gone, event.TGID)
+		if _, held := t.gone[event.TGID]; held {
+			delete(t.gone, event.TGID)
+			t.ended = slices.DeleteFunc(t.ended, func(pid int) bool { return pid == event.TGID })
+		}
 		if parent := t.member[event.Parent]; parent != nil {
 			t.member[event.TGID] = &member{parent: event.Parent, tag: t.tagLocked(event.Parent)}
 		} else {

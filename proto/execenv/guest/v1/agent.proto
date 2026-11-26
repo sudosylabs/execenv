@@ -89,6 +89,9 @@ message HelloResponse {
 
 message SpawnRequest {
   execenv.v1.ProcessSpec spec = 1;
+  string attempt = 2;
+  // Resolve returns a committed spawn or cancels this uncommitted attempt.
+  bool resolve = 3;
 }
 
 message SpawnResponse {
@@ -160,8 +163,9 @@ message ProcessScreenRequest {
 }
 
 message SignalRequest {
-  string tag = 1;
+  reserved 1;
   string signal = 2;
+  ProcessRef process = 3;
 }
 
 message FreezeRequest {}

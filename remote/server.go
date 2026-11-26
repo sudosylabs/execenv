@@ -22,7 +22,7 @@ import (
 )
 
 // protocol is the major version of the schema in proto/execenv/v1.
-const protocol = 2
+const protocol = 3
 
 // Features this host offers. A client names the ones it needs in Hello.
 const (
@@ -134,6 +134,43 @@ type server struct {
 	mu sync.Mutex
 	// envs holds the environment each grant was last ensured as.
 	envs map[execenv.ID]execenv.Env
+	// lifecycle serializes the adapter call and map publication for one ID.
+	lifecycle map[execenv.ID]*grantOperation
+}
+
+type grantOperation struct {
+	gate         chan struct{}
+	refs         int
+	cancelEnsure context.CancelFunc
+}
+
+func (h *server) lockGrant(ctx context.Context, id execenv.ID) (func(), error) {
+	h.mu.Lock()
+	if h.lifecycle == nil {
+		h.lifecycle = make(map[execenv.ID]*grantOperation)
+	}
+	op := h.lifecycle[id]
+	if op == nil {
+		op = &grantOperation{gate: make(chan struct{}, 1)}
+		h.lifecycle[id] = op
+	}
+	op.refs++
+	h.mu.Unlock()
+	drop := func() {
+		h.mu.Lock()
+		op.refs--
+		if op.refs == 0 {
+			delete(h.lifecycle, id)
+		}
+		h.mu.Unlock()
+	}
+	select {
+	case <-ctx.Done():
+		drop()
+		return nil, ctx.Err()
+	case op.gate <- struct{}{}:
+		return func() { <-op.gate; drop() }, nil
+	}
 }
 
 // authenticate admits a request that carries the token or a verified
@@ -249,7 +286,21 @@ func (h *server) EnsureGrant(ctx context.Context, req *connect.Request[execenvv1
 	if !ok {
 		return nil, wire.Error(execenv.ErrInvalid)
 	}
+	unlock, err := h.lockGrant(ctx, spec.ID)
+	if err != nil {
+		return nil, wire.Error(err)
+	}
+	defer unlock()
+	ctx, cancel := context.WithCancel(ctx)
+	h.mu.Lock()
+	op := h.lifecycle[spec.ID]
+	op.cancelEnsure = cancel
+	h.mu.Unlock()
 	env, err := h.inner.Ensure(ctx, spec)
+	cancel()
+	h.mu.Lock()
+	op.cancelEnsure = nil
+	h.mu.Unlock()
 	if err != nil {
 		return nil, wire.Error(err)
 	}
@@ -261,8 +312,26 @@ func (h *server) EnsureGrant(ctx context.Context, req *connect.Request[execenvv1
 
 func (h *server) RevokeGrant(ctx context.Context, req *connect.Request[execenvv1.RevokeGrantRequest]) (*connect.Response[execenvv1.RevokeGrantResponse], error) {
 	id := execenv.ID(req.Msg.GetGrantId())
+	if err := ctx.Err(); err != nil {
+		return nil, wire.Error(err)
+	}
+	if req.Msg.GetEpoch() == "" {
+		h.mu.Lock()
+		if op := h.lifecycle[id]; op != nil && op.cancelEnsure != nil {
+			op.cancelEnsure()
+		}
+		h.mu.Unlock()
+	}
+	unlock, err := h.lockGrant(ctx, id)
+	if err != nil {
+		return nil, wire.Error(err)
+	}
+	defer unlock()
 	if epoch := req.Msg.GetEpoch(); epoch != "" {
 		env, err := h.env(id, epoch)
+		if errors.Is(err, execenv.ErrRevoked) || errors.Is(err, execenv.ErrConflict) {
+			return connect.NewResponse(&execenvv1.RevokeGrantResponse{}), nil
+		}
 		if err != nil {
 			return nil, wire.Error(err)
 		}

@@ -456,6 +456,9 @@ func (f *FS) Remove(name string, recursive bool) error {
 
 // Import unpacks archive under dir, all or nothing.
 func (f *FS) Import(dir string, r io.Reader) error {
+	if r == nil {
+		return execenv.ErrInvalid
+	}
 	rel, err := directoryPath(dir)
 	if err != nil {
 		return err
@@ -507,6 +510,11 @@ func (f *FS) Import(dir string, r io.Reader) error {
 			return err
 		}
 		return execenv.ErrInvalid
+	}
+	// The archive reader can stop at the tar end before the upload ends.
+	// Finish receiving before publishing any staged entry.
+	if _, err := io.Copy(io.Discard, r); err != nil {
+		return err
 	}
 	for _, top := range tops {
 		if _, err := target.Lstat(top); err == nil {

@@ -129,6 +129,13 @@ func runFiles(t *testing.T, factory Factory) {
 		env, fence := occupyRunning(t, host, "archives")
 		ctx := t.Context()
 		raw, digest := seedArchive(t)
+		broken := io.MultiReader(bytes.NewReader(raw), failingReader{})
+		if err := env.Import(ctx, fence, "", broken); err == nil {
+			t.Fatal("Import() succeeded after the source failed")
+		}
+		if _, err := env.Stat(ctx, "stale.txt", false); !errors.Is(err, execenv.ErrNotFound) {
+			t.Fatalf("Stat() after interrupted Import = %v, want ErrNotFound", err)
+		}
 		if err := env.Import(ctx, fence, "", bytes.NewReader(raw)); err != nil {
 			t.Fatalf("Import() = %v", err)
 		}

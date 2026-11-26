@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -302,9 +303,10 @@ type server struct {
 	processes atomic.Bool
 	log       *processes.Log
 
-	mu     sync.Mutex
-	frozen bool
-	procs  map[string]*guestProc
+	mu             sync.Mutex
+	frozen         bool
+	procs          map[string]*guestProc
+	canceledSpawns map[string]time.Time
 }
 
 func (s *server) guard() error {

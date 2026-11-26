@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"io"
 	"time"
@@ -22,10 +23,21 @@ func (c *Client) Start(ctx context.Context, spec execenv.ProcessSpec) (procs.Bac
 		return nil, execenv.Error("start", err)
 	}
 	cctx, cancel := c.call(ctx)
-	resp, err := c.agent.Spawn(cctx, connect.NewRequest(&guestv1.SpawnRequest{Spec: wire.ProcessSpecTo(spec)}))
+	req := &guestv1.SpawnRequest{Spec: wire.ProcessSpecTo(spec), Attempt: rand.Text()}
+	resp, err := c.agent.Spawn(cctx, connect.NewRequest(req))
 	cancel()
 	if err != nil {
-		return nil, c.failure("start", err)
+		switch connect.CodeOf(err) {
+		case connect.CodeCanceled, connect.CodeDeadlineExceeded, connect.CodeUnavailable, connect.CodeUnknown, connect.CodeInternal:
+			// Resolve on the link even if the original operation timed out.
+			// The guest either hands back the committed process or cancels it.
+			resolveCtx, stop := c.call(context.Background())
+			defer stop()
+			resp, _ = c.agent.Spawn(resolveCtx, connect.NewRequest(&guestv1.SpawnRequest{Spec: req.Spec, Attempt: req.Attempt, Resolve: true}))
+		}
+		if resp == nil {
+			return nil, c.failure("start", err)
+		}
 	}
 	var started time.Time
 	if t := resp.Msg.GetStarted(); t != nil {
@@ -200,7 +212,7 @@ func (b *guestBackend) Screen(ctx context.Context) (execenv.Screen, error) {
 func (b *guestBackend) Signal(s execenv.Signal) error {
 	ctx, cancel := b.client.call(context.Background())
 	defer cancel()
-	_, err := b.client.agent.SignalProcess(ctx, connect.NewRequest(&guestv1.SignalRequest{Tag: b.tag, Signal: string(s)}))
+	_, err := b.client.agent.SignalProcess(ctx, connect.NewRequest(&guestv1.SignalRequest{Process: b.ref(), Signal: string(s)}))
 	// Only a response from the guest can confirm that the process exited.
 	// A local link hangup also uses ErrClosed and must remain retryable.
 	if errors.Is(wire.HostError("signal", err), execenv.ErrClosed) {

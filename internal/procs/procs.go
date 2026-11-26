@@ -120,7 +120,8 @@ func (m *Manager) Start(ctx context.Context, spec execenv.ProcessSpec) (execenv.
 		m.mu.Unlock()
 		return execenv.ProcessInfo{}, err
 	}
-	if old, ok := m.procs[spec.Tag]; ok && !old.exited {
+	old := m.procs[spec.Tag]
+	if old != nil && !old.exited {
 		m.mu.Unlock()
 		return execenv.ProcessInfo{}, execenv.ErrConflict
 	}
@@ -143,7 +144,11 @@ func (m *Manager) Start(ctx context.Context, spec execenv.ProcessSpec) (execenv.
 	backend, err := m.start(ctx, spec)
 	m.mu.Lock()
 	if err != nil {
-		delete(m.procs, spec.Tag)
+		if old == nil {
+			delete(m.procs, spec.Tag)
+		} else {
+			m.procs[spec.Tag] = old
+		}
 		m.mu.Unlock()
 		return execenv.ProcessInfo{}, err
 	}

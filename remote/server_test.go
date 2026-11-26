@@ -50,3 +50,28 @@ type addressOnlyListener struct {
 }
 
 func (l addressOnlyListener) Addr() net.Addr { return l.addr }
+
+func TestScopedRevokeRetryLeavesReplacement(t *testing.T) {
+	host := startLoopback(t)
+	spec := execenv.Spec{ID: "scoped", Image: "default"}
+	old, err := host.Ensure(t.Context(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Revoke(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Revoke(t.Context()); err != nil {
+		t.Fatalf("repeated revoke: %v", err)
+	}
+	replacement, err := host.Ensure(t.Context(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Revoke(t.Context()); err != nil {
+		t.Fatalf("retired epoch revoke: %v", err)
+	}
+	if _, err := replacement.ControlStatus(t.Context()); err != nil {
+		t.Fatalf("replacement unavailable: %v", err)
+	}
+}

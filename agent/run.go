@@ -45,6 +45,7 @@ type guestProc struct {
 	// writes, in order, by its pump.
 	screen  *screen.Terminal
 	spec    execenv.ProcessSpec
+	attempt string
 	cmd     *exec.Cmd
 	started time.Time
 	pty     *os.File
@@ -78,17 +79,41 @@ func (p *guestProc) done() bool {
 	return p.exited
 }
 
-func (s *server) Spawn(_ context.Context, req *connect.Request[guestv1.SpawnRequest]) (*connect.Response[guestv1.SpawnResponse], error) {
+func (s *server) Spawn(ctx context.Context, req *connect.Request[guestv1.SpawnRequest]) (*connect.Response[guestv1.SpawnResponse], error) {
 	spec, ok := wire.ProcessSpecFrom(req.Msg.GetSpec())
-	if !ok || execenv.ValidateProcessSpec(spec) != nil {
+	attempt := req.Msg.GetAttempt()
+	if !ok || execenv.ValidateProcessSpec(spec) != nil || execenv.ValidateTransferID(attempt) != nil {
 		return nil, wire.Error(execenv.ErrInvalid)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	old := s.procs[spec.Tag]
+	if old != nil && old.attempt == attempt {
+		return spawnReply(old), nil
+	}
+	now := time.Now()
+	for token, until := range s.canceledSpawns {
+		if !now.Before(until) {
+			delete(s.canceledSpawns, token)
+		}
+	}
+	if req.Msg.GetResolve() {
+		if s.canceledSpawns == nil {
+			s.canceledSpawns = make(map[string]time.Time)
+		}
+		s.canceledSpawns[attempt] = now.Add(2 * callTimeout)
+		return nil, wire.Error(execenv.ErrNotFound)
+	}
+	if _, canceled := s.canceledSpawns[attempt]; canceled {
+		return nil, wire.Error(context.Canceled)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, wire.Error(err)
+	}
 	if err := s.guard(); err != nil {
 		return nil, wire.Error(err)
 	}
-	if old, ok := s.procs[spec.Tag]; ok && !old.done() {
+	if old != nil && !old.done() {
 		return nil, wire.Error(execenv.ErrConflict)
 	}
 	if s.runningLocked() >= execenv.MaxProcesses {
@@ -101,8 +126,13 @@ func (s *server) Spawn(_ context.Context, req *connect.Request[guestv1.SpawnRequ
 		}
 		return nil, wire.Error(execenv.ErrUnavailable)
 	}
+	p.attempt = attempt
 	s.procs[spec.Tag] = p
-	return connect.NewResponse(&guestv1.SpawnResponse{Pid: int32(p.cmd.Process.Pid), Started: timestamppb.New(p.started)}), nil
+	return spawnReply(p), nil
+}
+
+func spawnReply(p *guestProc) *connect.Response[guestv1.SpawnResponse] {
+	return connect.NewResponse(&guestv1.SpawnResponse{Pid: int32(p.cmd.Process.Pid), Started: timestamppb.New(p.started)})
 }
 
 // spawn starts spec in the workload: unprivileged and in its cgroup when
@@ -629,9 +659,17 @@ func (s *server) SignalProcess(_ context.Context, req *connect.Request[guestv1.S
 	if !ok {
 		return nil, wire.Error(execenv.ErrInvalid)
 	}
-	p, err := s.live(req.Msg.GetTag())
+	p, err := s.referencedProcess(req.Msg.GetProcess())
 	if err != nil {
 		return nil, wire.Error(err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.guard(); err != nil {
+		return nil, wire.Error(err)
+	}
+	if s.procs[p.spec.Tag] != p || p.done() {
+		return nil, wire.Error(execenv.ErrClosed)
 	}
 	signalSession(p.cmd, sig)
 	return connect.NewResponse(&guestv1.Empty{}), nil

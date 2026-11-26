@@ -317,3 +317,21 @@ func TestKernelProcessesSkipsUnrecordedEvents(t *testing.T) {
 		t.Fatal("thread exit recorded")
 	}
 }
+
+func TestEndedWriterTagSurvivesPIDReuse(t *testing.T) {
+	tracker := newTestTracker(fakeProc{})
+	const pid = 10
+	tracker.member[pid] = &member{tag: "earlier"}
+	tracker.end(pid)
+	tracker.handle(fork(testAgent, pid))
+	for i := 0; i < keptEnded-1; i++ {
+		id := 100 + i
+		tracker.member[id] = &member{tag: "another"}
+		tracker.end(id)
+	}
+	tracker.member[pid] = &member{tag: "recent"}
+	tracker.end(pid)
+	if got := tracker.tagOf(pid); got != "recent" {
+		t.Fatalf("most recently ended writer tag: got %q, want recent", got)
+	}
+}
