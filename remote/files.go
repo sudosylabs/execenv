@@ -158,7 +158,7 @@ func (e *remoteEnv) Stat(ctx context.Context, path string, digest bool) (execenv
 func (e *remoteEnv) List(ctx context.Context, dir string, depth int, digest bool) ([]execenv.FileInfo, error) {
 	ctx, cancel := e.client.call(ctx)
 	defer cancel()
-	resp, err := e.client.files.List(ctx, connect.NewRequest(&execenvv1.ListRequest{GrantId: string(e.id), Epoch: e.epoch, Dir: dir, Depth: int32(depth), Digest: digest}))
+	resp, err := e.client.files.List(ctx, connect.NewRequest(&execenvv1.ListRequest{GrantId: string(e.id), Epoch: e.epoch, Dir: dir, Depth: int32(min(max(1, depth), execenv.MaxListEntries)), Digest: digest}))
 	if err != nil {
 		return nil, wire.HostError("list", err)
 	}

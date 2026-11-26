@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/sudosylabs/execenv/daemon"
@@ -75,8 +76,8 @@ func joinIDs(ids []string) string {
 }
 
 // Remove deletes one catalog id from this host. Other ids stay. Removing
-// an id that is not installed is success. The shared kernel is kept if
-// another image still names it.
+// an id that is not installed is success. Shared files stay while another
+// image still references them.
 func Remove(opts Options, id string, stdout io.Writer) error {
 	opts = opts.resolved()
 	if id == "" {
@@ -124,12 +125,11 @@ func Remove(opts Options, id string, stdout io.Writer) error {
 		if again.Token != token {
 			return wrap("remove", fmt.Errorf("host token changed"))
 		}
-		if err := removeFile(dropped.Rootfs); err != nil {
-			return err
-		}
-		if !kernelStillUsed(kept, dropped.Kernel) {
-			if err := removeFile(dropped.Kernel); err != nil {
-				return err
+		for _, name := range []string{dropped.Rootfs, dropped.Kernel} {
+			if !imageFileInUse(kept, name) {
+				if err := removeFile(name); err != nil {
+					return err
+				}
 			}
 		}
 		if err := opts.reloadUnit(); err != nil {
@@ -152,10 +152,16 @@ func removeFile(path string) error {
 	return nil
 }
 
-func kernelStillUsed(images []daemon.Image, kernel string) bool {
+func imageFileInUse(images []daemon.Image, name string) bool {
+	info, err := os.Stat(name)
 	for _, img := range images {
-		if img.Kernel == kernel {
-			return true
+		for _, current := range []string{img.Kernel, img.Rootfs} {
+			if filepath.Clean(current) == filepath.Clean(name) {
+				return true
+			}
+			if candidate, statErr := os.Stat(current); err == nil && statErr == nil && os.SameFile(info, candidate) {
+				return true
+			}
 		}
 	}
 	return false

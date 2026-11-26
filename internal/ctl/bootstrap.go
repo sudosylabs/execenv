@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 
 	"github.com/sudosylabs/execenv/daemon"
 	"github.com/sudosylabs/execenv/internal/hostplatform"
@@ -382,6 +384,9 @@ func hashSummary(opts Options) string {
 }
 
 func writeUnit(opts Options) error {
+	quote := func(arg string) string {
+		return strconv.Quote(strings.ReplaceAll(arg, "%", "%%"))
+	}
 	body := "[Unit]\n" +
 		"Description=execenv host\n" +
 		"After=network-online.target\n" +
@@ -389,7 +394,7 @@ func writeUnit(opts Options) error {
 		"\n" +
 		"[Service]\n" +
 		"Type=simple\n" +
-		"ExecStart=" + opts.execenvPath() + " -config " + opts.configPath() + "\n" +
+		"ExecStart=" + quote(":"+opts.execenvPath()) + " -config " + quote(opts.configPath()) + "\n" +
 		"Restart=on-failure\n" +
 		// Grants' machines outlive a restart of the daemon, which adopts
 		// them again; stopping the unit stops only the daemon.

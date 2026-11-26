@@ -195,3 +195,24 @@ func bootstrappedWithFixture(t *testing.T, root string) Options {
 	}
 	return opts
 }
+
+func TestRemovePreservesASharedRootfs(t *testing.T) {
+	opts := bootstrappedWithFixture(t, t.TempDir())
+	cfg, err := daemon.Load(opts.configPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias := cfg.Images[0]
+	alias.ID = "alias"
+	cfg.Images = append(cfg.Images, alias)
+	if err := daemon.Save(opts.configPath(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := Remove(opts, "fixture", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	got, err := isolated.Digest(alias.Kernel, alias.Rootfs)
+	if err != nil || got != alias.Hash {
+		t.Fatalf("remaining image cannot be verified: %q, %v", got, err)
+	}
+}

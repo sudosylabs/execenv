@@ -476,6 +476,9 @@ func (e *remoteEnv) ObserveProcesses(ctx context.Context, fence execenv.Projecti
 	if err := e.guard(fence); err != nil {
 		return execenv.ProcessPage{}, err
 	}
+	if limit < 1 || limit > execenv.MaxProcessPage {
+		return execenv.ProcessPage{}, execenv.ErrInvalid
+	}
 	ctx, cancel := e.client.call(ctx)
 	defer cancel()
 	resp, err := e.client.process.ObserveProcesses(ctx, connect.NewRequest(&execenvv1.ObserveProcessesRequest{Fence: wire.FenceTo(fence), After: after, Limit: int32(limit)}))

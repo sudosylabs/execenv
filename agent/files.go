@@ -200,7 +200,7 @@ func (c *Client) Stat(ctx context.Context, path string, digest bool) (execenv.Fi
 func (c *Client) List(ctx context.Context, dir string, depth int, digest bool) ([]execenv.FileInfo, error) {
 	ctx, cancel := c.call(ctx)
 	defer cancel()
-	resp, err := c.agent.List(ctx, connect.NewRequest(&execenvv1.ListRequest{Dir: dir, Depth: int32(depth), Digest: digest}))
+	resp, err := c.agent.List(ctx, connect.NewRequest(&execenvv1.ListRequest{Dir: dir, Depth: int32(min(max(1, depth), execenv.MaxListEntries)), Digest: digest}))
 	if err != nil {
 		return nil, c.failure("list", err)
 	}

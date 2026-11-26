@@ -100,20 +100,20 @@ func NewWriter(w io.Writer, codec Codec) (*Writer, error) {
 	return &Writer{tar: tar.NewWriter(body), closer: closer, seen: make(map[string]bool)}, nil
 }
 
-func (w *Writer) admit(name string) error {
-	if execenv.ValidatePath(name) != nil || w.seen[name] {
+func (w *Writer) admit(name string, directory bool) error {
+	if _, seen := w.seen[name]; execenv.ValidatePath(name) != nil || seen {
 		return execenv.ErrInvalid
 	}
 	if parent := path.Dir(name); parent != "." && !w.seen[parent] {
 		return execenv.ErrInvalid
 	}
-	w.seen[name] = true
+	w.seen[name] = directory
 	return nil
 }
 
 // Dir adds a directory.
 func (w *Writer) Dir(name string) error {
-	if err := w.admit(name); err != nil {
+	if err := w.admit(name, true); err != nil {
 		return err
 	}
 	w.entries = append(w.entries, Entry{Path: name, Dir: true})
@@ -122,7 +122,7 @@ func (w *Writer) Dir(name string) error {
 
 // File adds a file of size bytes read from body.
 func (w *Writer) File(name string, executable bool, size int64, body io.Reader) error {
-	if err := w.admit(name); err != nil {
+	if err := w.admit(name, false); err != nil {
 		return err
 	}
 	mode := int64(0o644)
@@ -163,7 +163,7 @@ type Visit func(entry Entry, body io.Reader) error
 
 // Read reads an archive, calling visit for every entry, and returns the
 // tree's digest. Anything but a directory or a regular file, an invalid or
-// repeated path, or a path whose parent was not listed first is
+// repeated path, or a path whose parent directory was not listed first is
 // execenv.ErrInvalid, and reading stops there.
 func Read(r io.Reader, visit Visit) (string, error) {
 	br := bufio.NewReader(r)
@@ -198,19 +198,24 @@ func Read(r io.Reader, visit Visit) (string, error) {
 	for {
 		h, err := tr.Next()
 		if errors.Is(err, io.EOF) {
+			// Read through the compression footer so a checksum error or
+			// interrupted source cannot be hidden by the tar end marker.
+			if _, err := io.Copy(io.Discard, body); err != nil {
+				return "", execenv.ErrInvalid
+			}
 			return Digest(entries), nil
 		}
 		if err != nil {
 			return "", execenv.ErrInvalid
 		}
 		name := strings.TrimSuffix(h.Name, "/")
-		if execenv.ValidatePath(name) != nil || seen[name] {
+		if _, duplicate := seen[name]; execenv.ValidatePath(name) != nil || duplicate {
 			return "", execenv.ErrInvalid
 		}
 		if parent := path.Dir(name); parent != "." && !seen[parent] {
 			return "", execenv.ErrInvalid
 		}
-		seen[name] = true
+		seen[name] = h.Typeflag == tar.TypeDir
 		var entry Entry
 		switch h.Typeflag {
 		case tar.TypeDir:

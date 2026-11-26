@@ -73,6 +73,9 @@ func boundProcess(event execenv.ProcessEvent) execenv.ProcessEvent {
 // guest link and the host, so neither losing the link nor restarting the
 // host loses a retained event.
 func (c *Client) ObserveProcesses(ctx context.Context, after uint64, limit int) (execenv.ProcessPage, error) {
+	if limit < 1 || limit > execenv.MaxProcessPage {
+		return execenv.ProcessPage{}, execenv.ErrInvalid
+	}
 	ctx, cancel := c.call(ctx)
 	defer cancel()
 	resp, err := c.agent.ObserveProcesses(ctx, connect.NewRequest(&execenvv1.ObserveProcessesRequest{After: after, Limit: int32(limit)}))

@@ -112,7 +112,7 @@ func TestBootstrapWritesConfigWithoutLeakingSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(body), "-config "+filepath.Join(opts.Sysconf, "host.json")) {
+	if !strings.Contains(string(body), `-config "`+filepath.Join(opts.Sysconf, "host.json")+`"`) {
 		t.Fatalf("unit = %s", body)
 	}
 	if !strings.Contains(string(body), "KillMode=process") {
@@ -310,5 +310,22 @@ func TestBootstrapRequiresMkfs(t *testing.T) {
 	opts.Mkfs = filepath.Join(root, "no-mkfs")
 	if err := Bootstrap(opts, io.Discard); err == nil || !strings.Contains(err.Error(), "mkfs.ext4") {
 		t.Fatalf("Bootstrap() error = %v, want missing mkfs", err)
+	}
+}
+
+func TestBootstrapQuotesSystemdPaths(t *testing.T) {
+	opts := testOpts(t, filepath.Join(t.TempDir(), `execenv % "$HOME"`))
+	if err := Bootstrap(opts, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(opts.unitPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := string(raw)
+	if !strings.Contains(line, `ExecStart=":`) ||
+		!strings.Contains(line, `execenv %% \"$HOME\"/`) ||
+		!strings.Contains(line, `/bin/execenv" -config "`) {
+		t.Fatalf("paths are not quoted in the unit:\n%s", line)
 	}
 }

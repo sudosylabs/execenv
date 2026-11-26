@@ -260,6 +260,9 @@ func (c *Client) Observe(ctx context.Context, fence execenv.ProjectionFence, aft
 	if err := c.ioGuard(); err != nil {
 		return execenv.ObservationPage{}, err
 	}
+	if err := execenv.ValidateObserveRequest(execenv.ObserveRequest{Fence: fence, After: after, Limit: limit}); err != nil {
+		return execenv.ObservationPage{}, err
+	}
 	ctx, cancel := c.call(ctx)
 	defer cancel()
 	resp, err := c.agent.Observe(ctx, connect.NewRequest(&execenvv1.ObserveRequest{Fence: wire.FenceTo(fence), After: after, Limit: int32(limit)}))
