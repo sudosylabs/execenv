@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,6 +27,11 @@ var upgradeNames = []string{execenvName, "execenvctl"}
 // releases can change the guest protocol or the boot artifacts.
 func Upgrade(opts Options, stdout io.Writer) error {
 	opts = opts.resolved()
+	lock, err := opts.lockConfig()
+	if err != nil {
+		return wrap("upgrade", fmt.Errorf("lock host configuration: %w", err))
+	}
+	defer lock.Close()
 	if _, err := opts.checkUpgrade(false); err != nil {
 		return wrap("upgrade", err)
 	}
@@ -105,7 +111,7 @@ func Upgrade(opts Options, stdout io.Writer) error {
 				continue
 			}
 		}
-		next, err := prepareUpgradeImage(opts, base, idx.Kernel, entry.ID, entry.Rootfs, entry.Hash)
+		next, err := prepareCatalogImage(opts, base, idx.Kernel, entry.ID, entry.Rootfs, entry.Hash, doc.Images)
 		if err != nil {
 			return err
 		}
@@ -113,7 +119,7 @@ func Upgrade(opts Options, stdout io.Writer) error {
 		images = append(images, entry.ID)
 	}
 	marker := filepath.Join(opts.binDir(), ".execenv-restart-pending")
-	_, err = os.Stat(marker)
+	markerBody, err := os.ReadFile(marker)
 	pending := err == nil
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return wrap("upgrade", err)
@@ -149,7 +155,10 @@ func Upgrade(opts Options, stdout io.Writer) error {
 		}
 	}
 	if !pending {
-		if err := os.WriteFile(marker, nil, 0o600); err != nil {
+		if opts.unitActive() {
+			markerBody = []byte("restart\n")
+		}
+		if err := os.WriteFile(marker, markerBody, 0o600); err != nil {
 			return wrap("upgrade", err)
 		}
 	}
@@ -175,7 +184,12 @@ func Upgrade(opts Options, stdout io.Writer) error {
 			return restore(err)
 		}
 	}
-	if err := opts.reloadUnit(); err != nil {
+	if opts.Reload != nil {
+		err = opts.Reload()
+	} else if len(markerBody) != 0 {
+		err = restartUnit()
+	}
+	if err != nil {
 		return wrap("upgrade", fmt.Errorf("files replaced but the daemon was not restarted: %w", err))
 	}
 	if err := os.Remove(marker); err != nil {
@@ -231,9 +245,9 @@ func (o Options) checkUpgrade(drain bool) (bool, error) {
 	return true, nil
 }
 
-// prepareUpgradeImage verifies a release pair before publishing its directory.
-// The current configuration and any older pair remain usable while staging.
-func prepareUpgradeImage(opts Options, base, kernelName, id, rootfsName, hash string) (daemon.Image, error) {
+// prepareCatalogImage verifies a release pair before publishing its directory.
+// Existing paths are immutable while any catalog or grant can use them.
+func prepareCatalogImage(opts Options, base, kernelName, id, rootfsName, hash string, installed []daemon.Image) (daemon.Image, error) {
 	dir := filepath.Join(opts.State, "images")
 	dest := filepath.Join(dir, hash)
 	image := daemon.Image{ID: id, Kernel: filepath.Join(dest, "kernel"), Rootfs: filepath.Join(dest, "rootfs"), Hash: hash}
@@ -243,19 +257,50 @@ func prepareUpgradeImage(opts Options, base, kernelName, id, rootfsName, hash st
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return daemon.Image{}, wrap("upgrade", err)
 	}
-	stage, err := os.MkdirTemp(dir, ".upgrade-")
+	stage, err := os.MkdirTemp(dir, ".catalog-")
 	if err != nil {
 		return daemon.Image{}, wrap("upgrade", err)
 	}
-	defer os.RemoveAll(stage)
-	if _, _, err := fetchVerified(base, kernelName, rootfsName, filepath.Join(stage, "kernel"), filepath.Join(stage, "rootfs"), hash); err != nil {
+	keep := false
+	defer func() {
+		if !keep {
+			_ = os.RemoveAll(stage)
+		}
+	}()
+	stagedKernel := filepath.Join(stage, "kernel")
+	stagedRootfs := filepath.Join(stage, "rootfs")
+	if err := fetchURL(base+"/"+url.PathEscape(filepath.Base(rootfsName)), stagedRootfs); err != nil {
 		return daemon.Image{}, err
 	}
+	// A local kernel is safe to reuse only if it verifies with this rootfs.
+	if len(installed) != 0 {
+		kernel := installed[0].Kernel
+		if got, err := isolated.Digest(kernel, stagedRootfs); err == nil && got == hash {
+			_ = os.Link(kernel, stagedKernel)
+		}
+	}
+	if !fileExists(stagedKernel) {
+		if err := fetchURL(base+"/"+url.PathEscape(filepath.Base(kernelName)), stagedKernel); err != nil {
+			return daemon.Image{}, err
+		}
+	}
+	if sum, err := isolated.Digest(stagedKernel, stagedRootfs); err != nil || sum != hash {
+		return daemon.Image{}, fmt.Errorf("catalog hash does not match kernel+rootfs on disk")
+	}
 	if err := os.Chmod(stage, 0o755); err != nil {
-		return daemon.Image{}, wrap("upgrade", err)
+		return daemon.Image{}, err
 	}
 	if err := os.Rename(stage, dest); err != nil {
-		return daemon.Image{}, wrap("upgrade", err)
+		if got, verifyErr := isolated.Digest(image.Kernel, image.Rootfs); verifyErr == nil && got == hash {
+			return image, nil
+		}
+		if _, statErr := os.Stat(dest); statErr != nil {
+			return daemon.Image{}, err
+		}
+		// A damaged directory may still be named in active configuration.
+		// Publish a separate replacement and update the reference last.
+		image.Kernel, image.Rootfs = stagedKernel, stagedRootfs
+		keep = true
 	}
 	return image, nil
 }
@@ -314,10 +359,14 @@ func fileMatches(path, want string) bool {
 }
 
 func fileSHA256(path string) (string, error) {
-	raw, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return "", wrap("upgrade", err)
 	}
-	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:]), nil
+	defer f.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, f); err != nil {
+		return "", wrap("upgrade", err)
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }

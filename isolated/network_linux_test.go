@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"strconv"
@@ -147,10 +148,12 @@ func TestLiveAllowlistDeniesFromGuest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	link := planAttach("net-1", nil)
+	const deniedIP = "198.18.253.1"
 	host, err := New(Config{
 		WorkDir:  t.TempDir(),
 		Capacity: execenv.DefaultGrant.Times(1),
-		Allow:    []string{"203.0.113.1"},
+		Allow:    []string{link.HostIP},
 		Images: []Image{{
 			ID:     "fixture",
 			Kernel: kernel,
@@ -170,13 +173,25 @@ func TestLiveAllowlistDeniesFromGuest(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = env.Revoke(t.Context()) })
+	if err := runIP("addr", "add", deniedIP+"/32", "dev", link.Dev); err != nil {
+		t.Fatal(err)
+	}
+	allowedURL := localHTTP(t, link.HostIP)
+	deniedURL := localHTTP(t, deniedIP)
+	client := &http.Client{Timeout: time.Second, Transport: &http.Transport{}}
+	defer client.CloseIdleConnections()
+	resp, err := client.Get(deniedURL)
+	if err != nil {
+		t.Fatalf("host could not reach the denied test listener: %v", err)
+	}
+	_ = resp.Body.Close()
+
 	term := execenvtest.OpenShell(t, env, runningFence(t, env), "sh")
-	// 1.1.1.1 is not on the host allowlist. Success from this shell
-	// would mean the guest has a general NIC.
-	// A missing wget or no default route is not proof. Require wget,
-	// then treat a completed TCP handshake as a leak.
-	// The terminal echoes the line: quotes keep the echo from matching.
-	if _, err := term.Write([]byte("command -v wget >/dev/null || { echo NO_\"\"WGET; exit 0; }; wget -q -T 2 -O /dev/null http://1.1.1.1/ && echo LEAK\"\"ED || echo DEN\"\"IED\n")); err != nil {
+	// Quotes keep the terminal's echo from matching the result markers.
+	command := fmt.Sprintf("command -v wget >/dev/null || { echo NO_\"\"WGET; exit 0; }; "+
+		"wget -q -T 2 -O /dev/null %s || { echo ALLOW_\"\"FAILED; exit 0; }; "+
+		"wget -q -T 2 -O /dev/null %s && echo LEAK\"\"ED || echo DEN\"\"IED\n", allowedURL, deniedURL)
+	if _, err := term.Write([]byte(command)); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(8 * time.Second)
@@ -188,6 +203,9 @@ func TestLiveAllowlistDeniesFromGuest(t *testing.T) {
 			buf = append(buf, tmp[:n]...)
 			if strings.Contains(string(buf), "NO_WGET") {
 				t.Skip("fixture image has no wget")
+			}
+			if strings.Contains(string(buf), "ALLOW_FAILED") {
+				t.Fatal("guest could not reach the allowed test listener")
 			}
 			if strings.Contains(string(buf), "LEAKED") {
 				t.Fatal("guest reached a dest that is not on the host allowlist")
@@ -201,6 +219,20 @@ func TestLiveAllowlistDeniesFromGuest(t *testing.T) {
 	if !strings.Contains(string(buf), "DENIED") {
 		t.Fatal("guest did not report that the dest was denied")
 	}
+}
+
+func localHTTP(t *testing.T, address string) string {
+	t.Helper()
+	ln, err := net.Listen("tcp4", net.JoinHostPort(address, "0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})}
+	go func() { _ = server.Serve(ln) }()
+	t.Cleanup(func() { _ = server.Close() })
+	return "http://" + ln.Addr().String() + "/"
 }
 
 // A grant with network access comes up with its own address and route,

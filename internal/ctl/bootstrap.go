@@ -141,6 +141,11 @@ func Bootstrap(opts Options, stdout io.Writer) error {
 	if err := opts.checkCgroups(); err != nil {
 		return err
 	}
+	lock, err := opts.lockConfig()
+	if err != nil {
+		return wrap("bootstrap", fmt.Errorf("lock host configuration: %w", err))
+	}
+	defer lock.Close()
 	mkfs, err := findMkfs(opts)
 	if err != nil {
 		return err

@@ -208,6 +208,12 @@ func (h *Host) ImagesInUse() []execenv.Image {
 			out = append(out, call.spec.Image)
 		}
 	}
+	for _, pending := range h.pending {
+		if image := pending.spec.Image; !seen[image] {
+			seen[image] = true
+			out = append(out, image)
+		}
+	}
 	return out
 }
 

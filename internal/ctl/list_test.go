@@ -2,6 +2,7 @@ package ctl
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -214,5 +215,26 @@ func TestRemovePreservesASharedRootfs(t *testing.T) {
 	got, err := isolated.Digest(alias.Kernel, alias.Rootfs)
 	if err != nil || got != alias.Hash {
 		t.Fatalf("remaining image cannot be verified: %q, %v", got, err)
+	}
+}
+
+func TestRemoveKeepsTheImageIfRestartFails(t *testing.T) {
+	opts := bootstrappedWithFixture(t, t.TempDir())
+	cfg, err := daemon.Load(opts.configPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := errors.New("restart failed")
+	opts.Reload = func() error { return failed }
+	if err := Remove(opts, "fixture", io.Discard); !errors.Is(err, failed) {
+		t.Fatalf("Remove: %v", err)
+	}
+	current, err := daemon.Load(opts.configPath())
+	if err != nil || len(current.Images) != 1 || current.Images[0] != cfg.Images[0] {
+		t.Fatalf("catalog was not restored: %v", err)
+	}
+	img := current.Images[0]
+	if got, err := isolated.Digest(img.Kernel, img.Rootfs); err != nil || got != img.Hash {
+		t.Fatalf("installed image failed verification: %v", err)
 	}
 }
