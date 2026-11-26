@@ -74,7 +74,7 @@ func info(root *os.Root, name, rel string, digest bool) (execenv.FileInfo, error
 	if !st.IsDir() {
 		out.Size = st.Size()
 		if digest {
-			file, err := openRegular(root, rel, st)
+			file, err := OpenRegular(root, rel, st)
 			if err != nil {
 				return execenv.FileInfo{}, notFound(err)
 			}
@@ -169,7 +169,7 @@ func (f *FS) ReadFile(name string, offset int64) (io.ReadCloser, error) {
 	if !st.Mode().IsRegular() || offset < 0 || offset > st.Size() {
 		return nil, execenv.ErrInvalid
 	}
-	file, err := openRegular(root, name, st)
+	file, err := OpenRegular(root, name, st)
 	if err != nil {
 		return nil, notFound(err)
 	}
@@ -351,7 +351,7 @@ func expect(root *os.Root, name, want string) error {
 	if err != nil || !st.Mode().IsRegular() {
 		return execenv.ErrConflict
 	}
-	file, err := openRegular(root, name, st)
+	file, err := OpenRegular(root, name, st)
 	if err != nil {
 		return execenv.ErrConflict
 	}
@@ -581,7 +581,7 @@ func (f *FS) Export(paths []string, codec archive.Codec, w io.Writer) error {
 		case st.IsDir():
 			return aw.Dir(name)
 		case st.Mode().IsRegular():
-			file, err := openRegular(root, name, st)
+			file, err := OpenRegular(root, name, st)
 			if err != nil {
 				return notFound(err)
 			}

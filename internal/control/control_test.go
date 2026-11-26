@@ -122,11 +122,11 @@ func TestLoseFencesEveryLaterCallWithErrLost(t *testing.T) {
 	if _, err := s.Execute(t.Context(), execenv.ControlRequest{Fence: fence, State: execenv.ControlRunning}, func() error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	lost, err := s.Lose(t.Context(), func() error { return nil })
+	lost, err := s.Lose(t.Context(), nil, func(execenv.ControlReceipt) error { return nil })
 	if !lost || err != nil {
 		t.Fatalf("Lose() = %v %v", lost, err)
 	}
-	if again, _ := s.Lose(t.Context(), func() error { t.Fatal("second loss ran"); return nil }); again {
+	if again, _ := s.Lose(t.Context(), nil, func(execenv.ControlReceipt) error { t.Fatal("second loss ran"); return nil }); again {
 		t.Fatal("second Lose() reported a loss")
 	}
 	if err := s.Run(t.Context(), fence, func() error { t.Fatal("lost epoch ran"); return nil }); !errors.Is(err, execenv.ErrLost) {
@@ -150,7 +150,7 @@ func TestRevokedEpochIsNotLost(t *testing.T) {
 	if err := s.Revoke(t.Context(), func() error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if lost, _ := s.Lose(t.Context(), func() error { t.Fatal("revoked epoch lost"); return nil }); lost {
+	if lost, _ := s.Lose(t.Context(), nil, func(execenv.ControlReceipt) error { t.Fatal("revoked epoch lost"); return nil }); lost {
 		t.Fatal("Lose() after Revoke reported a loss")
 	}
 }
@@ -175,5 +175,20 @@ func TestSuspendKeepsTheCallersFrozenReceipt(t *testing.T) {
 	}
 	if receipt, err := s.Status(t.Context()); err != nil || receipt != frozen {
 		t.Fatalf("Status() after a failed suspend = %+v, %v; want %+v", receipt, err, frozen)
+	}
+}
+
+func TestIdleRetriesItsUnconfirmedFreeze(t *testing.T) {
+	s := New("grant")
+	failed := errors.New("monitor did not acknowledge pause")
+	if ran, err := s.Idle(t.Context(), func(execenv.ControlReceipt) error { return failed }); !ran || !errors.Is(err, failed) {
+		t.Fatalf("first expiry: ran=%v, err=%v", ran, err)
+	}
+	if ran, err := s.Idle(t.Context(), func(execenv.ControlReceipt) error { return nil }); !ran || err != nil {
+		t.Fatalf("retry: ran=%v, err=%v", ran, err)
+	}
+	receipt, err := s.Status(t.Context())
+	if err != nil || !receipt.Confirmed || receipt.State != execenv.ControlFrozen {
+		t.Fatalf("retried receipt: %+v, %v", receipt, err)
 	}
 }

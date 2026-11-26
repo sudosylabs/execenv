@@ -136,12 +136,11 @@ func (e *environment) watch() {
 	}
 	// A suspend stops the machine on purpose. A restored instance may
 	// report a new completion channel.
-	e.mu.Lock()
-	current := !e.suspended && e.inst == inst && inst.Done() == done
-	e.mu.Unlock()
-	if current {
-		e.host.lose(e)
-	}
+	e.host.lose(e, func() bool {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		return !e.suspended && e.inst == inst && inst.Done() == done
+	})
 }
 
 // watchLink waits for a guest link to end. A link that breaks while the
@@ -156,12 +155,11 @@ func (e *environment) watchLink(client *agent.Client) {
 		return
 	case <-client.Done():
 	}
-	e.mu.Lock()
-	current := e.client == client
-	e.mu.Unlock()
-	if current {
-		e.host.lose(e)
-	}
+	e.host.lose(e, func() bool {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		return e.client == client
+	})
 }
 
 // freeze stops process and journal I/O and pauses the microVM. The instance is
@@ -229,7 +227,7 @@ func (e *environment) thaw(ctx context.Context) error {
 		return execenv.Error("thaw", execenv.ErrUnavailable)
 	}
 	if err := inst.Resume(ctx); err != nil {
-		return execenv.Error("thaw", err)
+		return e.recontainThaw(inst, err)
 	}
 	e.mu.Lock()
 	e.paused = false
@@ -346,23 +344,43 @@ func (e *environment) UpdateLimits(ctx context.Context, fence execenv.Projection
 		}
 		diskChanged := limits.DiskBytes != previous.DiskBytes || limits.DiskOps != previous.DiskOps
 		networkChanged := network && limits.NetworkBytes != previous.NetworkBytes
-		if dirty || diskChanged || networkChanged {
-			if err := inst.UpdateLimits(ctx, limits, network); err != nil {
-				restoreCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				restoreErr := inst.UpdateLimits(restoreCtx, previous, network)
-				cancel()
-				e.mu.Lock()
-				e.limitsDirty = restoreErr != nil
-				e.mu.Unlock()
-				return execenv.Error("update_limits", errors.Join(err, restoreErr))
+		updateDevices := dirty || diskChanged || networkChanged
+		state := e.snapshotState(execenv.ControlReceipt{Fence: fence, State: execenv.ControlRunning, Confirmed: true})
+		if updateDevices {
+			state.LimitsDirty = true
+			if err := e.writeState(state); err != nil {
+				return err
 			}
+		}
+		restore := func(err error) error {
+			var restoreErr error
+			if updateDevices {
+				restoreCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				restoreErr = inst.UpdateLimits(restoreCtx, previous, network)
+				cancel()
+			}
+			state.Spec.Limits, state.LimitsDirty = previous, restoreErr != nil
+			stateErr := e.writeState(state)
+			e.mu.Lock()
+			e.limitsDirty = restoreErr != nil || stateErr != nil
+			e.mu.Unlock()
+			return execenv.Error("update_limits", errors.Join(err, restoreErr, stateErr))
+		}
+		if updateDevices {
+			if err := inst.UpdateLimits(ctx, limits, network); err != nil {
+				return restore(err)
+			}
+		}
+		state.Spec.Limits, state.LimitsDirty = limits, false
+		if err := e.writeState(state); err != nil {
+			return restore(err)
 		}
 		e.mu.Lock()
 		e.spec.Limits = limits
 		e.limitsDirty = false
 		e.mu.Unlock()
 		e.ports.SetLimit(limits.PortBytes)
-		return e.persistReceipt(execenv.ControlReceipt{Fence: fence, State: execenv.ControlRunning, Confirmed: true})
+		return nil
 	})
 }
 

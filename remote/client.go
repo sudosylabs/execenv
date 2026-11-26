@@ -202,6 +202,9 @@ func (c *Client) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, er
 }
 
 func (c *Client) Revoke(ctx context.Context, id execenv.ID) error {
+	if err := execenv.ValidateGrantID(id); err != nil {
+		return execenv.Error("revoke", err)
+	}
 	ctx, cancel := c.call(ctx)
 	defer cancel()
 	_, err := c.host.RevokeGrant(ctx, connect.NewRequest(&execenvv1.RevokeGrantRequest{GrantId: string(id)}))

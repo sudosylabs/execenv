@@ -61,7 +61,11 @@ func (e *environment) suspend(ctx context.Context, done execenv.ControlReceipt) 
 		if client != nil {
 			select {
 			case <-client.Done():
-				go e.host.lose(e)
+				go e.host.lose(e, func() bool {
+					e.mu.Lock()
+					defer e.mu.Unlock()
+					return e.client == client
+				})
 			default:
 			}
 		}

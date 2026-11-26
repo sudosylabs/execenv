@@ -252,7 +252,8 @@ if err != nil {
 | Guest helper cannot serve the journal | `ErrUnavailable`; the guest is destroyed |
 | Guest kernel lacks process events | `ErrUnavailable`; the guest is destroyed |
 
-Ids and image names are 1–64 characters in `[A-Za-z0-9._-:]`. Concurrent
+Ids and image names are 1–64 characters in `[A-Za-z0-9._-:]`. Grant IDs
+exclude `.` and `..`. Concurrent
 identical `Ensure` calls for one new id coalesce into one launch. Ensure does
 not download images; occupying a new grant starts its guest, and it never
 queues: a grant that does not fit is refused at once.

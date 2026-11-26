@@ -19,6 +19,8 @@ type State struct {
 	// then terminal like a revoke, but every fenced call reports ErrLost so
 	// the caller can tell a host-side end from its own revoke.
 	lost bool
+	// idlePending remembers an automatic freeze whose effect needs retry.
+	idlePending bool
 	// seen is the receipt as the last operation left it, for readers that
 	// must not wait for one under way.
 	seen atomic.Pointer[seen]
@@ -143,7 +145,10 @@ func (s *State) Execute(ctx context.Context, req execenv.ControlRequest, effect 
 	if req.Fence == old.Fence && old.Confirmed {
 		return old, nil
 	}
-	err := s.transition(execenv.ControlReceipt{Fence: req.Fence, State: req.State}, effect)
+	err := s.transition(execenv.ControlReceipt{Fence: req.Fence, State: req.State}, func() error {
+		s.idlePending = false
+		return effect()
+	})
 	return s.receipt, err
 }
 
@@ -175,17 +180,17 @@ func (s *State) RevokeWhen(ctx context.Context, eligible func() bool, effect fun
 // Revoke it is terminal and fences every later request, which then fails
 // with ErrLost. It reports false, and runs nothing, when the epoch was
 // already revoked or lost; a failed effect can be retried with Revoke.
-func (s *State) Lose(ctx context.Context, effect func() error) (bool, error) {
+func (s *State) Lose(ctx context.Context, eligible func() bool, effect func(execenv.ControlReceipt) error) (bool, error) {
 	if err := s.acquire(ctx); err != nil {
 		return false, err
 	}
 	defer s.release()
-	if s.lost || s.receipt.State == execenv.ControlRevoked {
+	if s.lost || s.receipt.State == execenv.ControlRevoked || eligible != nil && !eligible() {
 		return false, nil
 	}
 	s.lost = true
 	s.receipt.State, s.receipt.Confirmed = execenv.ControlRevoked, false
-	err := effect()
+	err := effect(s.receipt)
 	s.receipt.Confirmed = err == nil
 	return true, err
 }
@@ -203,8 +208,9 @@ func (s *State) IdleWhen(ctx context.Context, eligible func() bool, effect func(
 		return false, err
 	}
 	defer s.release()
-	if s.lost || s.receipt.State != execenv.ControlRunning || !s.receipt.Confirmed ||
-		eligible != nil && !eligible() {
+	running := s.receipt.State == execenv.ControlRunning && s.receipt.Confirmed
+	retrying := s.receipt.State == execenv.ControlFrozen && s.idlePending
+	if s.lost || !running && !retrying || eligible != nil && !eligible() {
 		return false, nil
 	}
 	next := s.receipt
@@ -213,7 +219,14 @@ func (s *State) IdleWhen(ctx context.Context, eligible func() bool, effect func(
 	// effect that must make it durable before it finishes.
 	done := next
 	done.Confirmed = true
-	return true, s.transition(next, func() error { return effect(done) })
+	err := s.transition(next, func() error {
+		s.idlePending = true
+		return effect(done)
+	})
+	if err == nil {
+		s.idlePending = false
+	}
+	return true, err
 }
 
 // Suspend saves a confirmed frozen epoch on the host's own initiative, for

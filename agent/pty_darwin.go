@@ -10,7 +10,7 @@ import (
 )
 
 func openPTY() (master, pts *os.File, err error) {
-	fd, err := unix.Open("/dev/ptmx", unix.O_RDWR|unix.O_CLOEXEC, 0)
+	fd, err := unix.Open("/dev/ptmx", unix.O_RDWR|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, nil, err
 	}

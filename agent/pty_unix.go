@@ -49,8 +49,19 @@ func setWindow(master *os.File, win execenv.Window) error {
 	if win.Rows == 0 {
 		win.Rows = 24
 	}
-	return unix.IoctlSetWinsize(int(master.Fd()), unix.TIOCSWINSZ, &unix.Winsize{
-		Row: win.Rows,
-		Col: win.Cols,
+	raw, err := master.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var ioctlErr error
+	err = raw.Control(func(fd uintptr) {
+		ioctlErr = unix.IoctlSetWinsize(int(fd), unix.TIOCSWINSZ, &unix.Winsize{
+			Row: win.Rows,
+			Col: win.Cols,
+		})
 	})
+	if err != nil {
+		return err
+	}
+	return ioctlErr
 }

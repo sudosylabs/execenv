@@ -91,6 +91,13 @@ func runFiles(t *testing.T, factory Factory) {
 		if err != nil || stat.Size != 12 || stat.SHA256 == "" || stat.Dir {
 			t.Fatalf("Stat() = %+v, %v", stat, err)
 		}
+		wide := int64(1)<<32 | 1
+		if int64(int(wide)) == wide {
+			deep, err := env.List(ctx, "", int(wide), false)
+			if err != nil || len(deep) != 3 {
+				t.Fatalf("List with a large depth returned %d entries, %v", len(deep), err)
+			}
+		}
 		body, err := env.ReadFile(ctx, "a/b/note.txt", 7)
 		if err != nil {
 			t.Fatal(err)

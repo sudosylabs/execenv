@@ -149,7 +149,7 @@ func newUpgrade(opts *ctl.Options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "upgrade",
 		Short: "Replace execenvctl and execenv from the release channel",
-		Long:  "Fetch Linux/amd64 binaries and verify the installed catalog IDs from this binary's tag before publishing changes. Drain all grants before upgrading. A failed restart can be retried by running upgrade again.",
+		Long:  "Fetch Linux/amd64 binaries and verify the installed catalog IDs from this binary's tag before publishing changes. Run execenvctl drain before upgrading. A failed restart can be retried by running upgrade again.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return ctl.Upgrade(*opts, cmd.OutOrStdout())

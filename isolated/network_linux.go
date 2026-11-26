@@ -8,9 +8,13 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 
 	"github.com/sudosylabs/execenv"
 )
+
+// Serializes discovery and assignment of the host side of each link.
+var networkSetup sync.Mutex
 
 // setupAllowlist creates a host tap and a per-grant filter so only the
 // operator dests are reachable from the guest. Fail closed if the
@@ -23,7 +27,16 @@ func setupAllowlist(id execenv.ID, dests []string) (*netAttach, error) {
 	if len(allow) == 0 {
 		return nil, execenv.ErrNetwork
 	}
+	networkSetup.Lock()
+	defer networkSetup.Unlock()
 	att := planAttach(id, allow)
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil, err
+	}
+	if addressInUse(att, addrs) {
+		return nil, fmt.Errorf("%w: grant link subnet already in use", execenv.ErrNetwork)
+	}
 	if err := runIP("tuntap", "add", "dev", att.Dev, "mode", "tap"); err != nil {
 		return nil, err
 	}
@@ -41,6 +54,22 @@ func setupAllowlist(id execenv.ID, dests []string) (*netAttach, error) {
 		return fail(err)
 	}
 	return guardAttach(att, allow, cleanup)
+}
+
+func addressInUse(att netAttach, addrs []net.Addr) bool {
+	hostIP := net.ParseIP(att.HostIP)
+	guestIP := net.ParseIP(att.GuestIP)
+	_, grantNet, err := net.ParseCIDR(fmt.Sprintf("%s/%d", att.HostIP, att.Prefix))
+	if err != nil {
+		return true
+	}
+	for _, addr := range addrs {
+		if assigned, ok := addr.(*net.IPNet); ok &&
+			(assigned.Contains(hostIP) || assigned.Contains(guestIP) || grantNet.Contains(assigned.IP)) {
+			return true
+		}
+	}
+	return false
 }
 
 // guardAttach installs the per-grant filter and NAT on the host end of a

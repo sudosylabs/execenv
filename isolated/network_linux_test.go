@@ -103,15 +103,15 @@ func TestDeniedDestinationUnreachableFromGuestSide(t *testing.T) {
 		_ = c.Close()
 	}
 
-	chain := "ET" + ns[len(ns)-6:]
 	allow, err := parseAllow([]string{"10.230.7.1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := installFilter(hostVeth, chain, allow); err != nil {
+	att, err := guardAttach(netAttach{Dev: hostVeth, HostIP: "10.230.7.1", Prefix: 24, Allow: allow}, allow, nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = removeFilter(hostVeth, chain) })
+	t.Cleanup(att.close)
 
 	if err := guestDial(ns, "10.230.7.1", allowPort); err != nil {
 		t.Fatalf("guest cannot reach allowed dest: %v", err)
@@ -285,5 +285,23 @@ func TestLiveNetworkGrantIsConfigured(t *testing.T) {
 				t.Fatalf("guest network: want up, %s/30 and default via %s; saw %q", att.GuestIP, att.HostIP, seen)
 			}
 		})
+	}
+}
+
+func TestGrantLinkRejectsAnOverlappingHostSubnet(t *testing.T) {
+	att := planAttach("grant", nil)
+	hostIP, localNet, err := net.ParseCIDR(att.HostIP + "/16")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !addressInUse(att, []net.Addr{&net.IPNet{IP: hostIP, Mask: localNet.Mask}}) {
+		t.Fatal("overlapping route was accepted")
+	}
+	_, other, err := net.ParseCIDR("198.51.100.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if addressInUse(att, []net.Addr{other}) {
+		t.Fatal("unrelated subnet prevented assignment")
 	}
 }

@@ -125,3 +125,16 @@ func TestUnusableHost(t *testing.T) {
 		t.Fatalf("Ensure() error = %v, want ErrUnavailable", err)
 	}
 }
+
+func TestGrantIDIsASinglePathComponent(t *testing.T) {
+	for _, id := range []execenv.ID{".", "..", "", "a/b"} {
+		if err := execenv.ValidateGrantID(id); err != execenv.ErrInvalid {
+			t.Errorf("ValidateGrantID(%q) = %v, want ErrInvalid", id, err)
+		}
+	}
+	for _, id := range []execenv.ID{"grant:1", "grant-2", "a..b"} {
+		if err := execenv.ValidateGrantID(id); err != nil {
+			t.Errorf("ValidateGrantID(%q) = %v", id, err)
+		}
+	}
+}

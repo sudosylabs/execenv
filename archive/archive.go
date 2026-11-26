@@ -161,13 +161,26 @@ func (w *Writer) Close() (string, error) {
 // it need not be read whole.
 type Visit func(entry Entry, body io.Reader) error
 
+// countedReader detects tar endings which archive/tar treats as optional.
+type countedReader struct {
+	io.Reader
+	read int64
+}
+
+func (r *countedReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	r.read += int64(n)
+	return n, err
+}
+
 // Read reads an archive, calling visit for every entry, and returns the
 // tree's digest. Anything but a directory or a regular file, an invalid or
 // repeated path, or a path whose parent directory was not listed first is
 // execenv.ErrInvalid, and reading stops there.
 func Read(r io.Reader, visit Visit) (string, error) {
 	br := bufio.NewReader(r)
-	header, err := br.ReadString('\n')
+	line, err := br.ReadSlice('\n')
+	header := string(line)
 	if err != nil || !strings.HasPrefix(header, magic) {
 		return "", execenv.ErrInvalid
 	}
@@ -192,12 +205,19 @@ func Read(r io.Reader, visit Visit) (string, error) {
 	default:
 		return "", execenv.ErrInvalid
 	}
-	tr := tar.NewReader(body)
+	counted := &countedReader{Reader: body}
+	tr := tar.NewReader(counted)
 	seen := make(map[string]bool)
 	var entries []Entry
+	const tarBlock = 512
+	var padding int64
 	for {
+		before := counted.read
 		h, err := tr.Next()
 		if errors.Is(err, io.EOF) {
+			if counted.read-before < padding+2*tarBlock {
+				return "", execenv.ErrInvalid
+			}
 			// Read through the compression footer so a checksum error or
 			// interrupted source cannot be hidden by the tar end marker.
 			if _, err := io.Copy(io.Discard, body); err != nil {
@@ -219,11 +239,13 @@ func Read(r io.Reader, visit Visit) (string, error) {
 		var entry Entry
 		switch h.Typeflag {
 		case tar.TypeDir:
+			padding = 0
 			entry = Entry{Path: name, Dir: true}
 			if err := visit(entry, nil); err != nil {
 				return "", err
 			}
 		case tar.TypeReg:
+			padding = -h.Size & (tarBlock - 1)
 			entry = Entry{Path: name, Executable: h.Mode&0o111 != 0, Size: h.Size}
 			sum := sha256.New()
 			tee := io.TeeReader(tr, sum)

@@ -89,16 +89,21 @@ func (l *Log) Page(after uint64, limit int) (execenv.ObservationPage, error) {
 		return execenv.ObservationPage{}, execenv.ErrLagged
 	}
 	page := execenv.ObservationPage{HostCursor: l.cursor, AcknowledgedHostCursor: l.acknowledged, Observations: make([]execenv.ExecutionObservation, 0, limit)}
-	for _, item := range l.events {
-		if item.event.HostSequence <= after {
-			continue
+	raw, _ := json.Marshal(page)
+	size := len(raw)
+	for _, item := range l.events[after-l.acknowledged:] {
+		raw, err := json.Marshal(item.event)
+		if err != nil {
+			return execenv.ObservationPage{}, execenv.ErrInvalid
 		}
-		page.Observations = append(page.Observations, clone(item.event))
-		raw, _ := json.Marshal(page)
-		if len(raw) > execenv.MaxProjectionMetadataBytes {
-			page.Observations = page.Observations[:len(page.Observations)-1]
+		size += len(raw)
+		if len(page.Observations) != 0 {
+			size++ // comma between array elements
+		}
+		if size > execenv.MaxProjectionMetadataBytes {
 			break
 		}
+		page.Observations = append(page.Observations, clone(item.event))
 		if len(page.Observations) == limit {
 			break
 		}

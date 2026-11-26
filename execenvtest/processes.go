@@ -143,7 +143,12 @@ func RunProcesses(t *testing.T, factory TracedFactory) {
 		if _, err := p.env.ObserveProcesses(t.Context(), p.fence, page.Next+1000, execenv.MaxProcessPage); !errors.Is(err, execenv.ErrInvalid) {
 			t.Fatalf("ObserveProcesses(future) error = %v, want ErrInvalid", err)
 		}
-		for _, limit := range []int{0, execenv.MaxProcessPage + 1} {
+		limits := []int{0, execenv.MaxProcessPage + 1}
+		wide := int64(1)<<32 | 1
+		if int64(int(wide)) == wide {
+			limits = append(limits, int(wide))
+		}
+		for _, limit := range limits {
 			if _, err := p.env.ObserveProcesses(t.Context(), p.fence, base, limit); !errors.Is(err, execenv.ErrInvalid) {
 				t.Fatalf("ObserveProcesses(limit %d) error = %v, want ErrInvalid", limit, err)
 			}

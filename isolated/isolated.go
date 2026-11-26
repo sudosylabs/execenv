@@ -271,9 +271,6 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		return nil, execenv.Error("ensure", err)
 	}
 	spec.Resources = h.pool.Resolve(spec.Resources)
-	if err := h.probe(); err != nil {
-		return nil, execenv.Error("ensure", err)
-	}
 	h.mu.Lock()
 	if env, call, err := h.occupiedLocked(spec); env != nil || call != nil || err != nil {
 		h.mu.Unlock()
@@ -287,6 +284,9 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 	}
 	record, ok := h.images[spec.Image]
 	h.mu.Unlock()
+	if err := h.probe(); err != nil {
+		return nil, execenv.Error("ensure", err)
+	}
 	// Unverified or missing files are reported as unknown so callers
 	// cannot tell a typo from a corrupt disk, and no host path leaks.
 	if !ok {
@@ -503,6 +503,9 @@ func (h *Host) Revoke(ctx context.Context, id execenv.ID) error {
 	if err := ctx.Err(); err != nil {
 		return execenv.Error("revoke", err)
 	}
+	if err := execenv.ValidateGrantID(id); err != nil {
+		return execenv.Error("revoke", err)
+	}
 	for {
 		h.mu.Lock()
 		call := h.pending[id]
@@ -519,21 +522,22 @@ func (h *Host) Revoke(ctx context.Context, id execenv.ID) error {
 		}
 	}
 	defer h.mu.Unlock()
-	// Revoke acknowledges a loss; the id can then be ensured afresh.
-	if _, lost := h.lost[id]; lost {
-		delete(h.lost, id)
-		h.hub.Poke()
-		if h.grants[id] == nil {
-			if err := os.RemoveAll(filepath.Join(h.cfg.WorkDir, "grants", string(id))); err != nil {
-				return execenv.Error("revoke", err)
-			}
-		}
+	if env := h.grants[id]; env != nil {
+		return h.retireLocked(env)
 	}
-	env := h.grants[id]
-	if env == nil {
+	return h.clearLossLocked(id)
+}
+
+func (h *Host) clearLossLocked(id execenv.ID) error {
+	if h.lost[id] == nil {
 		return nil
 	}
-	return h.retireLocked(env)
+	if err := os.RemoveAll(filepath.Dir(statePath(h.cfg.WorkDir, id))); err != nil {
+		return execenv.Error("revoke", err)
+	}
+	delete(h.lost, id)
+	h.hub.Poke()
+	return nil
 }
 
 func (h *Host) revokeExact(ctx context.Context, env *environment) error {
@@ -546,19 +550,10 @@ func (h *Host) revokeExactWhen(ctx context.Context, env *environment, eligible f
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.lost[env.id] == env {
-		if eligible != nil {
-			return nil
-		}
-		delete(h.lost, env.id)
-		h.hub.Poke()
-		if h.grants[env.id] == nil {
-			if err := os.RemoveAll(filepath.Join(h.cfg.WorkDir, "grants", string(env.id))); err != nil {
-				return err
-			}
-		}
-	}
 	if h.grants[env.id] != env {
+		if eligible == nil && h.lost[env.id] == env {
+			return h.clearLossLocked(env.id)
+		}
 		return nil
 	}
 	return h.retireWhenLocked(env, eligible)
@@ -568,13 +563,17 @@ func (h *Host) revokeExactWhen(ctx context.Context, env *environment, eligible f
 // every host resource the grant held, as a revoke would, and keeps the id
 // lost until the caller revokes it. If release fails the resources stay
 // reserved, the grant stays lost, and the caller's Revoke retries.
-func (h *Host) lose(env *environment) {
+func (h *Host) lose(env *environment, current func() bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.grants[env.id] != env {
 		return
 	}
-	lost, err := env.control.Lose(context.Background(), func() error { return env.stop(execenv.ErrLost) })
+	lost, err := env.control.Lose(context.Background(), current, func(receipt execenv.ControlReceipt) error {
+		stateErr := env.persistState(receipt, true)
+		stopErr := env.stop(execenv.ErrLost)
+		return errors.Join(stateErr, stopErr)
+	})
 	if !lost {
 		return
 	}
@@ -584,14 +583,8 @@ func (h *Host) lose(env *environment) {
 	if err != nil {
 		return
 	}
-	dir := filepath.Join(h.cfg.WorkDir, "grants", string(env.id))
-	if err := os.RemoveAll(dir); err != nil {
+	if err := clearLostGrant(h.cfg.WorkDir, env.id); err != nil {
 		return
-	}
-	// The loss outlives a restart: only the caller's revoke clears it.
-	if os.MkdirAll(dir, 0o700) == nil {
-		receipt, _ := env.control.Status(context.Background())
-		_ = saveState(h.cfg.WorkDir, grantState{Spec: env.spec, Epoch: env.control.Epoch(), Receipt: receipt, Started: env.started, Lost: true})
 	}
 	delete(h.grants, env.id)
 	h.pool.Release(env.id)
@@ -615,6 +608,7 @@ func (h *Host) retireWhenLocked(env *environment, eligible func() bool) error {
 		return execenv.Error("revoke", err)
 	}
 	delete(h.grants, env.id)
+	delete(h.lost, env.id)
 	h.pool.Release(env.id)
 	h.hub.Poke()
 	return nil

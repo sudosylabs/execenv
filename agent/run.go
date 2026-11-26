@@ -427,7 +427,7 @@ func (p *guestProc) describe() *guestv1.GuestProcess {
 // its exit once every stream has drained. The reader has everything
 // before its offsets, so the guest may drop it.
 func (s *server) Output(ctx context.Context, req *connect.Request[guestv1.OutputRequest], stream *connect.ServerStream[guestv1.OutputResponse]) error {
-	p, err := s.proc(req.Msg.GetTag())
+	p, err := s.referencedProcess(req.Msg.GetProcess())
 	if err != nil {
 		return wire.Error(err)
 	}
@@ -557,9 +557,21 @@ func (s *server) Feed(ctx context.Context, req *connect.Request[guestv1.FeedRequ
 	if err != nil {
 		return nil, wire.Error(err)
 	}
-	if deadline, ok := ctx.Deadline(); ok && w.SetWriteDeadline(deadline) == nil {
-		defer w.SetWriteDeadline(time.Time{})
+	deadline, _ := ctx.Deadline()
+	if err := w.SetWriteDeadline(deadline); err != nil {
+		return nil, wire.Error(execenv.ErrUnavailable)
 	}
+	interrupted := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		_ = w.SetWriteDeadline(time.Now())
+		close(interrupted)
+	})
+	defer func() {
+		if !stop() {
+			<-interrupted
+		}
+		_ = w.SetWriteDeadline(time.Time{})
+	}()
 	n, err := w.Write(data[skip:])
 	p.mu.Lock()
 	p.input += uint64(n)
@@ -585,14 +597,14 @@ func (s *server) referencedProcess(ref *guestv1.ProcessRef) (*guestProc, error) 
 	return p, nil
 }
 
-func (s *server) live(tag string) (*guestProc, error) {
+func (s *server) live(ref *guestv1.ProcessRef) (*guestProc, error) {
 	s.mu.Lock()
 	err := s.guard()
 	s.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
-	p, err := s.proc(tag)
+	p, err := s.referencedProcess(ref)
 	if err != nil {
 		return nil, err
 	}
@@ -627,7 +639,7 @@ func (s *server) ResizeProcess(_ context.Context, req *connect.Request[guestv1.R
 	if !ok {
 		return nil, wire.Error(execenv.ErrInvalid)
 	}
-	p, err := s.live(req.Msg.GetTag())
+	p, err := s.live(req.Msg.GetProcess())
 	if err != nil {
 		return nil, wire.Error(err)
 	}
@@ -643,7 +655,7 @@ func (s *server) ResizeProcess(_ context.Context, req *connect.Request[guestv1.R
 
 // ProcessScreen reads a terminal process's screen, running or exited.
 func (s *server) ProcessScreen(_ context.Context, req *connect.Request[guestv1.ProcessScreenRequest]) (*connect.Response[execenvv1.Screen], error) {
-	p, err := s.proc(req.Msg.GetTag())
+	p, err := s.referencedProcess(req.Msg.GetProcess())
 	if err != nil {
 		return nil, wire.Error(err)
 	}

@@ -133,3 +133,11 @@ func TestArchiveChecksCompressedFooter(t *testing.T) {
 		t.Fatalf("incomplete gzip footer: %v", err)
 	}
 }
+
+func TestArchiveRequiresBothEndBlocks(t *testing.T) {
+	raw, _ := build(t, archive.CodecNone)
+	raw = raw[:len(raw)-512]
+	if _, err := archive.Read(bytes.NewReader(raw), func(archive.Entry, io.Reader) error { return nil }); !errors.Is(err, execenv.ErrInvalid) {
+		t.Fatalf("archive missing its final end block: %v", err)
+	}
+}

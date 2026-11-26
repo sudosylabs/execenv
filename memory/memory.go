@@ -177,7 +177,7 @@ func (h *Host) Lose(id execenv.ID) bool {
 	if env == nil {
 		return false
 	}
-	lost, _ := env.control.Lose(context.Background(), func() error { return env.stop(execenv.ErrLost) })
+	lost, _ := env.control.Lose(context.Background(), nil, func(execenv.ControlReceipt) error { return env.stop(execenv.ErrLost) })
 	if !lost {
 		return false
 	}
@@ -333,6 +333,9 @@ func (h *Host) expire(env *environment, r lifetime.Reason) {
 // Revoke destroys the grant if it exists.
 func (h *Host) Revoke(ctx context.Context, id execenv.ID) error {
 	if err := ctx.Err(); err != nil {
+		return execenv.Error("revoke", err)
+	}
+	if err := execenv.ValidateGrantID(id); err != nil {
 		return execenv.Error("revoke", err)
 	}
 	h.mu.Lock()

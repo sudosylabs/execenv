@@ -81,11 +81,12 @@ func (c *Client) Adopt(gp GuestProcess) (procs.Backend, error) {
 
 // open streams tag's output from the offsets in from.
 func (c *Client) open(tag string, pid int, pty bool, started time.Time, from map[execenv.Stream]uint64) (procs.Backend, error) {
-	stream, err := c.agent.Output(c.ctx, connect.NewRequest(&guestv1.OutputRequest{Tag: tag, From: wire.OffsetsTo(from)}))
+	b := &guestBackend{client: c, tag: tag, pid: pid, started: started, done: make(chan struct{}), writers: map[execenv.Stream]*io.PipeWriter{}, readers: map[execenv.Stream]io.Reader{}}
+	stream, err := c.agent.Output(c.ctx, connect.NewRequest(&guestv1.OutputRequest{Process: b.ref(), From: wire.OffsetsTo(from)}))
 	if err != nil {
 		return nil, c.failure("output", err)
 	}
-	b := &guestBackend{client: c, tag: tag, pid: pid, started: started, stream: stream, done: make(chan struct{}), writers: map[execenv.Stream]*io.PipeWriter{}, readers: map[execenv.Stream]io.Reader{}}
+	b.stream = stream
 	names := []execenv.Stream{execenv.StreamStdout, execenv.StreamStderr}
 	if pty {
 		names = []execenv.Stream{execenv.StreamPTY}
@@ -195,14 +196,14 @@ func (b *guestBackend) CloseInput() error {
 func (b *guestBackend) Resize(ctx context.Context, w execenv.Window) error {
 	ctx, cancel := b.client.call(ctx)
 	defer cancel()
-	_, err := b.client.agent.ResizeProcess(ctx, connect.NewRequest(&guestv1.ResizeRequest{Tag: b.tag, Window: wire.WindowTo(w)}))
+	_, err := b.client.agent.ResizeProcess(ctx, connect.NewRequest(&guestv1.ResizeRequest{Process: b.ref(), Window: wire.WindowTo(w)}))
 	return b.client.failure("resize", err)
 }
 
 func (b *guestBackend) Screen(ctx context.Context) (execenv.Screen, error) {
 	ctx, cancel := b.client.call(ctx)
 	defer cancel()
-	resp, err := b.client.agent.ProcessScreen(ctx, connect.NewRequest(&guestv1.ProcessScreenRequest{Tag: b.tag}))
+	resp, err := b.client.agent.ProcessScreen(ctx, connect.NewRequest(&guestv1.ProcessScreenRequest{Process: b.ref()}))
 	if err != nil {
 		return execenv.Screen{}, b.client.failure("screen", err)
 	}

@@ -18,7 +18,9 @@ func openDirectory(root *os.Root, name string) (*os.Root, error) {
 	return dir, notFound(err)
 }
 
-func openRegular(root *os.Root, name string, listed os.FileInfo) (*os.File, error) {
+// OpenRegular opens the same regular file described by listed without
+// blocking if a concurrent writer replaced it with a special file.
+func OpenRegular(root *os.Root, name string, listed os.FileInfo) (*os.File, error) {
 	file, err := root.OpenFile(name, os.O_RDONLY|nonblock, 0)
 	if err != nil {
 		return nil, err

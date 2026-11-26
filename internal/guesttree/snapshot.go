@@ -19,6 +19,7 @@ import (
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/internal/content"
+	"github.com/sudosylabs/execenv/internal/files"
 )
 
 type Node struct {
@@ -254,7 +255,7 @@ func newCapturer(home string, previous *Snapshot, observe Observe, kept map[stri
 
 // visit reads one directory's admitted entries.
 func (c *capturer) visit(directory string) error {
-	parent, err := c.root.Open(directory)
+	dir, err := c.root.OpenRoot(directory)
 	if gone(err) {
 		// Moved, removed or replaced since it was listed.
 		c.result.Unsettled = true
@@ -263,10 +264,10 @@ func (c *capturer) visit(directory string) error {
 	if err != nil {
 		return execenv.ErrLagged
 	}
-	if st, err := parent.Stat(); err != nil || !st.IsDir() {
-		_ = parent.Close()
-		c.result.Unsettled = true
-		return nil
+	parent, err := dir.Open(".")
+	_ = dir.Close()
+	if err != nil {
+		return execenv.ErrLagged
 	}
 	entries, err := admitted(c.home, c.root, parent, directory, c.previous, c.identities, c.observe)
 	_ = parent.Close()
@@ -358,8 +359,8 @@ func (c *capturer) entry(name string) error {
 // may already have moved past. A file replaced since it was listed is
 // fs.ErrNotExist: the listed one is gone.
 func hashFile(root *os.Root, name string, listed os.FileInfo, st stamp) (blob content.Blob, settled bool, err error) {
-	file, err := root.Open(name)
-	if errors.Is(err, fs.ErrNotExist) {
+	file, err := files.OpenRegular(root, name, listed)
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, execenv.ErrConflict) {
 		return content.Blob{}, false, fs.ErrNotExist
 	}
 	if err != nil {

@@ -142,9 +142,10 @@ type grantOperation struct {
 	gate         chan struct{}
 	refs         int
 	cancelEnsure context.CancelFunc
+	revokes      int
 }
 
-func (h *server) lockGrant(ctx context.Context, id execenv.ID) (func(), error) {
+func (h *server) lockGrant(ctx context.Context, id execenv.ID, ensure context.CancelFunc, revoke bool) (func(), error) {
 	h.mu.Lock()
 	if h.lifecycle == nil {
 		h.lifecycle = make(map[execenv.ID]*grantOperation)
@@ -155,9 +156,21 @@ func (h *server) lockGrant(ctx context.Context, id execenv.ID) (func(), error) {
 		h.lifecycle[id] = op
 	}
 	op.refs++
+	if revoke {
+		op.revokes++
+		if op.cancelEnsure != nil {
+			op.cancelEnsure()
+		}
+	}
 	h.mu.Unlock()
-	drop := func() {
+	drop := func(held bool) {
 		h.mu.Lock()
+		if held && ensure != nil {
+			op.cancelEnsure = nil
+		}
+		if revoke {
+			op.revokes--
+		}
 		op.refs--
 		if op.refs == 0 {
 			delete(h.lifecycle, id)
@@ -166,10 +179,26 @@ func (h *server) lockGrant(ctx context.Context, id execenv.ID) (func(), error) {
 	}
 	select {
 	case <-ctx.Done():
-		drop()
+		drop(false)
 		return nil, ctx.Err()
 	case op.gate <- struct{}{}:
-		return func() { <-op.gate; drop() }, nil
+		h.mu.Lock()
+		if ensure != nil {
+			op.cancelEnsure = ensure
+			if op.revokes > 0 {
+				ensure()
+			}
+		}
+		h.mu.Unlock()
+		unlock := func() {
+			drop(true)
+			<-op.gate
+		}
+		if err := ctx.Err(); err != nil {
+			unlock()
+			return nil, err
+		}
+		return unlock, nil
 	}
 }
 
@@ -283,24 +312,17 @@ func (h *server) GetReport(ctx context.Context, _ *connect.Request[execenvv1.Get
 
 func (h *server) EnsureGrant(ctx context.Context, req *connect.Request[execenvv1.EnsureGrantRequest]) (*connect.Response[execenvv1.EnsureGrantResponse], error) {
 	spec, ok := wire.SpecFrom(req.Msg.GetSpec())
-	if !ok {
+	if !ok || execenv.ValidateSpec(spec) != nil {
 		return nil, wire.Error(execenv.ErrInvalid)
 	}
-	unlock, err := h.lockGrant(ctx, spec.ID)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	unlock, err := h.lockGrant(ctx, spec.ID, cancel, false)
 	if err != nil {
 		return nil, wire.Error(err)
 	}
 	defer unlock()
-	ctx, cancel := context.WithCancel(ctx)
-	h.mu.Lock()
-	op := h.lifecycle[spec.ID]
-	op.cancelEnsure = cancel
-	h.mu.Unlock()
 	env, err := h.inner.Ensure(ctx, spec)
-	cancel()
-	h.mu.Lock()
-	op.cancelEnsure = nil
-	h.mu.Unlock()
 	if err != nil {
 		return nil, wire.Error(err)
 	}
@@ -312,17 +334,13 @@ func (h *server) EnsureGrant(ctx context.Context, req *connect.Request[execenvv1
 
 func (h *server) RevokeGrant(ctx context.Context, req *connect.Request[execenvv1.RevokeGrantRequest]) (*connect.Response[execenvv1.RevokeGrantResponse], error) {
 	id := execenv.ID(req.Msg.GetGrantId())
+	if err := execenv.ValidateGrantID(id); err != nil {
+		return nil, wire.Error(err)
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, wire.Error(err)
 	}
-	if req.Msg.GetEpoch() == "" {
-		h.mu.Lock()
-		if op := h.lifecycle[id]; op != nil && op.cancelEnsure != nil {
-			op.cancelEnsure()
-		}
-		h.mu.Unlock()
-	}
-	unlock, err := h.lockGrant(ctx, id)
+	unlock, err := h.lockGrant(ctx, id, nil, req.Msg.GetEpoch() == "")
 	if err != nil {
 		return nil, wire.Error(err)
 	}

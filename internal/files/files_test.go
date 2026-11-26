@@ -81,7 +81,7 @@ func TestOpenRegularChecksFileIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	file, err := openRegular(root, "second", listed)
+	file, err := OpenRegular(root, "second", listed)
 	if file != nil {
 		_ = file.Close()
 	}

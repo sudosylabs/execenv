@@ -17,6 +17,7 @@ import (
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/internal/content"
+	"github.com/sudosylabs/execenv/internal/files"
 	"github.com/sudosylabs/execenv/internal/guesttree"
 	"github.com/sudosylabs/execenv/internal/observations"
 	"github.com/sudosylabs/execenv/internal/projection"
@@ -106,10 +107,11 @@ func (j *Journal) Body(fence execenv.ProjectionFence, ref execenv.ContentReferen
 		return nil, execenv.ErrUnavailable
 	}
 	defer root.Close()
-	if info, err := root.Lstat(name); err != nil || !info.Mode().IsRegular() || info.Size() != blob.Size {
+	info, err := root.Lstat(name)
+	if err != nil || !info.Mode().IsRegular() || info.Size() != blob.Size {
 		return nil, execenv.ErrStale
 	}
-	f, err := root.Open(name)
+	f, err := files.OpenRegular(root, name, info)
 	if err != nil {
 		return nil, execenv.ErrStale
 	}
@@ -502,7 +504,7 @@ func readIgnoreFile(home, name string) ([]byte, bool) {
 	if err != nil || !info.Mode().IsRegular() {
 		return nil, false
 	}
-	file, err := root.Open(name)
+	file, err := files.OpenRegular(root, name, info)
 	if err != nil {
 		return nil, false
 	}

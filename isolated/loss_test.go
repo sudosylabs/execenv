@@ -176,3 +176,32 @@ func TestDrainingRefusesNewGrantsAndServesHeldOnes(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestLossReceiptSurvivesFailedStopAndRestart(t *testing.T) {
+	launch := &recordingLauncher{}
+	host := testHost(t, func() error { return nil }, launch)
+	spec := execenv.Spec{ID: "kept", Image: "default"}
+	env, err := host.Ensure(t.Context(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst := launch.instance(spec.ID)
+	inst.mu.Lock()
+	inst.stopErr = errors.New("stop did not complete")
+	inst.mu.Unlock()
+	inst.dropLink()
+	waitLost(t, env)
+	inst.mu.Lock()
+	inst.stopErr = nil
+	inst.mu.Unlock()
+
+	next := restart(t, host)
+	if _, err := next.Ensure(t.Context(), spec); !errors.Is(err, execenv.ErrLost) {
+		t.Fatalf("Ensure after loss and restart: %v, want ErrLost", err)
+	}
+	select {
+	case <-inst.Done():
+	default:
+		t.Fatal("recovery kept the machine whose stop failed")
+	}
+}
