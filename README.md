@@ -1386,14 +1386,16 @@ entirely the application’s job.
 Install a newer `execenvctl` for the target tag, then:
 
 ```sh
+sudo execenvctl drain
 sudo execenvctl upgrade
 ```
 
-That replaces `execenv` and `execenvctl` from this binary’s tag, then
-reinstalls every catalog id already on the host so the guest agent
-matches, then restarts the daemon once. Live grants keep running: the
-upgraded daemon adopts them, and their machines keep the guest agent they
-started with until they end.
+Upgrade verifies both binaries and every installed catalog ID from the
+target tag before publishing replacements, then restarts the daemon. The
+daemon must have no live grants, including suspended grants, because a
+release can change the guest protocol or the boot artifacts needed for
+restore. A failed restart leaves an upgrade pending. Re-run upgrade to
+retry the restart.
 Token, TLS files, listen address, capacity, and allowlist stay.
 If an installed id is missing from the new index, upgrade fails before
 binaries move. When everything already matches: `upgraded=already current`.
