@@ -137,6 +137,7 @@ func (h *Host) tombstone(s grantState) error {
 	}
 	env := &environment{
 		gone:    make(chan struct{}),
+		retired: make(chan struct{}),
 		control: control.Restore(s.Epoch, s.Receipt),
 		id:      s.Spec.ID,
 		spec:    s.Spec,
@@ -188,6 +189,7 @@ func (h *Host) adopt(ctx context.Context, s grantState, inst instance) error {
 	image := h.bootImage(s)
 	env := &environment{
 		gone:    make(chan struct{}),
+		retired: make(chan struct{}),
 		control: control.Restore(s.Epoch, s.Receipt),
 		id:      s.Spec.ID,
 		spec:    s.Spec,
@@ -237,6 +239,7 @@ func (h *Host) adoptSuspended(s grantState) error {
 	image := h.bootImage(s)
 	env := &environment{
 		gone:         make(chan struct{}),
+		retired:      make(chan struct{}),
 		control:      control.Restore(s.Epoch, s.Receipt),
 		id:           s.Spec.ID,
 		spec:         s.Spec,

@@ -47,6 +47,9 @@ func runControl(t *testing.T, factory Factory) {
 		if receipt, err = current.Control(t.Context(), req); err != nil || !receipt.Confirmed {
 			t.Fatalf("revoke %+v %v", receipt, err)
 		}
+		if replay, err := current.Control(t.Context(), req); err != nil || replay != receipt {
+			t.Fatalf("revoke replay %+v %v", replay, err)
+		}
 		successor, err := host.Ensure(t.Context(), spec)
 		if err != nil {
 			t.Fatal(err)

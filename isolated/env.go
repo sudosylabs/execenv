@@ -43,6 +43,9 @@ type environment struct {
 	// gone closes once the environment has been stopped, by revoke or loss.
 	gone     chan struct{}
 	goneOnce sync.Once
+	// retired closes once the host releases the grant ID, including loss
+	// acknowledgement. A failed cleanup keeps the channel open.
+	retired chan struct{}
 	// started is when the grant was first ensured; its wall timeout runs
 	// from then, across restarts.
 	started time.Time
@@ -60,6 +63,8 @@ type environment struct {
 }
 
 func (e *environment) ID() execenv.ID { return e.id }
+
+func (e *environment) Retired() <-chan struct{} { return e.retired }
 
 func (e *environment) isLost() bool {
 	e.mu.Lock()

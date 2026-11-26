@@ -19,21 +19,25 @@ func RunPortLimits(t *testing.T, host execenv.Host, listen PortListener) {
 	const rate = 128 << 10
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	env, err := host.Ensure(ctx, execenv.Spec{
-		ID:    "port-limits",
-		Image: "default",
-		Limits: execenv.Limits{
-			PortBytes: execenv.TokenBucket{Rate: rate},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
+	occupy := func() (execenv.Env, execenv.ProjectionFence) {
+		env, err := host.Ensure(ctx, execenv.Spec{
+			ID:    "port-limits",
+			Image: "default",
+			Limits: execenv.Limits{
+				PortBytes: execenv.TokenBucket{Rate: rate},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = env.Revoke(context.Background()) })
+		fence := execenv.ProjectionFence{ExecutionGrantID: env.ID(), EnvironmentEpoch: env.Epoch(), FenceRevision: 1}
+		if _, err := env.Control(ctx, execenv.ControlRequest{Fence: fence, State: execenv.ControlRunning}); err != nil {
+			t.Fatal(err)
+		}
+		return env, fence
 	}
-	t.Cleanup(func() { _ = env.Revoke(context.Background()) })
-	fence := execenv.ProjectionFence{ExecutionGrantID: env.ID(), EnvironmentEpoch: env.Epoch(), FenceRevision: 1}
-	if _, err := env.Control(ctx, execenv.ControlRequest{Fence: fence, State: execenv.ControlRunning}); err != nil {
-		t.Fatal(err)
-	}
+	env, fence := occupy()
 	open := func(t *testing.T, port int) execenv.PortConn {
 		t.Helper()
 		conn, err := env.ConnectPort(ctx, fence, port)
@@ -77,6 +81,12 @@ func RunPortLimits(t *testing.T, host execenv.Host, listen PortListener) {
 			time.Sleep(10 * time.Millisecond)
 		}
 	})
+	// The cap test verifies that cancellation frees a slot. Use a fresh
+	// grant for throughput so it cannot race the other slots closing.
+	if err := env.Revoke(ctx); err != nil {
+		t.Fatal(err)
+	}
+	env, fence = occupy()
 	t.Run("bandwidth in both directions", func(t *testing.T) {
 		port, _ := listen(t, env, fence, "127.0.0.1", "echo")
 		conn := open(t, port)

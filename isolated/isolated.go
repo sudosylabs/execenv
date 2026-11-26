@@ -342,6 +342,7 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 	ctl.OnChange(h.hub.Poke)
 	env := &environment{
 		gone:    make(chan struct{}),
+		retired: make(chan struct{}),
 		control: ctl,
 		id:      spec.ID,
 		spec:    spec,
@@ -535,13 +536,15 @@ func (h *Host) Revoke(ctx context.Context, id execenv.ID) error {
 }
 
 func (h *Host) clearLossLocked(id execenv.ID) error {
-	if h.lost[id] == nil {
+	env := h.lost[id]
+	if env == nil {
 		return nil
 	}
 	if err := os.RemoveAll(filepath.Dir(statePath(h.cfg.WorkDir, id))); err != nil {
 		return execenv.Error("revoke", err)
 	}
 	delete(h.lost, id)
+	close(env.retired)
 	h.hub.Poke()
 	return nil
 }
@@ -615,6 +618,7 @@ func (h *Host) retireWhenLocked(env *environment, eligible func() bool) error {
 	}
 	delete(h.grants, env.id)
 	delete(h.lost, env.id)
+	close(env.retired)
 	h.pool.Release(env.id)
 	h.hub.Poke()
 	return nil

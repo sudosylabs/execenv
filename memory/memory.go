@@ -86,7 +86,8 @@ type environment struct {
 	processes *processLog
 	timer     *lifetime.Timer
 	// public is what callers hold: the environment, watched for activity.
-	public execenv.Env
+	public  execenv.Env
+	retired chan struct{}
 	// workspace is the grant's directory; journal projects into it.
 	// journalMu serializes journal calls; guestMu is the simulated guest,
 	// held by every guest write and by the journal's barrier.
@@ -273,6 +274,7 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		return nil, execenv.Error("ensure", execenv.ErrUnavailable)
 	}
 	env := &environment{
+		retired:   make(chan struct{}),
 		control:   control.New(spec.ID),
 		id:        spec.ID,
 		spec:      spec,
@@ -340,7 +342,10 @@ func (h *Host) Revoke(ctx context.Context, id execenv.ID) error {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	delete(h.lost, id)
+	if lost := h.lost[id]; lost != nil {
+		delete(h.lost, id)
+		close(lost.retired)
+	}
 	h.hub.Poke()
 	env := h.grants[id]
 	if env == nil {
@@ -350,6 +355,7 @@ func (h *Host) Revoke(ctx context.Context, id execenv.ID) error {
 		return err
 	}
 	delete(h.grants, id)
+	close(env.retired)
 	h.hub.Poke()
 	h.pool.Release(id)
 	return nil
@@ -370,6 +376,7 @@ func (h *Host) revokeExactWhen(ctx context.Context, env *environment, eligible f
 			return nil
 		}
 		delete(h.lost, env.id)
+		close(env.retired)
 		h.hub.Poke()
 	}
 	if h.grants[env.id] != env {
@@ -383,6 +390,7 @@ func (h *Host) revokeExactWhen(ctx context.Context, env *environment, eligible f
 		return nil
 	}
 	delete(h.grants, env.id)
+	close(env.retired)
 	h.hub.Poke()
 	h.pool.Release(env.id)
 	return nil
@@ -461,6 +469,8 @@ func (e *environment) thaw(ctx context.Context) error {
 	e.procs.Thaw()
 	return nil
 }
+
+func (e *environment) Retired() <-chan struct{} { return e.retired }
 
 func (e *environment) Revoke(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {

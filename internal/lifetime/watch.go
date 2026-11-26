@@ -23,6 +23,13 @@ type watched struct {
 	t *Timer
 }
 
+func (w *watched) Retired() <-chan struct{} {
+	if env, ok := w.Env.(interface{ Retired() <-chan struct{} }); ok {
+		return env.Retired()
+	}
+	return nil
+}
+
 func (w *watched) AttachProcess(ctx context.Context, tag string, from map[execenv.Stream]uint64) (execenv.Attachment, error) {
 	release := w.t.Hold()
 	a, err := w.Env.AttachProcess(ctx, tag, from)

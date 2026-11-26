@@ -76,7 +76,9 @@ func Serve(ctx context.Context, ln net.Listener, inner execenv.Host, cfg ServerC
 			return execenv.Error("serve", execenv.ErrInvalid)
 		}
 	}
-	h := &server{inner: inner, cfg: cfg, envs: make(map[execenv.ID]execenv.Env)}
+	done := make(chan struct{})
+	defer close(done)
+	h := &server{inner: inner, cfg: cfg, envs: make(map[execenv.ID]execenv.Env), done: done}
 	mux := http.NewServeMux()
 	options := connect.WithInterceptors(timeoutInterceptor{operationTimeoutOrDefault(cfg.OperationTimeout)})
 	mux.Handle(execenvv1connect.NewHostServiceHandler(h, options))
@@ -106,8 +108,6 @@ func Serve(ctx context.Context, ln net.Listener, inner execenv.Host, cfg ServerC
 		},
 		ErrorLog: discardLog,
 	}
-	done := make(chan struct{})
-	defer close(done)
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -130,10 +130,13 @@ func Serve(ctx context.Context, ln net.Listener, inner execenv.Host, cfg ServerC
 type server struct {
 	inner execenv.Host
 	cfg   ServerConfig
+	done  <-chan struct{}
 
 	mu sync.Mutex
 	// envs holds the environment each grant was last ensured as.
 	envs map[execenv.ID]execenv.Env
+	// receipts keeps only the terminal control metadata after retirement.
+	receipts map[execenv.ID]execenv.ControlReceipt
 	// lifecycle serializes the adapter call and map publication for one ID.
 	lifecycle map[execenv.ID]*grantOperation
 }
@@ -274,7 +277,44 @@ func (h *server) fenced(fence *execenvv1.Fence) (execenv.Env, execenv.Projection
 func (h *server) forget(id execenv.ID) {
 	h.mu.Lock()
 	delete(h.envs, id)
+	delete(h.receipts, id)
 	h.mu.Unlock()
+}
+
+func (h *server) remember(env execenv.Env) {
+	id, epoch := env.ID(), env.Epoch()
+	h.mu.Lock()
+	old := h.envs[id]
+	h.envs[id] = env
+	delete(h.receipts, id)
+	h.mu.Unlock()
+	if old != nil && old.Epoch() == epoch {
+		return
+	}
+	if grant, ok := env.(interface{ Retired() <-chan struct{} }); ok {
+		if retired := grant.Retired(); retired != nil {
+			go func() {
+				select {
+				case <-h.done:
+				case <-retired:
+					ctx, cancel := context.WithTimeout(context.Background(), operationTimeoutOrDefault(h.cfg.OperationTimeout))
+					receipt, err := env.ControlStatus(ctx)
+					cancel()
+					h.mu.Lock()
+					if current := h.envs[id]; current != nil && current.Epoch() == epoch {
+						if err == nil && receipt.Confirmed && receipt.State == execenv.ControlRevoked {
+							if h.receipts == nil {
+								h.receipts = make(map[execenv.ID]execenv.ControlReceipt)
+							}
+							h.receipts[id] = receipt
+						}
+						delete(h.envs, id)
+					}
+					h.mu.Unlock()
+				}
+			}()
+		}
+	}
 }
 
 // HostService
@@ -326,9 +366,7 @@ func (h *server) EnsureGrant(ctx context.Context, req *connect.Request[execenvv1
 	if err != nil {
 		return nil, wire.Error(err)
 	}
-	h.mu.Lock()
-	h.envs[spec.ID] = env
-	h.mu.Unlock()
+	h.remember(env)
 	return connect.NewResponse(&execenvv1.EnsureGrantResponse{Epoch: env.Epoch()}), nil
 }
 
@@ -348,6 +386,11 @@ func (h *server) RevokeGrant(ctx context.Context, req *connect.Request[execenvv1
 	if epoch := req.Msg.GetEpoch(); epoch != "" {
 		env, err := h.env(id, epoch)
 		if errors.Is(err, execenv.ErrRevoked) || errors.Is(err, execenv.ErrConflict) {
+			h.mu.Lock()
+			if receipt, ok := h.receipts[id]; ok && receipt.Fence.EnvironmentEpoch == epoch {
+				delete(h.receipts, id)
+			}
+			h.mu.Unlock()
 			return connect.NewResponse(&execenvv1.RevokeGrantResponse{}), nil
 		}
 		if err != nil {
@@ -365,12 +408,25 @@ func (h *server) RevokeGrant(ctx context.Context, req *connect.Request[execenvv1
 
 // ControlService
 
+func (h *server) controlReceipt(id execenv.ID, epoch string) (execenv.ControlReceipt, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	receipt, ok := h.receipts[id]
+	return receipt, ok && receipt.Fence.EnvironmentEpoch == epoch
+}
+
 func (h *server) Control(ctx context.Context, req *connect.Request[execenvv1.ControlRequest]) (*connect.Response[execenvv1.ControlReceipt], error) {
-	env, fence, err := h.fenced(req.Msg.GetFence())
+	fence := wire.FenceFrom(req.Msg.GetFence())
+	request := execenv.ControlRequest{Fence: fence, State: wire.ControlStateFrom(req.Msg.GetState())}
+	env, err := h.env(fence.ExecutionGrantID, fence.EnvironmentEpoch)
 	if err != nil {
+		if receipt, ok := h.controlReceipt(fence.ExecutionGrantID, fence.EnvironmentEpoch); ok &&
+			receipt.Fence == fence && receipt.State == request.State {
+			return connect.NewResponse(wire.ReceiptTo(receipt)), nil
+		}
 		return nil, wire.Error(err)
 	}
-	receipt, err := env.Control(ctx, execenv.ControlRequest{Fence: fence, State: wire.ControlStateFrom(req.Msg.GetState())})
+	receipt, err := env.Control(ctx, request)
 	if err != nil {
 		return nil, wire.Error(err)
 	}
@@ -378,8 +434,12 @@ func (h *server) Control(ctx context.Context, req *connect.Request[execenvv1.Con
 }
 
 func (h *server) ControlStatus(ctx context.Context, req *connect.Request[execenvv1.ControlStatusRequest]) (*connect.Response[execenvv1.ControlReceipt], error) {
-	env, err := h.env(execenv.ID(req.Msg.GetGrantId()), req.Msg.GetEpoch())
+	id, epoch := execenv.ID(req.Msg.GetGrantId()), req.Msg.GetEpoch()
+	env, err := h.env(id, epoch)
 	if err != nil {
+		if receipt, ok := h.controlReceipt(id, epoch); ok {
+			return connect.NewResponse(wire.ReceiptTo(receipt)), nil
+		}
 		return nil, wire.Error(err)
 	}
 	receipt, err := env.ControlStatus(ctx)
