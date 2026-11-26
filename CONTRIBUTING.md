@@ -36,7 +36,7 @@ Use a branch name that describes the outcome, such as `feat/observation-lag`,
 
 You need:
 
-- Go 1.25 or newer (see `go.mod`)
+- Go 1.26.11 or newer (see `go.mod`)
 - GNU Make
 - A POSIX shell
 
@@ -82,7 +82,9 @@ daemon, or the isolation adapter.
 - The public occupancy API does not name a particular hypervisor.
 - One `Host` value is one machine. Placement across hosts is the caller's job.
 - Production isolation fails closed without a usable isolation device. The
-  in-memory adapter is for tests and local development only. TLS refuses it.
+  in-memory adapter is for tests and local development only. Remote TLS
+  requires the isolated adapter. Cleartext listeners must bind a loopback
+  TCP address.
 - Trees are projections. Callers own durable file authority. This module never
   accepts storage credentials from a caller filesystem.
 - PTY octets, tree bodies, and grant tokens never enter ordinary logs.

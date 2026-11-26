@@ -66,11 +66,11 @@ type Report struct {
 	Reason   string
 	Images   []Image
 	Networks []Network
-	// CPUMillis, MemoryBytes and DiskBytes are the host's capacity. Every
-	// grant reserves its whole Resources from the moment it starts until it
-	// is revoked or lost; a grant being started counts at once. CPU totals
-	// already include the operator's overcommit; memory is never
-	// overcommitted.
+	// CPUMillis, MemoryBytes and DiskBytes are the host's capacity. A grant
+	// reserves its full resources during startup, while running and while
+	// frozen. A suspended grant retains only its disk reservation. Revoke
+	// and loss free capacity after cleanup. CPU totals include the
+	// operator's overcommit. Memory is never overcommitted.
 	CPUMillis   Capacity
 	MemoryBytes Capacity
 	DiskBytes   Capacity
@@ -132,10 +132,10 @@ type Spec struct {
 	// WallTimeout, when set, revokes the grant that long after it started.
 	WallTimeout time.Duration
 	// IdleTimeout and IdleAction, set together, freeze, suspend or revoke
-	// the grant once it has been idle that long. A grant is busy while
-	// anything is attached to one of its processes, while a port connection is open,
-	// and for a moment after activity. Observe, ObserveProcesses and
-	// ListPorts do not count as activity.
+	// the grant once it has been idle that long. Open process attachments
+	// and port connections keep it busy. Control requests, process starts,
+	// input writes, projection operations, observation content access and
+	// acknowledgements, and limit updates reset the idle deadline.
 	IdleTimeout time.Duration
 	IdleAction  IdleAction
 	// Labels are the caller's, for its own bookkeeping. The host never

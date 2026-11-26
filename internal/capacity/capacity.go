@@ -1,9 +1,8 @@
 // Package capacity reserves a host's CPU, memory and disk for its grants.
 //
-// A grant reserves its whole Resources from the moment it starts until it is
-// released. A grant that does not fit is refused at once with the resource
-// that is short; nothing waits. Totals are what the operator configured:
-// CPU already includes any overcommit, memory never has any.
+// A grant starts with its full reservation and keeps its disk while
+// suspended. A reservation that does not fit is refused at once. CPU
+// totals include the operator's overcommit. Memory is never overcommitted.
 package capacity
 
 import (

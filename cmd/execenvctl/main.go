@@ -9,10 +9,10 @@
 //	execenvctl drain [--timeout 15m]
 //	execenvctl undrain
 //
-// install, remove and upgrade restart a running daemon, which destroys
-// every grant it holds, so they refuse while grants are live unless
-// --force is given. drain stops the daemon taking new grants and waits for
-// the live ones to end; a drained daemon restarts without --force.
+// Install and remove restart the daemon. Isolated grants can be adopted on
+// restart. Upgrade requires an empty host so it can change the guest
+// protocol and boot artifacts. Drain refuses new grants and waits for
+// existing ones to end.
 //
 // This is not the daemon and not the guest agent. It does not occupy
 // grants. Flags and exit codes only; there is no TUI.
@@ -92,7 +92,7 @@ func newBootstrap(opts *ctl.Options) *cobra.Command {
 const restartNote = " Restarts a running daemon. An isolated daemon adopts its grants again, so they keep running; one whose grants would not survive (the in-memory adapter) is refused while it holds any. Run execenvctl drain first, or pass --force to restart anyway."
 
 func forceFlag(cmd *cobra.Command, opts *ctl.Options) {
-	cmd.Flags().BoolVar(&opts.Force, "force", false, "restart a daemon whose grants do not survive a restart even while it holds some, destroying them")
+	cmd.Flags().BoolVar(&opts.Force, "force", false, "allow the restart even if grants may be lost")
 }
 
 func newInstall(opts *ctl.Options) *cobra.Command {
@@ -124,7 +124,7 @@ func newRemove(opts *ctl.Options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "remove id",
 		Short: "Remove one catalog image from this host",
-		Long:  "Drop id from host config and delete its disk. The shared kernel stays while another image uses it." + restartNote,
+		Long:  "Drop id from host config and delete files no other image uses." + restartNote,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return ctl.Remove(*opts, args[0], cmd.OutOrStdout())
@@ -149,7 +149,7 @@ func newUpgrade(opts *ctl.Options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "upgrade",
 		Short: "Replace execenvctl and execenv from the release channel",
-		Long:  "Fetch linux/amd64 binaries and reinstall every catalog id already on the host from this binary's tag, then restart the daemon once. The host token and TLS files are left alone." + restartNote,
+		Long:  "Fetch Linux/amd64 binaries and verify the installed catalog IDs from this binary's tag before publishing changes. Drain all grants before upgrading. A failed restart can be retried by running upgrade again.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return ctl.Upgrade(*opts, cmd.OutOrStdout())
