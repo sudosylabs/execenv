@@ -66,9 +66,10 @@ type guestProc struct {
 	exit    execenv.ExitStatus
 	input   uint64
 
-	// outMu admits one Output stream at a time; inMu one Feed.
-	outMu sync.Mutex
-	inMu  sync.Mutex
+	// outMu admits one Output stream at a time; inMu serializes input.
+	outMu       sync.Mutex
+	inMu        sync.Mutex
+	inputClosed bool
 }
 
 func (p *guestProc) done() bool {
@@ -340,9 +341,7 @@ func (p *guestProc) wait() {
 		_ = f.Close()
 	}
 	if p.stdin != nil {
-		p.inMu.Lock()
 		_ = p.stdin.Close()
-		p.inMu.Unlock()
 	}
 }
 
@@ -479,7 +478,7 @@ func (s *server) Output(ctx context.Context, req *connect.Request[guestv1.Output
 	}
 }
 
-func (p *guestProc) inputWriter() io.Writer {
+func (p *guestProc) inputWriter() *os.File {
 	if p.pty != nil {
 		return p.pty
 	}
@@ -489,12 +488,13 @@ func (p *guestProc) inputWriter() io.Writer {
 	return nil
 }
 
-// Feed writes input to the process the first message names, in order.
-func (s *server) Feed(_ context.Context, stream *connect.ClientStream[guestv1.FeedRequest]) (*connect.Response[guestv1.FeedResponse], error) {
-	if !stream.Receive() || stream.Msg().GetTag() == "" {
+// Feed returns the offset after writing, including any accepted prefix.
+func (s *server) Feed(ctx context.Context, req *connect.Request[guestv1.FeedRequest]) (*connect.Response[guestv1.FeedResponse], error) {
+	data := req.Msg.GetData()
+	if len(data) == 0 || len(data) > wire.ChunkSize {
 		return nil, wire.Error(execenv.ErrInvalid)
 	}
-	p, err := s.proc(stream.Msg().GetTag())
+	p, err := s.referencedProcess(req.Msg.GetProcess())
 	if err != nil {
 		return nil, wire.Error(err)
 	}
@@ -504,25 +504,55 @@ func (s *server) Feed(_ context.Context, stream *connect.ClientStream[guestv1.Fe
 	}
 	p.inMu.Lock()
 	defer p.inMu.Unlock()
-	for stream.Receive() {
-		s.mu.Lock()
-		err := s.guard()
-		s.mu.Unlock()
-		if err != nil {
-			return nil, wire.Error(err)
-		}
-		n, err := w.Write(stream.Msg().GetData())
-		p.mu.Lock()
-		p.input += uint64(n)
-		p.mu.Unlock()
-		if err != nil {
-			return nil, wire.Error(execenv.ErrClosed)
-		}
+	if err := ctx.Err(); err != nil {
+		return nil, wire.Error(err)
 	}
-	if err := stream.Err(); err != nil {
+	p.mu.Lock()
+	current, exited := p.input, p.exited
+	p.mu.Unlock()
+	offset := req.Msg.GetOffset()
+	if offset > current {
+		return nil, wire.Error(execenv.ErrConflict)
+	}
+	skip := current - offset
+	if skip >= uint64(len(data)) {
+		return connect.NewResponse(&guestv1.FeedResponse{Offset: current}), nil
+	}
+	if p.inputClosed || exited {
+		return connect.NewResponse(&guestv1.FeedResponse{Offset: current, Closed: true}), nil
+	}
+	s.mu.Lock()
+	err = s.guard()
+	s.mu.Unlock()
+	if err != nil {
+		return nil, wire.Error(err)
+	}
+	if deadline, ok := ctx.Deadline(); ok && w.SetWriteDeadline(deadline) == nil {
+		defer w.SetWriteDeadline(time.Time{})
+	}
+	n, err := w.Write(data[skip:])
+	p.mu.Lock()
+	p.input += uint64(n)
+	current = p.input
+	p.mu.Unlock()
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		return nil, wire.Error(context.DeadlineExceeded)
+	}
+	return connect.NewResponse(&guestv1.FeedResponse{Offset: current, Closed: err != nil}), nil
+}
+
+func (s *server) referencedProcess(ref *guestv1.ProcessRef) (*guestProc, error) {
+	if ref.GetTag() == "" || ref.GetStarted() == nil || ref.GetPid() <= 0 {
+		return nil, execenv.ErrInvalid
+	}
+	p, err := s.proc(ref.GetTag())
+	if err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(&guestv1.FeedResponse{}), nil
+	if int(ref.GetPid()) != p.cmd.Process.Pid || !p.started.Equal(ref.GetStarted().AsTime()) {
+		return nil, execenv.ErrClosed
+	}
+	return p, nil
 }
 
 func (s *server) live(tag string) (*guestProc, error) {
@@ -543,14 +573,21 @@ func (s *server) live(tag string) (*guestProc, error) {
 }
 
 func (s *server) CloseFeed(_ context.Context, req *connect.Request[guestv1.ProcessRef]) (*connect.Response[guestv1.Empty], error) {
-	p, err := s.live(req.Msg.GetTag())
+	p, err := s.referencedProcess(req.Msg)
 	if err != nil {
 		return nil, wire.Error(err)
 	}
+	s.mu.Lock()
+	err = s.guard()
+	s.mu.Unlock()
+	if err != nil {
+		return nil, wire.Error(err)
+	}
+	p.inMu.Lock()
+	defer p.inMu.Unlock()
+	p.inputClosed = true
 	if p.stdin != nil {
-		p.inMu.Lock()
 		_ = p.stdin.Close()
-		p.inMu.Unlock()
 	}
 	return connect.NewResponse(&guestv1.Empty{}), nil
 }

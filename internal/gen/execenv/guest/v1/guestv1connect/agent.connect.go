@@ -131,8 +131,8 @@ type AgentServiceClient interface {
 	// with its stream and offset, then its exit. It opens with an empty event
 	// as soon as the guest has the process.
 	Output(context.Context, *connect.Request[v1.OutputRequest]) (*connect.ServerStreamForClient[v1.OutputResponse], error)
-	// Feed carries input for one process. The first message names it.
-	Feed(context.Context) *connect.ClientStreamForClient[v1.FeedRequest, v1.FeedResponse]
+	// Feed acknowledges the input offset after the process takes the bytes.
+	Feed(context.Context, *connect.Request[v1.FeedRequest]) (*connect.Response[v1.FeedResponse], error)
 	CloseFeed(context.Context, *connect.Request[v1.ProcessRef]) (*connect.Response[v1.Empty], error)
 	ResizeProcess(context.Context, *connect.Request[v1.ResizeRequest]) (*connect.Response[v1.Empty], error)
 	SignalProcess(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.Empty], error)
@@ -432,8 +432,8 @@ func (c *agentServiceClient) Output(ctx context.Context, req *connect.Request[v1
 }
 
 // Feed calls execenv.guest.v1.AgentService.Feed.
-func (c *agentServiceClient) Feed(ctx context.Context) *connect.ClientStreamForClient[v1.FeedRequest, v1.FeedResponse] {
-	return c.feed.CallClientStream(ctx)
+func (c *agentServiceClient) Feed(ctx context.Context, req *connect.Request[v1.FeedRequest]) (*connect.Response[v1.FeedResponse], error) {
+	return c.feed.CallUnary(ctx, req)
 }
 
 // CloseFeed calls execenv.guest.v1.AgentService.CloseFeed.
@@ -587,8 +587,8 @@ type AgentServiceHandler interface {
 	// with its stream and offset, then its exit. It opens with an empty event
 	// as soon as the guest has the process.
 	Output(context.Context, *connect.Request[v1.OutputRequest], *connect.ServerStream[v1.OutputResponse]) error
-	// Feed carries input for one process. The first message names it.
-	Feed(context.Context, *connect.ClientStream[v1.FeedRequest]) (*connect.Response[v1.FeedResponse], error)
+	// Feed acknowledges the input offset after the process takes the bytes.
+	Feed(context.Context, *connect.Request[v1.FeedRequest]) (*connect.Response[v1.FeedResponse], error)
 	CloseFeed(context.Context, *connect.Request[v1.ProcessRef]) (*connect.Response[v1.Empty], error)
 	ResizeProcess(context.Context, *connect.Request[v1.ResizeRequest]) (*connect.Response[v1.Empty], error)
 	SignalProcess(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.Empty], error)
@@ -656,7 +656,7 @@ func NewAgentServiceHandler(svc AgentServiceHandler, opts ...connect.HandlerOpti
 		connect.WithSchema(agentServiceMethods.ByName("Output")),
 		connect.WithHandlerOptions(opts...),
 	)
-	agentServiceFeedHandler := connect.NewClientStreamHandler(
+	agentServiceFeedHandler := connect.NewUnaryHandler(
 		AgentServiceFeedProcedure,
 		svc.Feed,
 		connect.WithSchema(agentServiceMethods.ByName("Feed")),
@@ -915,7 +915,7 @@ func (UnimplementedAgentServiceHandler) Output(context.Context, *connect.Request
 	return connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.Output is not implemented"))
 }
 
-func (UnimplementedAgentServiceHandler) Feed(context.Context, *connect.ClientStream[v1.FeedRequest]) (*connect.Response[v1.FeedResponse], error) {
+func (UnimplementedAgentServiceHandler) Feed(context.Context, *connect.Request[v1.FeedRequest]) (*connect.Response[v1.FeedResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("execenv.guest.v1.AgentService.Feed is not implemented"))
 }
 

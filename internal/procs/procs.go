@@ -23,8 +23,8 @@ type Backend interface {
 	// Streams are the process's outputs: StreamPTY, or StreamStdout and
 	// StreamStderr. Each ends with io.EOF once the process closes it.
 	Streams() map[execenv.Stream]io.Reader
-	// Write sends input.
-	Write(p []byte) (int, error)
+	// WriteInput copies input and returns the acknowledged absolute offset.
+	WriteInput(ctx context.Context, offset uint64, data []byte) (uint64, error)
 	CloseInput() error
 	Resize(ctx context.Context, w execenv.Window) error
 	Signal(s execenv.Signal) error
@@ -349,7 +349,7 @@ func (m *Manager) List() ([]execenv.ProcessInfo, error) {
 }
 
 // WriteInput appends data at offset.
-func (m *Manager) WriteInput(tag string, offset uint64, data []byte) (uint64, error) {
+func (m *Manager) WriteInput(ctx context.Context, tag string, offset uint64, data []byte) (uint64, error) {
 	m.mu.Lock()
 	if err := m.guard(); err != nil {
 		m.mu.Unlock()
@@ -385,15 +385,12 @@ func (m *Manager) WriteInput(tag string, offset uint64, data []byte) (uint64, er
 		return current, execenv.ErrClosed
 	}
 	rest := data[skip:]
-	n, err := p.backend.Write(rest)
+	next, err := p.backend.WriteInput(ctx, current, rest)
 	m.mu.Lock()
-	p.input += uint64(n)
+	p.input = max(p.input, next)
 	current = p.input
 	m.mu.Unlock()
-	if err != nil {
-		return current, execenv.ErrClosed
-	}
-	return current, nil
+	return current, err
 }
 
 func (m *Manager) live(tag string) (*proc, error) {

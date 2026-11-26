@@ -34,8 +34,8 @@ service AgentService {
   // with its stream and offset, then its exit. It opens with an empty event
   // as soon as the guest has the process.
   rpc Output(OutputRequest) returns (stream OutputResponse);
-  // Feed carries input for one process. The first message names it.
-  rpc Feed(stream FeedRequest) returns (FeedResponse);
+  // Feed acknowledges the input offset after the process takes the bytes.
+  rpc Feed(FeedRequest) returns (FeedResponse);
   rpc CloseFeed(ProcessRef) returns (Empty);
   rpc ResizeProcess(ResizeRequest) returns (Empty);
   rpc SignalProcess(SignalRequest) returns (Empty);
@@ -98,6 +98,8 @@ message SpawnResponse {
 
 message ProcessRef {
   string tag = 1;
+  int32 pid = 2;
+  google.protobuf.Timestamp started = 3;
 }
 
 message ListProcessesRequest {}
@@ -137,13 +139,16 @@ message Chunk {
 }
 
 message FeedRequest {
-  oneof part {
-    string tag = 1;
-    bytes data = 2;
-  }
+  reserved 1, 2;
+  ProcessRef process = 3;
+  uint64 offset = 4;
+  bytes data = 5;
 }
 
-message FeedResponse {}
+message FeedResponse {
+  uint64 offset = 1;
+  bool closed = 2;
+}
 
 message ResizeRequest {
   string tag = 1;

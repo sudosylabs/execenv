@@ -254,6 +254,8 @@ func (x *SpawnResponse) GetStarted() *timestamppb.Timestamp {
 type ProcessRef struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Tag           string                 `protobuf:"bytes,1,opt,name=tag,proto3" json:"tag,omitempty"`
+	Pid           int32                  `protobuf:"varint,2,opt,name=pid,proto3" json:"pid,omitempty"`
+	Started       *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=started,proto3" json:"started,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -293,6 +295,20 @@ func (x *ProcessRef) GetTag() string {
 		return x.Tag
 	}
 	return ""
+}
+
+func (x *ProcessRef) GetPid() int32 {
+	if x != nil {
+		return x.Pid
+	}
+	return 0
+}
+
+func (x *ProcessRef) GetStarted() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Started
+	}
+	return nil
 }
 
 type ListProcessesRequest struct {
@@ -658,12 +674,10 @@ func (x *Chunk) GetOffset() uint64 {
 }
 
 type FeedRequest struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// Types that are valid to be assigned to Part:
-	//
-	//	*FeedRequest_Tag
-	//	*FeedRequest_Data
-	Part          isFeedRequest_Part `protobuf_oneof:"part"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Process       *ProcessRef            `protobuf:"bytes,3,opt,name=process,proto3" json:"process,omitempty"`
+	Offset        uint64                 `protobuf:"varint,4,opt,name=offset,proto3" json:"offset,omitempty"`
+	Data          []byte                 `protobuf:"bytes,5,opt,name=data,proto3" json:"data,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -698,49 +712,31 @@ func (*FeedRequest) Descriptor() ([]byte, []int) {
 	return file_execenv_guest_v1_agent_proto_rawDescGZIP(), []int{12}
 }
 
-func (x *FeedRequest) GetPart() isFeedRequest_Part {
+func (x *FeedRequest) GetProcess() *ProcessRef {
 	if x != nil {
-		return x.Part
+		return x.Process
 	}
 	return nil
 }
 
-func (x *FeedRequest) GetTag() string {
+func (x *FeedRequest) GetOffset() uint64 {
 	if x != nil {
-		if x, ok := x.Part.(*FeedRequest_Tag); ok {
-			return x.Tag
-		}
+		return x.Offset
 	}
-	return ""
+	return 0
 }
 
 func (x *FeedRequest) GetData() []byte {
 	if x != nil {
-		if x, ok := x.Part.(*FeedRequest_Data); ok {
-			return x.Data
-		}
+		return x.Data
 	}
 	return nil
 }
 
-type isFeedRequest_Part interface {
-	isFeedRequest_Part()
-}
-
-type FeedRequest_Tag struct {
-	Tag string `protobuf:"bytes,1,opt,name=tag,proto3,oneof"`
-}
-
-type FeedRequest_Data struct {
-	Data []byte `protobuf:"bytes,2,opt,name=data,proto3,oneof"`
-}
-
-func (*FeedRequest_Tag) isFeedRequest_Part() {}
-
-func (*FeedRequest_Data) isFeedRequest_Part() {}
-
 type FeedResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
+	Offset        uint64                 `protobuf:"varint,1,opt,name=offset,proto3" json:"offset,omitempty"`
+	Closed        bool                   `protobuf:"varint,2,opt,name=closed,proto3" json:"closed,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -773,6 +769,20 @@ func (x *FeedResponse) ProtoReflect() protoreflect.Message {
 // Deprecated: Use FeedResponse.ProtoReflect.Descriptor instead.
 func (*FeedResponse) Descriptor() ([]byte, []int) {
 	return file_execenv_guest_v1_agent_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *FeedResponse) GetOffset() uint64 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+func (x *FeedResponse) GetClosed() bool {
+	if x != nil {
+		return x.Closed
+	}
+	return false
 }
 
 type ResizeRequest struct {
@@ -1082,10 +1092,12 @@ const file_execenv_guest_v1_agent_proto_rawDesc = "" +
 	"\x04spec\x18\x01 \x01(\v2\x17.execenv.v1.ProcessSpecR\x04spec\"W\n" +
 	"\rSpawnResponse\x12\x10\n" +
 	"\x03pid\x18\x01 \x01(\x05R\x03pid\x124\n" +
-	"\astarted\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\astarted\"\x1e\n" +
+	"\astarted\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\astarted\"f\n" +
 	"\n" +
 	"ProcessRef\x12\x10\n" +
-	"\x03tag\x18\x01 \x01(\tR\x03tag\"\x16\n" +
+	"\x03tag\x18\x01 \x01(\tR\x03tag\x12\x10\n" +
+	"\x03pid\x18\x02 \x01(\x05R\x03pid\x124\n" +
+	"\astarted\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\astarted\"\x16\n" +
 	"\x14ListProcessesRequest\"U\n" +
 	"\x15ListProcessesResponse\x12<\n" +
 	"\tprocesses\x18\x01 \x03(\v2\x1e.execenv.guest.v1.GuestProcessR\tprocesses\"\xe3\x01\n" +
@@ -1112,12 +1124,14 @@ const file_execenv_guest_v1_agent_proto_rawDesc = "" +
 	"\x05Chunk\x12\x16\n" +
 	"\x06stream\x18\x01 \x01(\tR\x06stream\x12\x12\n" +
 	"\x04data\x18\x02 \x01(\fR\x04data\x12\x16\n" +
-	"\x06offset\x18\x03 \x01(\x04R\x06offset\"?\n" +
-	"\vFeedRequest\x12\x12\n" +
-	"\x03tag\x18\x01 \x01(\tH\x00R\x03tag\x12\x14\n" +
-	"\x04data\x18\x02 \x01(\fH\x00R\x04dataB\x06\n" +
-	"\x04part\"\x0e\n" +
-	"\fFeedResponse\"M\n" +
+	"\x06offset\x18\x03 \x01(\x04R\x06offset\"}\n" +
+	"\vFeedRequest\x126\n" +
+	"\aprocess\x18\x03 \x01(\v2\x1c.execenv.guest.v1.ProcessRefR\aprocess\x12\x16\n" +
+	"\x06offset\x18\x04 \x01(\x04R\x06offset\x12\x12\n" +
+	"\x04data\x18\x05 \x01(\fR\x04dataJ\x04\b\x01\x10\x02J\x04\b\x02\x10\x03\">\n" +
+	"\fFeedResponse\x12\x16\n" +
+	"\x06offset\x18\x01 \x01(\x04R\x06offset\x12\x16\n" +
+	"\x06closed\x18\x02 \x01(\bR\x06closed\"M\n" +
 	"\rResizeRequest\x12\x10\n" +
 	"\x03tag\x18\x01 \x01(\tR\x03tag\x12*\n" +
 	"\x06window\x18\x02 \x01(\v2\x12.execenv.v1.WindowR\x06window\"(\n" +
@@ -1129,13 +1143,13 @@ const file_execenv_guest_v1_agent_proto_rawDesc = "" +
 	"\rFreezeRequest\"\x10\n" +
 	"\x0eFreezeResponse\"\r\n" +
 	"\vThawRequest\"\x0e\n" +
-	"\fThawResponse2\xdc\x13\n" +
+	"\fThawResponse2\xda\x13\n" +
 	"\fAgentService\x12H\n" +
 	"\x05Hello\x12\x1e.execenv.guest.v1.HelloRequest\x1a\x1f.execenv.guest.v1.HelloResponse\x12H\n" +
 	"\x05Spawn\x12\x1e.execenv.guest.v1.SpawnRequest\x1a\x1f.execenv.guest.v1.SpawnResponse\x12`\n" +
 	"\rListProcesses\x12&.execenv.guest.v1.ListProcessesRequest\x1a'.execenv.guest.v1.ListProcessesResponse\x12M\n" +
-	"\x06Output\x12\x1f.execenv.guest.v1.OutputRequest\x1a .execenv.guest.v1.OutputResponse0\x01\x12G\n" +
-	"\x04Feed\x12\x1d.execenv.guest.v1.FeedRequest\x1a\x1e.execenv.guest.v1.FeedResponse(\x01\x12B\n" +
+	"\x06Output\x12\x1f.execenv.guest.v1.OutputRequest\x1a .execenv.guest.v1.OutputResponse0\x01\x12E\n" +
+	"\x04Feed\x12\x1d.execenv.guest.v1.FeedRequest\x1a\x1e.execenv.guest.v1.FeedResponse\x12B\n" +
 	"\tCloseFeed\x12\x1c.execenv.guest.v1.ProcessRef\x1a\x17.execenv.guest.v1.Empty\x12I\n" +
 	"\rResizeProcess\x12\x1f.execenv.guest.v1.ResizeRequest\x1a\x17.execenv.guest.v1.Empty\x12I\n" +
 	"\rSignalProcess\x12\x1f.execenv.guest.v1.SignalRequest\x1a\x17.execenv.guest.v1.Empty\x12K\n" +
@@ -1247,85 +1261,87 @@ var file_execenv_guest_v1_agent_proto_goTypes = []any{
 var file_execenv_guest_v1_agent_proto_depIdxs = []int32{
 	23, // 0: execenv.guest.v1.SpawnRequest.spec:type_name -> execenv.v1.ProcessSpec
 	24, // 1: execenv.guest.v1.SpawnResponse.started:type_name -> google.protobuf.Timestamp
-	8,  // 2: execenv.guest.v1.ListProcessesResponse.processes:type_name -> execenv.guest.v1.GuestProcess
-	23, // 3: execenv.guest.v1.GuestProcess.spec:type_name -> execenv.v1.ProcessSpec
-	25, // 4: execenv.guest.v1.GuestProcess.info:type_name -> execenv.v1.ProcessInfo
-	21, // 5: execenv.guest.v1.GuestProcess.first:type_name -> execenv.guest.v1.GuestProcess.FirstEntry
-	22, // 6: execenv.guest.v1.OutputRequest.from:type_name -> execenv.guest.v1.OutputRequest.FromEntry
-	11, // 7: execenv.guest.v1.OutputResponse.data:type_name -> execenv.guest.v1.Chunk
-	26, // 8: execenv.guest.v1.OutputResponse.exit:type_name -> execenv.v1.ExitStatus
-	0,  // 9: execenv.guest.v1.OutputResponse.opened:type_name -> execenv.guest.v1.Empty
-	24, // 10: execenv.guest.v1.OutputResponse.ended:type_name -> google.protobuf.Timestamp
-	27, // 11: execenv.guest.v1.ResizeRequest.window:type_name -> execenv.v1.Window
-	1,  // 12: execenv.guest.v1.AgentService.Hello:input_type -> execenv.guest.v1.HelloRequest
-	3,  // 13: execenv.guest.v1.AgentService.Spawn:input_type -> execenv.guest.v1.SpawnRequest
-	6,  // 14: execenv.guest.v1.AgentService.ListProcesses:input_type -> execenv.guest.v1.ListProcessesRequest
-	9,  // 15: execenv.guest.v1.AgentService.Output:input_type -> execenv.guest.v1.OutputRequest
-	12, // 16: execenv.guest.v1.AgentService.Feed:input_type -> execenv.guest.v1.FeedRequest
-	5,  // 17: execenv.guest.v1.AgentService.CloseFeed:input_type -> execenv.guest.v1.ProcessRef
-	14, // 18: execenv.guest.v1.AgentService.ResizeProcess:input_type -> execenv.guest.v1.ResizeRequest
-	16, // 19: execenv.guest.v1.AgentService.SignalProcess:input_type -> execenv.guest.v1.SignalRequest
-	15, // 20: execenv.guest.v1.AgentService.ProcessScreen:input_type -> execenv.guest.v1.ProcessScreenRequest
-	28, // 21: execenv.guest.v1.AgentService.DialPort:input_type -> execenv.v1.PortFrame
-	0,  // 22: execenv.guest.v1.AgentService.ListeningPorts:input_type -> execenv.guest.v1.Empty
-	17, // 23: execenv.guest.v1.AgentService.Freeze:input_type -> execenv.guest.v1.FreezeRequest
-	19, // 24: execenv.guest.v1.AgentService.Thaw:input_type -> execenv.guest.v1.ThawRequest
-	29, // 25: execenv.guest.v1.AgentService.ObserveProcesses:input_type -> execenv.v1.ObserveProcessesRequest
-	30, // 26: execenv.guest.v1.AgentService.AcknowledgeProcesses:input_type -> execenv.v1.AcknowledgeProcessesRequest
-	31, // 27: execenv.guest.v1.AgentService.UploadContent:input_type -> execenv.v1.UploadContentRequest
-	32, // 28: execenv.guest.v1.AgentService.InitializeProjection:input_type -> execenv.v1.InitializeProjectionRequest
-	33, // 29: execenv.guest.v1.AgentService.ApplyProjection:input_type -> execenv.v1.ApplyProjectionRequest
-	34, // 30: execenv.guest.v1.AgentService.Observe:input_type -> execenv.v1.ObserveRequest
-	35, // 31: execenv.guest.v1.AgentService.ReadObservationContent:input_type -> execenv.v1.ReadObservationContentRequest
-	36, // 32: execenv.guest.v1.AgentService.ConfirmObservationProjection:input_type -> execenv.v1.ConfirmObservationProjectionRequest
-	37, // 33: execenv.guest.v1.AgentService.AcknowledgeObservations:input_type -> execenv.v1.AcknowledgeObservationsRequest
-	38, // 34: execenv.guest.v1.AgentService.Stat:input_type -> execenv.v1.StatRequest
-	39, // 35: execenv.guest.v1.AgentService.List:input_type -> execenv.v1.ListRequest
-	40, // 36: execenv.guest.v1.AgentService.ReadFile:input_type -> execenv.v1.ReadFileRequest
-	41, // 37: execenv.guest.v1.AgentService.WriteFile:input_type -> execenv.v1.WriteFileRequest
-	42, // 38: execenv.guest.v1.AgentService.GetTransfer:input_type -> execenv.v1.GetTransferRequest
-	43, // 39: execenv.guest.v1.AgentService.MakeDirectory:input_type -> execenv.v1.MakeDirectoryRequest
-	44, // 40: execenv.guest.v1.AgentService.Move:input_type -> execenv.v1.MoveRequest
-	45, // 41: execenv.guest.v1.AgentService.Remove:input_type -> execenv.v1.RemoveRequest
-	46, // 42: execenv.guest.v1.AgentService.Import:input_type -> execenv.v1.ImportRequest
-	47, // 43: execenv.guest.v1.AgentService.Export:input_type -> execenv.v1.ExportRequest
-	2,  // 44: execenv.guest.v1.AgentService.Hello:output_type -> execenv.guest.v1.HelloResponse
-	4,  // 45: execenv.guest.v1.AgentService.Spawn:output_type -> execenv.guest.v1.SpawnResponse
-	7,  // 46: execenv.guest.v1.AgentService.ListProcesses:output_type -> execenv.guest.v1.ListProcessesResponse
-	10, // 47: execenv.guest.v1.AgentService.Output:output_type -> execenv.guest.v1.OutputResponse
-	13, // 48: execenv.guest.v1.AgentService.Feed:output_type -> execenv.guest.v1.FeedResponse
-	0,  // 49: execenv.guest.v1.AgentService.CloseFeed:output_type -> execenv.guest.v1.Empty
-	0,  // 50: execenv.guest.v1.AgentService.ResizeProcess:output_type -> execenv.guest.v1.Empty
-	0,  // 51: execenv.guest.v1.AgentService.SignalProcess:output_type -> execenv.guest.v1.Empty
-	48, // 52: execenv.guest.v1.AgentService.ProcessScreen:output_type -> execenv.v1.Screen
-	28, // 53: execenv.guest.v1.AgentService.DialPort:output_type -> execenv.v1.PortFrame
-	49, // 54: execenv.guest.v1.AgentService.ListeningPorts:output_type -> execenv.v1.ListeningPortsResponse
-	18, // 55: execenv.guest.v1.AgentService.Freeze:output_type -> execenv.guest.v1.FreezeResponse
-	20, // 56: execenv.guest.v1.AgentService.Thaw:output_type -> execenv.guest.v1.ThawResponse
-	50, // 57: execenv.guest.v1.AgentService.ObserveProcesses:output_type -> execenv.v1.ProcessPage
-	51, // 58: execenv.guest.v1.AgentService.AcknowledgeProcesses:output_type -> execenv.v1.AcknowledgeProcessesResponse
-	52, // 59: execenv.guest.v1.AgentService.UploadContent:output_type -> execenv.v1.ContentReference
-	53, // 60: execenv.guest.v1.AgentService.InitializeProjection:output_type -> execenv.v1.ProjectionReceipt
-	53, // 61: execenv.guest.v1.AgentService.ApplyProjection:output_type -> execenv.v1.ProjectionReceipt
-	54, // 62: execenv.guest.v1.AgentService.Observe:output_type -> execenv.v1.ObservationPage
-	55, // 63: execenv.guest.v1.AgentService.ReadObservationContent:output_type -> execenv.v1.ContentChunk
-	56, // 64: execenv.guest.v1.AgentService.ConfirmObservationProjection:output_type -> execenv.v1.ConfirmObservationProjectionResponse
-	57, // 65: execenv.guest.v1.AgentService.AcknowledgeObservations:output_type -> execenv.v1.AcknowledgeObservationsResponse
-	58, // 66: execenv.guest.v1.AgentService.Stat:output_type -> execenv.v1.FileInfo
-	59, // 67: execenv.guest.v1.AgentService.List:output_type -> execenv.v1.ListResponse
-	55, // 68: execenv.guest.v1.AgentService.ReadFile:output_type -> execenv.v1.ContentChunk
-	58, // 69: execenv.guest.v1.AgentService.WriteFile:output_type -> execenv.v1.FileInfo
-	60, // 70: execenv.guest.v1.AgentService.GetTransfer:output_type -> execenv.v1.Transfer
-	61, // 71: execenv.guest.v1.AgentService.MakeDirectory:output_type -> execenv.v1.MakeDirectoryResponse
-	62, // 72: execenv.guest.v1.AgentService.Move:output_type -> execenv.v1.MoveResponse
-	63, // 73: execenv.guest.v1.AgentService.Remove:output_type -> execenv.v1.RemoveResponse
-	64, // 74: execenv.guest.v1.AgentService.Import:output_type -> execenv.v1.ImportResponse
-	55, // 75: execenv.guest.v1.AgentService.Export:output_type -> execenv.v1.ContentChunk
-	44, // [44:76] is the sub-list for method output_type
-	12, // [12:44] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	24, // 2: execenv.guest.v1.ProcessRef.started:type_name -> google.protobuf.Timestamp
+	8,  // 3: execenv.guest.v1.ListProcessesResponse.processes:type_name -> execenv.guest.v1.GuestProcess
+	23, // 4: execenv.guest.v1.GuestProcess.spec:type_name -> execenv.v1.ProcessSpec
+	25, // 5: execenv.guest.v1.GuestProcess.info:type_name -> execenv.v1.ProcessInfo
+	21, // 6: execenv.guest.v1.GuestProcess.first:type_name -> execenv.guest.v1.GuestProcess.FirstEntry
+	22, // 7: execenv.guest.v1.OutputRequest.from:type_name -> execenv.guest.v1.OutputRequest.FromEntry
+	11, // 8: execenv.guest.v1.OutputResponse.data:type_name -> execenv.guest.v1.Chunk
+	26, // 9: execenv.guest.v1.OutputResponse.exit:type_name -> execenv.v1.ExitStatus
+	0,  // 10: execenv.guest.v1.OutputResponse.opened:type_name -> execenv.guest.v1.Empty
+	24, // 11: execenv.guest.v1.OutputResponse.ended:type_name -> google.protobuf.Timestamp
+	5,  // 12: execenv.guest.v1.FeedRequest.process:type_name -> execenv.guest.v1.ProcessRef
+	27, // 13: execenv.guest.v1.ResizeRequest.window:type_name -> execenv.v1.Window
+	1,  // 14: execenv.guest.v1.AgentService.Hello:input_type -> execenv.guest.v1.HelloRequest
+	3,  // 15: execenv.guest.v1.AgentService.Spawn:input_type -> execenv.guest.v1.SpawnRequest
+	6,  // 16: execenv.guest.v1.AgentService.ListProcesses:input_type -> execenv.guest.v1.ListProcessesRequest
+	9,  // 17: execenv.guest.v1.AgentService.Output:input_type -> execenv.guest.v1.OutputRequest
+	12, // 18: execenv.guest.v1.AgentService.Feed:input_type -> execenv.guest.v1.FeedRequest
+	5,  // 19: execenv.guest.v1.AgentService.CloseFeed:input_type -> execenv.guest.v1.ProcessRef
+	14, // 20: execenv.guest.v1.AgentService.ResizeProcess:input_type -> execenv.guest.v1.ResizeRequest
+	16, // 21: execenv.guest.v1.AgentService.SignalProcess:input_type -> execenv.guest.v1.SignalRequest
+	15, // 22: execenv.guest.v1.AgentService.ProcessScreen:input_type -> execenv.guest.v1.ProcessScreenRequest
+	28, // 23: execenv.guest.v1.AgentService.DialPort:input_type -> execenv.v1.PortFrame
+	0,  // 24: execenv.guest.v1.AgentService.ListeningPorts:input_type -> execenv.guest.v1.Empty
+	17, // 25: execenv.guest.v1.AgentService.Freeze:input_type -> execenv.guest.v1.FreezeRequest
+	19, // 26: execenv.guest.v1.AgentService.Thaw:input_type -> execenv.guest.v1.ThawRequest
+	29, // 27: execenv.guest.v1.AgentService.ObserveProcesses:input_type -> execenv.v1.ObserveProcessesRequest
+	30, // 28: execenv.guest.v1.AgentService.AcknowledgeProcesses:input_type -> execenv.v1.AcknowledgeProcessesRequest
+	31, // 29: execenv.guest.v1.AgentService.UploadContent:input_type -> execenv.v1.UploadContentRequest
+	32, // 30: execenv.guest.v1.AgentService.InitializeProjection:input_type -> execenv.v1.InitializeProjectionRequest
+	33, // 31: execenv.guest.v1.AgentService.ApplyProjection:input_type -> execenv.v1.ApplyProjectionRequest
+	34, // 32: execenv.guest.v1.AgentService.Observe:input_type -> execenv.v1.ObserveRequest
+	35, // 33: execenv.guest.v1.AgentService.ReadObservationContent:input_type -> execenv.v1.ReadObservationContentRequest
+	36, // 34: execenv.guest.v1.AgentService.ConfirmObservationProjection:input_type -> execenv.v1.ConfirmObservationProjectionRequest
+	37, // 35: execenv.guest.v1.AgentService.AcknowledgeObservations:input_type -> execenv.v1.AcknowledgeObservationsRequest
+	38, // 36: execenv.guest.v1.AgentService.Stat:input_type -> execenv.v1.StatRequest
+	39, // 37: execenv.guest.v1.AgentService.List:input_type -> execenv.v1.ListRequest
+	40, // 38: execenv.guest.v1.AgentService.ReadFile:input_type -> execenv.v1.ReadFileRequest
+	41, // 39: execenv.guest.v1.AgentService.WriteFile:input_type -> execenv.v1.WriteFileRequest
+	42, // 40: execenv.guest.v1.AgentService.GetTransfer:input_type -> execenv.v1.GetTransferRequest
+	43, // 41: execenv.guest.v1.AgentService.MakeDirectory:input_type -> execenv.v1.MakeDirectoryRequest
+	44, // 42: execenv.guest.v1.AgentService.Move:input_type -> execenv.v1.MoveRequest
+	45, // 43: execenv.guest.v1.AgentService.Remove:input_type -> execenv.v1.RemoveRequest
+	46, // 44: execenv.guest.v1.AgentService.Import:input_type -> execenv.v1.ImportRequest
+	47, // 45: execenv.guest.v1.AgentService.Export:input_type -> execenv.v1.ExportRequest
+	2,  // 46: execenv.guest.v1.AgentService.Hello:output_type -> execenv.guest.v1.HelloResponse
+	4,  // 47: execenv.guest.v1.AgentService.Spawn:output_type -> execenv.guest.v1.SpawnResponse
+	7,  // 48: execenv.guest.v1.AgentService.ListProcesses:output_type -> execenv.guest.v1.ListProcessesResponse
+	10, // 49: execenv.guest.v1.AgentService.Output:output_type -> execenv.guest.v1.OutputResponse
+	13, // 50: execenv.guest.v1.AgentService.Feed:output_type -> execenv.guest.v1.FeedResponse
+	0,  // 51: execenv.guest.v1.AgentService.CloseFeed:output_type -> execenv.guest.v1.Empty
+	0,  // 52: execenv.guest.v1.AgentService.ResizeProcess:output_type -> execenv.guest.v1.Empty
+	0,  // 53: execenv.guest.v1.AgentService.SignalProcess:output_type -> execenv.guest.v1.Empty
+	48, // 54: execenv.guest.v1.AgentService.ProcessScreen:output_type -> execenv.v1.Screen
+	28, // 55: execenv.guest.v1.AgentService.DialPort:output_type -> execenv.v1.PortFrame
+	49, // 56: execenv.guest.v1.AgentService.ListeningPorts:output_type -> execenv.v1.ListeningPortsResponse
+	18, // 57: execenv.guest.v1.AgentService.Freeze:output_type -> execenv.guest.v1.FreezeResponse
+	20, // 58: execenv.guest.v1.AgentService.Thaw:output_type -> execenv.guest.v1.ThawResponse
+	50, // 59: execenv.guest.v1.AgentService.ObserveProcesses:output_type -> execenv.v1.ProcessPage
+	51, // 60: execenv.guest.v1.AgentService.AcknowledgeProcesses:output_type -> execenv.v1.AcknowledgeProcessesResponse
+	52, // 61: execenv.guest.v1.AgentService.UploadContent:output_type -> execenv.v1.ContentReference
+	53, // 62: execenv.guest.v1.AgentService.InitializeProjection:output_type -> execenv.v1.ProjectionReceipt
+	53, // 63: execenv.guest.v1.AgentService.ApplyProjection:output_type -> execenv.v1.ProjectionReceipt
+	54, // 64: execenv.guest.v1.AgentService.Observe:output_type -> execenv.v1.ObservationPage
+	55, // 65: execenv.guest.v1.AgentService.ReadObservationContent:output_type -> execenv.v1.ContentChunk
+	56, // 66: execenv.guest.v1.AgentService.ConfirmObservationProjection:output_type -> execenv.v1.ConfirmObservationProjectionResponse
+	57, // 67: execenv.guest.v1.AgentService.AcknowledgeObservations:output_type -> execenv.v1.AcknowledgeObservationsResponse
+	58, // 68: execenv.guest.v1.AgentService.Stat:output_type -> execenv.v1.FileInfo
+	59, // 69: execenv.guest.v1.AgentService.List:output_type -> execenv.v1.ListResponse
+	55, // 70: execenv.guest.v1.AgentService.ReadFile:output_type -> execenv.v1.ContentChunk
+	58, // 71: execenv.guest.v1.AgentService.WriteFile:output_type -> execenv.v1.FileInfo
+	60, // 72: execenv.guest.v1.AgentService.GetTransfer:output_type -> execenv.v1.Transfer
+	61, // 73: execenv.guest.v1.AgentService.MakeDirectory:output_type -> execenv.v1.MakeDirectoryResponse
+	62, // 74: execenv.guest.v1.AgentService.Move:output_type -> execenv.v1.MoveResponse
+	63, // 75: execenv.guest.v1.AgentService.Remove:output_type -> execenv.v1.RemoveResponse
+	64, // 76: execenv.guest.v1.AgentService.Import:output_type -> execenv.v1.ImportResponse
+	55, // 77: execenv.guest.v1.AgentService.Export:output_type -> execenv.v1.ContentChunk
+	46, // [46:78] is the sub-list for method output_type
+	14, // [14:46] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_execenv_guest_v1_agent_proto_init() }
@@ -1337,10 +1353,6 @@ func file_execenv_guest_v1_agent_proto_init() {
 		(*OutputResponse_Data)(nil),
 		(*OutputResponse_Exit)(nil),
 		(*OutputResponse_Opened)(nil),
-	}
-	file_execenv_guest_v1_agent_proto_msgTypes[12].OneofWrappers = []any{
-		(*FeedRequest_Tag)(nil),
-		(*FeedRequest_Data)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"io"
-	"sync"
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/sudosylabs/execenv"
 	guestv1 "github.com/sudosylabs/execenv/internal/gen/execenv/guest/v1"
@@ -98,10 +98,6 @@ type guestBackend struct {
 	exit    execenv.ExitStatus
 	started time.Time
 	ended   time.Time
-
-	feedMu sync.Mutex
-	feed   *connect.ClientStreamForClient[guestv1.FeedRequest, guestv1.FeedResponse]
-	closed bool
 }
 
 var _ procs.Backend = (*guestBackend)(nil)
@@ -143,45 +139,41 @@ func (b *guestBackend) receive() {
 
 func (b *guestBackend) Streams() map[execenv.Stream]io.Reader { return b.readers }
 
-func (b *guestBackend) Write(p []byte) (int, error) {
-	b.feedMu.Lock()
-	defer b.feedMu.Unlock()
-	if b.closed {
-		return 0, execenv.ErrClosed
-	}
-	if b.feed == nil {
-		feed := b.client.agent.Feed(b.client.ctx)
-		if err := feed.Send(&guestv1.FeedRequest{Part: &guestv1.FeedRequest_Tag{Tag: b.tag}}); err != nil {
-			_, _ = feed.CloseAndReceive()
-			return 0, execenv.ErrClosed
-		}
-		b.feed = feed
-	}
-	for rest := p; len(rest) > 0; {
-		n := min(len(rest), wire.ChunkSize)
-		if err := b.feed.Send(&guestv1.FeedRequest{Part: &guestv1.FeedRequest_Data{Data: rest[:n]}}); err != nil {
-			_, _ = b.feed.CloseAndReceive()
-			b.feed = nil
-			return len(p) - len(rest), execenv.ErrClosed
-		}
-		rest = rest[n:]
-	}
-	return len(p), nil
+func (b *guestBackend) ref() *guestv1.ProcessRef {
+	return &guestv1.ProcessRef{Tag: b.tag, Pid: int32(b.pid), Started: timestamppb.New(b.started)}
 }
 
-// CloseInput ends the feed, so every byte sent is written, then closes the
-// process's input.
-func (b *guestBackend) CloseInput() error {
-	b.feedMu.Lock()
-	b.closed = true
-	if b.feed != nil {
-		_, _ = b.feed.CloseAndReceive()
-		b.feed = nil
+func (b *guestBackend) WriteInput(ctx context.Context, offset uint64, data []byte) (uint64, error) {
+	ctx, cancel := b.client.call(ctx)
+	defer cancel()
+	ref := b.ref()
+	for len(data) > 0 {
+		n := min(len(data), wire.ChunkSize)
+		resp, err := b.client.agent.Feed(ctx, connect.NewRequest(&guestv1.FeedRequest{Process: ref, Offset: offset, Data: data[:n]}))
+		if err != nil {
+			return offset, b.client.failure("write_input", err)
+		}
+		next := resp.Msg.GetOffset()
+		if next < offset {
+			return offset, execenv.ErrUnavailable
+		}
+		if resp.Msg.GetClosed() {
+			return next, execenv.ErrClosed
+		}
+		if next-offset < uint64(n) {
+			return next, execenv.ErrUnavailable
+		}
+		data = data[min(uint64(len(data)), next-offset):]
+		offset = next
 	}
-	b.feedMu.Unlock()
+	return offset, nil
+}
+
+// CloseInput closes the process's input.
+func (b *guestBackend) CloseInput() error {
 	ctx, cancel := b.client.call(context.Background())
 	defer cancel()
-	_, err := b.client.agent.CloseFeed(ctx, connect.NewRequest(&guestv1.ProcessRef{Tag: b.tag}))
+	_, err := b.client.agent.CloseFeed(ctx, connect.NewRequest(b.ref()))
 	if errors.Is(b.client.failure("close_input", err), execenv.ErrClosed) {
 		return nil
 	}

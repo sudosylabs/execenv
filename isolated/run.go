@@ -84,7 +84,7 @@ func (e *environment) WriteInput(ctx context.Context, fence execenv.ProjectionFe
 	var next uint64
 	err := e.control.Run(ctx, fence, func() error {
 		var err error
-		next, err = e.manager().WriteInput(tag, offset, data)
+		next, err = e.manager().WriteInput(ctx, tag, offset, data)
 		return err
 	})
 	return next, err
