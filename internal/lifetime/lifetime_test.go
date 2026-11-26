@@ -120,3 +120,23 @@ func TestIdleDoesNotQueueCallbacksBehindAnOutstandingExpiry(t *testing.T) {
 		}
 	})
 }
+
+func TestVeryShortIdleTimeoutDoesNotPollAtTheInitialRate(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const idle = time.Microsecond
+		fired := make(chan Reason, 32)
+		timer := New(func(reason Reason) { fired <- reason })
+		timer.Start(0, idle)
+		defer timer.Stop()
+		time.Sleep(10 * idle)
+		synctest.Wait()
+		if got := len(fired); got != 1 {
+			t.Fatalf("callbacks before the retry delay = %d, want one", got)
+		}
+		time.Sleep(minIdleRetry)
+		synctest.Wait()
+		if got := len(fired); got != 2 {
+			t.Fatalf("callbacks after the retry delay = %d, want two", got)
+		}
+	})
+}

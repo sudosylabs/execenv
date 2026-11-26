@@ -21,6 +21,10 @@ const (
 	Idle
 )
 
+// minIdleRetry bounds polling after an already-due expiry. The initial
+// deadline and deadlines reset by activity still use the grant timeout.
+const minIdleRetry = 100 * time.Millisecond
+
 // Timer watches one grant.
 type Timer struct {
 	idle   time.Duration
@@ -85,7 +89,7 @@ func (t *Timer) checkIdle() {
 	if !t.stopped && t.holds == 0 {
 		rest := t.idle - time.Since(t.last)
 		if rest <= 0 {
-			rest = t.idle
+			rest = max(t.idle, minIdleRetry)
 		}
 		t.idleT.Reset(rest)
 	}
