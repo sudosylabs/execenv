@@ -274,6 +274,11 @@ func testOpts(t *testing.T, root string) Options {
 		Insecure: true,
 		// No test restarts a real unit; never ask this machine's systemd.
 		UnitActive: func() bool { return false },
+		checkDevice: func(path string) error {
+			_, err := os.Stat(path)
+			return err
+		},
+		checkCgroups: func() error { return nil },
 	}
 }
 

@@ -39,6 +39,7 @@ type Log struct {
 func New(grant execenv.ID, epoch string) *Log { return &Log{grant: grant, epoch: epoch} }
 func (l *Log) Cursor() uint64                 { return l.cursor }
 func (l *Log) Lagged()                        { l.lagged = true }
+func (l *Log) IsLagged() bool                 { return l.lagged }
 
 // Append validates and copies the entire capture before publishing any sequence.
 // Overflow never evicts unacknowledged content; the epoch requires recovery.

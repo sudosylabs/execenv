@@ -3,6 +3,7 @@ package isolated
 import (
 	"context"
 	"errors"
+	"os"
 	"sync"
 	"time"
 
@@ -51,6 +52,9 @@ type environment struct {
 	// suspended says the grant's machine is saved to disk and stopped; a
 	// thaw restores it.
 	suspended bool
+	// limitsDirty forces reconciliation after a monitor may have applied a
+	// subset of an update or lost its response.
+	limitsDirty bool
 	// Deadlines retained while this host holds a saved guest.
 	suspendedDeadlines map[string]procs.Deadlines
 }
@@ -233,7 +237,7 @@ func (e *environment) thaw(ctx context.Context) error {
 	// A grant adopted paused meets its guest now.
 	if client == nil {
 		if err := e.dial(ctx); err != nil {
-			return execenv.Error("thaw", err)
+			return e.recontainThaw(inst, err)
 		}
 		e.mu.Lock()
 		client = e.client
@@ -241,20 +245,13 @@ func (e *environment) thaw(ctx context.Context) error {
 		go e.watchLink(client)
 	}
 	if err := client.Reopen(ctx); err != nil {
-		// A failed recovery never leaves a runnable guest behind an apparently
-		// closed gate. Use a separate bounded context if the caller timed out.
-		recoveryCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		pauseErr := inst.Pause(recoveryCtx)
-		e.mu.Lock()
-		e.paused = pauseErr == nil
-		e.mu.Unlock()
-		return execenv.Error("thaw", errors.Join(err, pauseErr))
+		return e.recontainThaw(inst, err)
 	}
 	if pending {
 		if err := e.adoptProcesses(ctx, client); err != nil {
-			return execenv.Error("thaw", err)
+			return e.recontainThaw(inst, err)
 		}
+		_ = os.RemoveAll(e.suspendDir())
 		e.mu.Lock()
 		e.adoptPending = false
 		e.mu.Unlock()
@@ -263,7 +260,23 @@ func (e *environment) thaw(ctx context.Context) error {
 	e.mu.Lock()
 	e.frozen = false
 	e.mu.Unlock()
+	e.timer.ArmIdle(e.spec.IdleTimeout)
 	return nil
+}
+
+func (e *environment) recontainThaw(inst instance, err error) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	pauseErr := inst.Pause(ctx)
+	e.mu.Lock()
+	e.paused = pauseErr == nil
+	e.mu.Unlock()
+	if pauseErr != nil {
+		stopCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stop()
+		return execenv.Error("thaw", errors.Join(err, pauseErr, inst.Stop(stopCtx)))
+	}
+	return execenv.Error("thaw", errors.Join(err, pauseErr))
 }
 
 func (e *environment) Revoke(ctx context.Context) error {
@@ -326,19 +339,27 @@ func (e *environment) UpdateLimits(ctx context.Context, fence execenv.Projection
 		inst := e.inst
 		network := e.spec.Network == execenv.NetworkAllowlist
 		previous := e.spec.Limits
+		dirty := e.limitsDirty
 		e.mu.Unlock()
 		if inst == nil {
 			return execenv.Error("update_limits", execenv.ErrUnavailable)
 		}
 		diskChanged := limits.DiskBytes != previous.DiskBytes || limits.DiskOps != previous.DiskOps
 		networkChanged := network && limits.NetworkBytes != previous.NetworkBytes
-		if diskChanged || networkChanged {
+		if dirty || diskChanged || networkChanged {
 			if err := inst.UpdateLimits(ctx, limits, network); err != nil {
-				return execenv.Error("update_limits", err)
+				restoreCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				restoreErr := inst.UpdateLimits(restoreCtx, previous, network)
+				cancel()
+				e.mu.Lock()
+				e.limitsDirty = restoreErr != nil
+				e.mu.Unlock()
+				return execenv.Error("update_limits", errors.Join(err, restoreErr))
 			}
 		}
 		e.mu.Lock()
 		e.spec.Limits = limits
+		e.limitsDirty = false
 		e.mu.Unlock()
 		e.ports.SetLimit(limits.PortBytes)
 		return e.persistReceipt(execenv.ControlReceipt{Fence: fence, State: execenv.ControlRunning, Confirmed: true})

@@ -13,12 +13,13 @@ import (
 	"runtime"
 
 	"github.com/sudosylabs/execenv/daemon"
+	"github.com/sudosylabs/execenv/internal/hostplatform"
 )
 
 // Isolation device and supervisor process names as the probe looks them up.
 // Public execenv types stay hypervisor-neutral; this operator tool cannot.
 const (
-	defaultDevice   = "/dev/kvm"
+	defaultDevice   = hostplatform.Device
 	runtimeName     = "firecracker"
 	supervisorName  = "jailer"
 	runtimeVersion  = "v1.16.1"
@@ -67,7 +68,9 @@ type Options struct {
 	// daemon that holds grants.
 	Force bool
 	// UnitActive, if set, replaces asking systemd whether the unit runs.
-	UnitActive func() bool
+	UnitActive   func() bool
+	checkDevice  func(string) error
+	checkCgroups func() error
 }
 
 // Defaults returns the system-wide install layout.
@@ -83,6 +86,12 @@ func Defaults() Options {
 
 func (o Options) resolved() Options {
 	out := o
+	if out.checkDevice == nil {
+		out.checkDevice = hostplatform.CheckDevice
+	}
+	if out.checkCgroups == nil {
+		out.checkCgroups = hostplatform.CheckCgroups
+	}
 	if out.Prefix == "" {
 		out.Prefix = defaultPrefix
 	}
@@ -124,7 +133,10 @@ func (o Options) execenvPath() string {
 // missing isolation device fails closed; there is no weaker fallback.
 func Bootstrap(opts Options, stdout io.Writer) error {
 	opts = opts.resolved()
-	if err := checkDevice(opts.Device); err != nil {
+	if err := opts.checkDevice(opts.Device); err != nil {
+		return fmt.Errorf("isolation device %s is not usable; this host cannot occupy grants (no container fallback): %w", opts.Device, err)
+	}
+	if err := opts.checkCgroups(); err != nil {
 		return err
 	}
 	mkfs, err := findMkfs(opts)
@@ -183,15 +195,6 @@ func findMkfs(opts Options) (string, error) {
 		return "", fmt.Errorf("%s is missing; workspace disks need it (install e2fsprogs)", mkfsName)
 	}
 	return found, nil
-}
-
-func checkDevice(path string) error {
-	f, err := os.OpenFile(path, os.O_RDWR, 0)
-	if err != nil {
-		return fmt.Errorf("isolation device %s is missing or not usable; this host cannot occupy grants (no container fallback)", path)
-	}
-	_ = f.Close()
-	return nil
 }
 
 func installExecenv(opts Options) error {

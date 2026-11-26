@@ -60,65 +60,26 @@ func TestBootstrapCommandFailsClosedWithoutDevice(t *testing.T) {
 	}
 }
 
-func TestBootstrapCommandDoesNotPrintSecrets(t *testing.T) {
+func TestBootstrapCommandRejectsARegularFileAsDevice(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	bindir := filepath.Join(root, "usr", "local", "bin")
-	if err := os.MkdirAll(bindir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	execenvBin := filepath.Join(bindir, "execenv")
-	for _, name := range []string{"execenv", "firecracker", "jailer", "mkfs.ext4"} {
-		if err := os.WriteFile(filepath.Join(bindir, name), []byte("#!/bin/sh\n"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
 	device := filepath.Join(root, "kvm")
-	if err := os.WriteFile(device, []byte{}, 0o666); err != nil {
+	if err := os.WriteFile(device, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	sysconf := filepath.Join(root, "etc", "execenv")
 	cmd := newRoot()
-	cmd.SetArgs([]string{
-		"bootstrap",
-		"--device", device,
-		"--prefix", filepath.Join(root, "usr", "local"),
-		"--sysconf", sysconf,
-		"--state", filepath.Join(root, "var", "lib", "execenv"),
-		"--execenv", execenvBin,
-		"--mkfs", filepath.Join(bindir, "mkfs.ext4"),
-		"--listen", "127.0.0.1:8443",
-		"--cpu-millis", "4000",
-		"--no-start",
-		"--no-fetch",
-		"--insecure",
-	})
-	var out, errb bytes.Buffer
+	cmd.SetArgs([]string{"bootstrap", "--device", device, "--sysconf", root, "--no-start"})
+	var out bytes.Buffer
 	cmd.SetOut(&out)
-	cmd.SetErr(&errb)
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("bootstrap: %v\n%s", err, errb.String())
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "isolation device") {
+		t.Fatalf("bootstrap with a regular file: %v", err)
 	}
-	raw, err := os.ReadFile(filepath.Join(sysconf, "host.json"))
-	if err != nil {
-		t.Fatal(err)
+	if out.Len() != 0 {
+		t.Fatalf("stdout = %q", out.String())
 	}
-	// Token is the only secret in a first-run empty catalog.
-	if !bytes.Contains(raw, []byte(`"token"`)) {
-		t.Fatalf("config = %s", raw)
-	}
-	combined := out.String() + errb.String()
-	// A 64-hex token in config must not appear on either stream.
-	body := string(raw)
-	start := strings.Index(body, `"token": "`)
-	if start < 0 {
-		t.Fatal("config missing token")
-	}
-	start += len(`"token": "`)
-	end := strings.Index(body[start:], `"`)
-	token := body[start : start+end]
-	if token == "" || strings.Contains(combined, token) {
-		t.Fatalf("token missing or leaked: stdout=%q stderr=%q", out.String(), errb.String())
+	if _, err := os.Stat(filepath.Join(root, "host.json")); !os.IsNotExist(err) {
+		t.Fatalf("config exists after failed preflight: %v", err)
 	}
 }
 

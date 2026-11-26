@@ -2,19 +2,18 @@ package isolated
 
 import (
 	"errors"
-	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 
 	"github.com/sudosylabs/execenv"
+	"github.com/sudosylabs/execenv/internal/hostplatform"
 )
 
 // Platform defaults for the isolation device and the two supervisor
 // processes. They are not exported so the public isolated API stays
 // hypervisor-neutral.
 const (
-	defaultDevice     = "/dev/kvm"
+	defaultDevice     = hostplatform.Device
 	defaultRuntime    = "firecracker"
 	defaultSupervisor = "jailer"
 )
@@ -23,21 +22,19 @@ const (
 // Linux, a usable isolation device, both supervisor processes, and a work
 // directory where device nodes work.
 func probePlatform(cfg Config) error {
-	if runtime.GOOS != "linux" {
-		return execenv.ErrUnavailable
-	}
-	if err := checkDeviceNodes(cfg.WorkDir); err != nil {
-		return errors.Join(execenv.ErrUnavailable, err)
-	}
 	device := cfg.Device
 	if device == "" {
 		device = defaultDevice
 	}
-	f, err := os.OpenFile(device, os.O_RDWR, 0)
-	if err != nil {
-		return execenv.ErrUnavailable
+	if err := hostplatform.CheckDevice(device); err != nil {
+		return errors.Join(execenv.ErrUnavailable, err)
 	}
-	_ = f.Close()
+	if err := hostplatform.CheckCgroups(); err != nil {
+		return errors.Join(execenv.ErrUnavailable, err)
+	}
+	if err := checkDeviceNodes(cfg.WorkDir); err != nil {
+		return errors.Join(execenv.ErrUnavailable, err)
+	}
 	if _, err := lookBinary(cfg.Runtime, defaultRuntime); err != nil {
 		return execenv.ErrUnavailable
 	}
@@ -55,11 +52,9 @@ func lookBinary(configured, fallback string) (string, error) {
 	if name == "" {
 		name = fallback
 	}
-	if filepath.IsAbs(name) || filepath.Dir(name) != "." {
-		if _, err := os.Stat(name); err != nil {
-			return "", err
-		}
-		return name, nil
+	found, err := exec.LookPath(name)
+	if err != nil {
+		return "", err
 	}
-	return exec.LookPath(name)
+	return filepath.Abs(found)
 }

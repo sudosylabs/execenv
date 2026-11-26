@@ -2,8 +2,11 @@ package isolated
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -41,6 +44,16 @@ type templateKey struct {
 	net bool
 }
 
+// identity is outside the validated caller ID space and also gives the
+// complete tuple a filesystem-safe digest for its snapshot directory.
+func (k templateKey) identity() execenv.ID {
+	return execenv.ID("\x00template:" + string(k.image) + "\x00" + k.shape + "\x00" + strconv.FormatBool(k.net))
+}
+
+func (k templateKey) directory(workDir string) string {
+	return filepath.Join(workDir, "templates", fmt.Sprintf("v2-%x", sha256.Sum256([]byte(k.identity()))))
+}
+
 type templateRecord struct {
 	image  execenv.Image
 	shape  Shape
@@ -76,11 +89,8 @@ func (h *Host) startTemplates() {
 	for id := range h.images {
 		for _, shape := range h.cfg.Shapes {
 			for _, net := range nets {
-				name := string(id) + "-" + shape.Name
-				if net {
-					name += "-net"
-				}
-				rec := &templateRecord{image: id, shape: shape, net: net, dir: filepath.Join(h.cfg.WorkDir, "templates", name), reason: "building"}
+				rec := &templateRecord{image: id, shape: shape, net: net, reason: "building"}
+				rec.dir = rec.key().directory(h.cfg.WorkDir)
 				h.templates.records[rec.key()] = rec
 			}
 		}
@@ -134,10 +144,7 @@ func (h *Host) buildOne(ctx context.Context, builder templateBuilder, rec templa
 		return
 	}
 	// A build runs a machine: it takes its size from the pool like a grant.
-	hold := execenv.ID("template:" + string(rec.image) + ":" + rec.shape.Name)
-	if rec.net {
-		hold += ":net"
-	}
+	hold := rec.key().identity()
 	if err := h.pool.Reserve(hold, execenv.Resources{CPUMillis: int64(rec.shape.VCPUs) * 1000, MemoryBytes: rec.shape.MemoryBytes, DiskBytes: templateDiskBytes}); err != nil {
 		h.templates.set(rec.key(), false, "waiting for room to build")
 		return
@@ -148,7 +155,7 @@ func (h *Host) buildOne(ctx context.Context, builder templateBuilder, rec templa
 		// A device for the build alone, filtered as a grant's is. The guest
 		// has no address on it, so it sends nothing through it.
 		var err error
-		att, err = h.attach.Setup(execenv.ID("tpl-"+string(rec.image)+"-"+rec.shape.Name), append([]string(nil), h.cfg.Allow...))
+		att, err = h.attach.Setup(hold, append([]string(nil), h.cfg.Allow...))
 		if err != nil {
 			h.templates.set(rec.key(), false, "build failed; retrying")
 			return
@@ -213,7 +220,8 @@ func (t *templates) pick(spec execenv.Spec) (templateRecord, bool) {
 		if !r.ready || r.image != spec.Image || r.net != net || r.shape.MemoryBytes != spec.Resources.MemoryBytes || r.shape.VCPUs < need {
 			continue
 		}
-		if best == nil || r.shape.VCPUs < best.shape.VCPUs {
+		if best == nil || r.shape.VCPUs < best.shape.VCPUs ||
+			r.shape.VCPUs == best.shape.VCPUs && r.shape.Name < best.shape.Name {
 			best = r
 		}
 	}

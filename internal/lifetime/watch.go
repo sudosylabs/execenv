@@ -24,12 +24,13 @@ type watched struct {
 }
 
 func (w *watched) AttachProcess(ctx context.Context, tag string, from map[execenv.Stream]uint64) (execenv.Attachment, error) {
-	w.t.Touch()
+	release := w.t.Hold()
 	a, err := w.Env.AttachProcess(ctx, tag, from)
 	if err != nil {
+		release()
 		return nil, err
 	}
-	return &heldAttachment{Attachment: a, release: w.t.Hold()}, nil
+	return &heldAttachment{Attachment: a, release: release}, nil
 }
 
 func (w *watched) Start(ctx context.Context, f execenv.ProjectionFence, spec execenv.ProcessSpec) (execenv.ProcessInfo, error) {

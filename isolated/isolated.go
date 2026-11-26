@@ -173,7 +173,10 @@ func newHost(cfg Config, pool *capacity.Pool, images map[execenv.Image]*imageRec
 		return nil
 	}
 	h.seeds = seeds
-	if err := h.recover(); err != nil {
+	h.mu.Lock()
+	err = h.recover()
+	h.mu.Unlock()
+	if err != nil {
 		_ = lock.Close()
 		return nil, execenv.Error("isolated", err)
 	}
@@ -389,7 +392,7 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 	}
 	ctl.SetPersistence(env.persistReceipt)
 	if spec.WallTimeout > 0 || spec.IdleTimeout > 0 {
-		env.timer = lifetime.Start(spec.WallTimeout, spec.IdleTimeout, func(r lifetime.Reason) { h.expire(env, r) })
+		env.timer = lifetime.New(func(r lifetime.Reason) { h.expire(env, r) })
 		env.public = lifetime.Watch(env, env.timer)
 	}
 	return h.completeEnsure(call, env, nil)
@@ -400,19 +403,23 @@ func (h *Host) expire(env *environment, r lifetime.Reason) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if r == lifetime.Idle && env.spec.IdleAction == execenv.IdleFreeze {
-		_, _ = env.control.Idle(ctx, func(execenv.ControlReceipt) error { return env.freeze(ctx) })
+		_, _ = env.control.IdleWhen(ctx, env.timer.IdleDue, func(execenv.ControlReceipt) error { return env.freeze(ctx) })
 		return
 	}
 	if r == lifetime.Idle && env.spec.IdleAction == execenv.IdleSuspend {
 		suspend := func(done execenv.ControlReceipt) error { return env.suspend(ctx, done) }
 		// A running grant is frozen and saved; one the caller froze is
 		// saved as it is.
-		if ran, _ := env.control.Idle(ctx, suspend); !ran {
-			_, _ = env.control.Suspend(ctx, suspend)
+		if ran, _ := env.control.IdleWhen(ctx, env.timer.IdleDue, suspend); !ran {
+			_, _ = env.control.SuspendWhen(ctx, env.timer.IdleDue, suspend)
 		}
 		return
 	}
-	_ = h.revokeExact(ctx, env)
+	if r == lifetime.Idle {
+		_ = h.revokeExactWhen(ctx, env, env.timer.IdleDue)
+	} else {
+		_ = h.revokeExact(ctx, env)
+	}
 }
 
 // occupiedLocked resolves an Ensure that needs no new machine: the grant is
@@ -474,6 +481,9 @@ func (h *Host) completeEnsure(call *ensureCall, env *environment, err error) (ex
 	} else {
 		h.pool.Release(call.spec.ID)
 	}
+	if err == nil && env.timer != nil {
+		env.timer.Start(env.spec.WallTimeout, env.spec.IdleTimeout)
+	}
 	call.env = env
 	call.err = err
 	call.cancel()
@@ -527,12 +537,19 @@ func (h *Host) Revoke(ctx context.Context, id execenv.ID) error {
 }
 
 func (h *Host) revokeExact(ctx context.Context, env *environment) error {
+	return h.revokeExactWhen(ctx, env, nil)
+}
+
+func (h *Host) revokeExactWhen(ctx context.Context, env *environment, eligible func() bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.lost[env.id] == env {
+		if eligible != nil {
+			return nil
+		}
 		delete(h.lost, env.id)
 		h.hub.Poke()
 		if h.grants[env.id] == nil {
@@ -544,7 +561,7 @@ func (h *Host) revokeExact(ctx context.Context, env *environment) error {
 	if h.grants[env.id] != env {
 		return nil
 	}
-	return h.retireLocked(env)
+	return h.retireWhenLocked(env, eligible)
 }
 
 // lose retires env because its machine ended without a revoke. It frees
@@ -583,8 +600,16 @@ func (h *Host) lose(env *environment) {
 // Keep the resources and identity reserved until destruction is acknowledged. This
 // also prevents old cleanup from deleting a newly occupied grant directory.
 func (h *Host) retireLocked(env *environment) error {
-	if err := env.revoke(); err != nil {
+	return h.retireWhenLocked(env, nil)
+}
+
+func (h *Host) retireWhenLocked(env *environment, eligible func() bool) error {
+	ran, err := env.control.RevokeWhen(context.Background(), eligible, func() error { return env.stop(execenv.ErrRevoked) })
+	if err != nil {
 		return execenv.Error("revoke", err)
+	}
+	if !ran {
+		return nil
 	}
 	if err := os.RemoveAll(filepath.Join(h.cfg.WorkDir, "grants", string(env.id))); err != nil {
 		return execenv.Error("revoke", err)

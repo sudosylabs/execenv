@@ -120,6 +120,22 @@ func (s *State) replay(id string, digest [32]byte) (execenv.ProjectionReceipt, b
 	}
 	return old.value, true, nil
 }
+
+// ReplayApply checks an existing receipt without consulting the workspace.
+func (s *State) ReplayApply(request execenv.ProjectionApply) (execenv.ProjectionReceipt, bool, error) {
+	if _, ok := s.receipts[request.MutationID]; !ok {
+		return execenv.ProjectionReceipt{}, false, nil
+	}
+	if err := execenv.ValidateProjectionApply(request); err != nil {
+		return execenv.ProjectionReceipt{}, true, err
+	}
+	return s.replay(request.MutationID, applyDigest(request))
+}
+
+func applyDigest(request execenv.ProjectionApply) [32]byte {
+	raw, _ := json.Marshal(request)
+	return sha256.Sum256(append([]byte("apply:"), raw...))
+}
 func (s *State) remember(id string, digest [32]byte, value execenv.ProjectionReceipt) {
 	s.receipts[id] = receipt{digest: digest, value: value}
 
@@ -185,8 +201,7 @@ func (s *State) Apply(request execenv.ProjectionApply, commit func(Plan) error) 
 	if err := execenv.ValidateProjectionApply(request); err != nil {
 		return execenv.ProjectionReceipt{}, err
 	}
-	raw, _ := json.Marshal(request)
-	digest := sha256.Sum256(append([]byte("apply:"), raw...))
+	digest := applyDigest(request)
 	if old, ok, err := s.replay(request.MutationID, digest); ok {
 		return old, err
 	}

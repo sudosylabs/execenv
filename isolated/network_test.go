@@ -238,3 +238,27 @@ func readMachine(t *testing.T, path string) map[string]any {
 	}
 	return doc
 }
+
+func TestRestartRetiresGrantAfterAllowlistChanges(t *testing.T) {
+	launch := &recordingLauncher{}
+	h := testHost(t, func() error { return nil }, launch)
+	h.cfg.Allow = []string{"192.0.2.1"}
+	spec := execenv.Spec{ID: "kept", Image: "default", Network: execenv.NetworkAllowlist}
+	env, err := h.Ensure(t.Context(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !preservesNetworkPolicy(spec.Network, launch.instance(spec.ID).Machine().Net, []string{"192.0.2.1/32"}) {
+		t.Fatal("equivalent CIDR should preserve the policy")
+	}
+	h.cfg.Allow = []string{"192.0.2.2"}
+	next := restart(t, h)
+	if _, err := next.Ensure(t.Context(), spec); !errors.Is(err, execenv.ErrLost) {
+		t.Fatalf("Ensure after operator changed network policy: %v, want ErrLost", err)
+	}
+	select {
+	case <-launch.instance(env.ID()).Done():
+	default:
+		t.Fatal("old machine survived the policy change")
+	}
+}

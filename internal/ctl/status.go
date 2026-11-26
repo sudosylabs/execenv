@@ -19,12 +19,17 @@ func Status(opts Options, stdout io.Writer) error {
 		devicePath = doc.Device
 	}
 	device := "missing"
-	if checkDevice(devicePath) == nil {
+	if opts.checkDevice(devicePath) == nil {
 		device = "ok"
 	}
 	unit := unitState(opts)
 	if stdout != nil {
 		fmt.Fprintf(stdout, "device=%s\n", device)
+		cgroups := "missing"
+		if opts.checkCgroups() == nil {
+			cgroups = "ok"
+		}
+		fmt.Fprintf(stdout, "cgroup_v2=%s\n", cgroups)
 		mkfs := "missing"
 		if doc.Mkfs != "" && executable(doc.Mkfs) {
 			mkfs = "ok"

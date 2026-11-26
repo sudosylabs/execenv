@@ -52,14 +52,18 @@ func guardAttach(att netAttach, allow []net.IPNet, cleanup []func()) (*netAttach
 		}
 		return nil, err
 	}
-	_ = os.WriteFile("/proc/sys/net/ipv6/conf/"+att.Dev+"/disable_ipv6", []byte("1"), 0o644)
+	if err := enableSysctl("/proc/sys/net/ipv6/conf/" + att.Dev + "/disable_ipv6"); err != nil {
+		return fail(err)
+	}
 	chain := filterChain(att.Dev)
 	if err := installFilter(att.Dev, chain, allow); err != nil {
 		return fail(err)
 	}
 	cleanup = append(cleanup, func() { _ = removeFilter(att.Dev, chain) })
 	guestNet := fmt.Sprintf("%s/%d", att.HostIP, att.Prefix)
-	enableForward()
+	if err := enableSysctl("/proc/sys/net/ipv4/ip_forward"); err != nil {
+		return fail(err)
+	}
 	if err := installNAT(guestNet, allow); err != nil {
 		return fail(err)
 	}
@@ -179,8 +183,11 @@ func removeNAT(guestNet string, allow []net.IPNet) error {
 	return nil
 }
 
-func enableForward() {
-	_ = os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0o644)
+func enableSysctl(path string) error {
+	if data, err := os.ReadFile(path); err == nil && strings.TrimSpace(string(data)) == "1" {
+		return nil
+	}
+	return os.WriteFile(path, []byte("1"), 0)
 }
 
 func removeFilter(iface, chain string) error {

@@ -22,6 +22,7 @@ type stubInstance struct {
 	stopErr   error
 	stopped   bool
 	sock      string
+	net       *netRecord
 	scratch   string
 	ln        net.Listener
 	conns     *trackedConns
@@ -32,7 +33,8 @@ type stubInstance struct {
 	exited   chan struct{}
 	exitOnce sync.Once
 	// limits is what UpdateLimits last applied.
-	limits execenv.Limits
+	limits      execenv.Limits
+	limitErrors []error
 	// saved is where Save put the machine; its helper keeps running, as the
 	// saved memory would hold it, until a Start restores it.
 	saved string
@@ -66,7 +68,7 @@ func (s *stubInstance) Done() <-chan struct{} {
 func (s *stubInstance) Machine() machine {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return machine{Sock: s.sock}
+	return machine{Sock: s.sock, Net: s.net}
 }
 
 func (s *stubInstance) UpdateLimits(_ context.Context, limits execenv.Limits, _ bool) error {
@@ -76,6 +78,11 @@ func (s *stubInstance) UpdateLimits(_ context.Context, limits execenv.Limits, _ 
 		return execenv.ErrUnavailable
 	}
 	s.limits = limits
+	if len(s.limitErrors) != 0 {
+		err := s.limitErrors[0]
+		s.limitErrors = s.limitErrors[1:]
+		return err
+	}
 	return nil
 }
 
@@ -335,7 +342,7 @@ func startStubAgent(_ context.Context, req startRequest, journal, processLog boo
 	go func() {
 		_ = agent.ListenAndServe(ctx, conns, cfg)
 	}()
-	return &stubInstance{sock: sock, scratch: scratch, ln: ln, conns: conns, cancel: cancel, processes: processes, exited: make(chan struct{})}, nil
+	return &stubInstance{sock: sock, net: netRecordOf(req.Attach), scratch: scratch, ln: ln, conns: conns, cancel: cancel, processes: processes, exited: make(chan struct{})}, nil
 }
 
 // stubProcesses is the stub helper's process source. Run reports one

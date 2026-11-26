@@ -213,10 +213,8 @@ func (l *processLauncher) Start(ctx context.Context, req startRequest) (instance
 		"--gid", strconv.Itoa(uid),
 		"--chroot-base-dir", l.jailBase(),
 	}
-	if cgroupV2() {
-		args = append(args, "--cgroup-version", "2")
-		args = append(args, cgroupLimits(req.Resources)...)
-	}
+	args = append(args, "--cgroup-version", "2")
+	args = append(args, cgroupLimits(req.Resources)...)
 	// The API socket is how UpdateLimits reaches the running machine. It
 	// sits in the jail, owned by the grant's identity.
 	args = append(args, "--")

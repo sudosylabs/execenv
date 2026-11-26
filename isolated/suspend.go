@@ -105,11 +105,7 @@ func (e *environment) stopSuspendedMachine(ctx context.Context, inst instance) e
 	e.mu.Lock()
 	e.inst, e.paused = nil, false
 	e.mu.Unlock()
-	e.host.pool.Release(e.id)
-	_ = e.host.pool.Reserve(e.id, execenv.Resources{DiskBytes: e.spec.Resources.DiskBytes})
-	// The caller holds the control lock; it records the state once the
-	// suspend is done.
-	return nil
+	return e.host.pool.Replace(e.id, execenv.Resources{DiskBytes: e.spec.Resources.DiskBytes})
 }
 
 // resume restores a suspended grant's machine where it stopped. Until the
@@ -125,15 +121,11 @@ func (e *environment) resume(ctx context.Context) error {
 			return err
 		}
 	}
-	h.pool.Release(e.id)
-	if err := h.pool.Reserve(e.id, e.spec.Resources); err != nil {
-		_ = h.pool.Reserve(e.id, execenv.Resources{DiskBytes: e.spec.Resources.DiskBytes})
+	if err := h.pool.Replace(e.id, e.spec.Resources); err != nil {
 		return err
 	}
 	fail := func(err error) error {
-		h.pool.Release(e.id)
-		_ = h.pool.Reserve(e.id, execenv.Resources{DiskBytes: e.spec.Resources.DiskBytes})
-		return err
+		return errors.Join(err, h.pool.Replace(e.id, execenv.Resources{DiskBytes: e.spec.Resources.DiskBytes}))
 	}
 	var att *netAttach
 	if e.spec.Network == execenv.NetworkAllowlist {
@@ -175,7 +167,7 @@ func (e *environment) resume(ctx context.Context) error {
 	e.mu.Unlock()
 	go e.watch()
 	if err := e.dial(ctx); err != nil {
-		return err
+		return e.recontainThaw(inst, err)
 	}
 	e.mu.Lock()
 	client := e.client
@@ -183,15 +175,16 @@ func (e *environment) resume(ctx context.Context) error {
 	go e.watchLink(client)
 	// The saved guest was quiesced before it was saved.
 	if err := client.Reopen(ctx); err != nil {
-		return err
+		return e.recontainThaw(inst, err)
 	}
 	if err := e.adoptProcesses(ctx, client); err != nil {
-		return err
+		return e.recontainThaw(inst, err)
 	}
 	e.manager().Thaw()
 	_ = os.RemoveAll(e.suspendDir())
 	e.mu.Lock()
 	e.adoptPending, e.frozen = false, false
 	e.mu.Unlock()
+	e.timer.ArmIdle(e.spec.IdleTimeout)
 	return nil
 }

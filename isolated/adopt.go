@@ -33,7 +33,8 @@ func (h *Host) recover() error {
 			continue
 		}
 		if inst, err := h.launch.Adopt(ctx, s.Machine); err == nil {
-			if s.Suspended || !s.Receipt.Confirmed || s.Receipt.State == execenv.ControlRevoked {
+			if s.Suspended || !s.Receipt.Confirmed || s.Receipt.State == execenv.ControlRevoked ||
+				!preservesNetworkPolicy(s.Spec.Network, s.Machine.Net, h.cfg.Allow) {
 				stopCtx, stop := context.WithTimeout(ctx, 5*time.Second)
 				err := inst.Stop(stopCtx)
 				stop()
@@ -169,8 +170,9 @@ func (h *Host) adopt(ctx context.Context, s grantState, inst instance) error {
 		if wall > 0 {
 			wall = max(wall-time.Since(s.Started), time.Nanosecond)
 		}
-		env.timer = lifetime.Start(wall, s.Spec.IdleTimeout, func(r lifetime.Reason) { h.expire(env, r) })
+		env.timer = lifetime.New(func(r lifetime.Reason) { h.expire(env, r) })
 		env.public = lifetime.Watch(env, env.timer)
+		env.timer.Start(wall, s.Spec.IdleTimeout)
 	}
 	h.grants[s.Spec.ID] = env
 	env.control.OnChange(h.hub.Poke)
@@ -213,10 +215,14 @@ func (h *Host) adoptSuspended(s grantState) error {
 	env.procs = procs.New(env.startProcess)
 	env.procs.Freeze()
 	env.control.SetPersistence(env.persistReceipt)
-	if s.Spec.WallTimeout > 0 {
-		wall := max(s.Spec.WallTimeout-time.Since(s.Started), time.Nanosecond)
-		env.timer = lifetime.Start(wall, 0, func(r lifetime.Reason) { h.expire(env, r) })
+	if s.Spec.WallTimeout > 0 || s.Spec.IdleTimeout > 0 {
+		var wall time.Duration
+		if s.Spec.WallTimeout > 0 {
+			wall = max(s.Spec.WallTimeout-time.Since(s.Started), time.Nanosecond)
+		}
+		env.timer = lifetime.New(func(r lifetime.Reason) { h.expire(env, r) })
 		env.public = lifetime.Watch(env, env.timer)
+		env.timer.Start(wall, 0)
 	}
 	h.grants[s.Spec.ID] = env
 	env.control.OnChange(h.hub.Poke)
@@ -235,6 +241,9 @@ func (e *environment) adoptProcesses(ctx context.Context, client *agent.Client) 
 	manager, deadlines := e.procs, e.suspendedDeadlines
 	e.mu.Unlock()
 	for _, gp := range held {
+		if info, err := manager.Process(gp.Spec.Tag); err == nil && info.PID == gp.Info.PID && info.Started.Equal(gp.Info.Started) {
+			continue
+		}
 		b, err := client.Adopt(gp)
 		if err != nil {
 			return err
