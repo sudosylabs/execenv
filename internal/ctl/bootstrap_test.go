@@ -272,8 +272,9 @@ func testOpts(t *testing.T, root string) Options {
 		NoStart:  true,
 		NoFetch:  true,
 		Insecure: true,
-		// No test restarts a real unit; never ask this machine's systemd.
+		// Keep both service status checks and reloads off the host's systemd.
 		UnitActive: func() bool { return false },
+		Reload:     func() error { return nil },
 		checkDevice: func(path string) error {
 			_, err := os.Stat(path)
 			return err
