@@ -164,6 +164,7 @@ func TestLiveAllowlistDeniesFromGuest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = host.lock.Close() })
 	env, err := host.Ensure(t.Context(), execenv.Spec{
 		ID:      "net-1",
 		Image:   "fixture",
@@ -172,7 +173,13 @@ func TestLiveAllowlistDeniesFromGuest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = env.Revoke(t.Context()) })
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 10*time.Second)
+		defer cancel()
+		if err := env.Revoke(ctx); err != nil {
+			t.Errorf("revoke guest during cleanup: %v", err)
+		}
+	})
 	if err := runIP("addr", "add", deniedIP+"/32", "dev", link.Dev); err != nil {
 		t.Fatal(err)
 	}
@@ -202,27 +209,35 @@ func TestLiveAllowlistDeniesFromGuest(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer output.Close()
-	var result strings.Builder
+	var stdout, stderr strings.Builder
 	for {
 		event, err := output.Next(ctx)
 		if err != nil {
 			t.Fatalf("guest did not report an allowlist result: %v", err)
 		}
 		if event.Kind == execenv.OutputExit {
+			if event.Exit.Code != 0 || event.Exit.Signal != 0 {
+				t.Fatalf("guest allowlist probe exited with %+v, stderr: %q", event.Exit, stderr.String())
+			}
 			break
 		}
-		result.Write(event.Data)
+		switch event.Stream {
+		case execenv.StreamStdout:
+			stdout.Write(event.Data)
+		case execenv.StreamStderr:
+			stderr.Write(event.Data)
+		}
 	}
-	switch strings.TrimSpace(result.String()) {
+	switch strings.TrimSpace(stdout.String()) {
 	case "NO_WGET":
 		t.Skip("fixture image has no wget")
 	case "ALLOW_FAILED":
-		t.Fatal("guest could not reach the allowed test listener")
+		t.Fatalf("guest could not reach the allowed test listener, stderr: %q", stderr.String())
 	case "LEAKED":
 		t.Fatal("guest reached a destination outside the allowlist")
 	case "DENIED":
 	default:
-		t.Fatal("guest did not report an allowlist result")
+		t.Fatalf("guest reported stdout %q, stderr %q", stdout.String(), stderr.String())
 	}
 }
 

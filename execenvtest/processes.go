@@ -353,7 +353,11 @@ func (p *traced) collect(after uint64, done func([]execenv.ProcessEvent) bool) [
 func (p *traced) settle() uint64 {
 	p.t.Helper()
 	settle := []string{"/bin/true", "settle"}
-	p.run(settle)
+	// The guest knows the argv of a process it launches even if it exits
+	// before the process log can read its metadata.
+	if err := p.workload.Start(p.t.Context(), "settle", settle); err != nil {
+		p.t.Fatalf("start settle command: %v", err)
+	}
 	var through uint64
 	p.collect(0, func(events []execenv.ProcessEvent) bool {
 		found, ok := pairs(events, [][]string{settle})
