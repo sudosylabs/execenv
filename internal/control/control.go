@@ -19,11 +19,15 @@ type State struct {
 	// then terminal like a revoke, but every fenced call reports ErrLost so
 	// the caller can tell a host-side end from its own revoke.
 	lost bool
+	// idlePending remembers an automatic freeze whose effect needs retry.
+	idlePending bool
 	// seen is the receipt as the last operation left it, for readers that
 	// must not wait for one under way.
 	seen atomic.Pointer[seen]
 	// changed, when set, is told after every operation.
 	changed atomic.Pointer[func()]
+	// save persists the intent and confirmation under the control lock.
+	save func(execenv.ControlReceipt) error
 }
 
 type seen struct {
@@ -81,6 +85,29 @@ func (s *State) release() {
 // OnChange has f told after every operation, once its lock is released.
 func (s *State) OnChange(f func()) { s.changed.Store(&f) }
 
+// SetPersistence installs the durable writer before the state is published.
+func (s *State) SetPersistence(save func(execenv.ControlReceipt) error) { s.save = save }
+
+func (s *State) transition(next execenv.ControlReceipt, effect func() error) error {
+	if s.save != nil {
+		if err := s.save(next); err != nil {
+			return err
+		}
+	}
+	s.receipt = next
+	if err := effect(); err != nil {
+		return err
+	}
+	next.Confirmed = true
+	if s.save != nil {
+		if err := s.save(next); err != nil {
+			return err
+		}
+	}
+	s.receipt = next
+	return nil
+}
+
 func (s *State) Status(ctx context.Context) (execenv.ControlReceipt, error) {
 	if err := s.acquire(ctx); err != nil {
 		return execenv.ControlReceipt{}, err
@@ -118,9 +145,10 @@ func (s *State) Execute(ctx context.Context, req execenv.ControlRequest, effect 
 	if req.Fence == old.Fence && old.Confirmed {
 		return old, nil
 	}
-	s.receipt = execenv.ControlReceipt{Fence: req.Fence, State: req.State}
-	err := effect()
-	s.receipt.Confirmed = err == nil
+	err := s.transition(execenv.ControlReceipt{Fence: req.Fence, State: req.State}, func() error {
+		s.idlePending = false
+		return effect()
+	})
 	return s.receipt, err
 }
 
@@ -128,34 +156,41 @@ func (s *State) Execute(ctx context.Context, req execenv.ControlRequest, effect 
 // records the epoch as revoked before destruction, so a failed effect still
 // fences every later request and can only be retried as a revoke.
 func (s *State) Revoke(ctx context.Context, effect func() error) error {
+	_, err := s.RevokeWhen(ctx, nil, effect)
+	return err
+}
+
+func (s *State) RevokeWhen(ctx context.Context, eligible func() bool, effect func() error) (bool, error) {
 	if err := s.acquire(ctx); err != nil {
-		return err
+		return false, err
 	}
 	defer s.release()
-	if s.receipt.State == execenv.ControlRevoked && s.receipt.Confirmed {
-		return nil
+	if eligible != nil && !eligible() {
+		return false, nil
 	}
-	s.receipt.State, s.receipt.Confirmed = execenv.ControlRevoked, false
-	err := effect()
-	s.receipt.Confirmed = err == nil
-	return err
+	if s.receipt.State == execenv.ControlRevoked && s.receipt.Confirmed {
+		return true, nil
+	}
+	next := s.receipt
+	next.State, next.Confirmed = execenv.ControlRevoked, false
+	return true, s.transition(next, effect)
 }
 
 // Lose ends the epoch because its environment ended without a revoke. Like
 // Revoke it is terminal and fences every later request, which then fails
 // with ErrLost. It reports false, and runs nothing, when the epoch was
 // already revoked or lost; a failed effect can be retried with Revoke.
-func (s *State) Lose(ctx context.Context, effect func() error) (bool, error) {
+func (s *State) Lose(ctx context.Context, eligible func() bool, effect func(execenv.ControlReceipt) error) (bool, error) {
 	if err := s.acquire(ctx); err != nil {
 		return false, err
 	}
 	defer s.release()
-	if s.lost || s.receipt.State == execenv.ControlRevoked {
+	if s.lost || s.receipt.State == execenv.ControlRevoked || eligible != nil && !eligible() {
 		return false, nil
 	}
 	s.lost = true
 	s.receipt.State, s.receipt.Confirmed = execenv.ControlRevoked, false
-	err := effect()
+	err := effect(s.receipt)
 	s.receipt.Confirmed = err == nil
 	return true, err
 }
@@ -165,20 +200,32 @@ func (s *State) Lose(ctx context.Context, effect func() error) (bool, error) {
 // ControlStatus and thaws with its next revision, as after its own freeze.
 // It reports false, and runs nothing, unless the epoch is confirmed running.
 func (s *State) Idle(ctx context.Context, effect func(done execenv.ControlReceipt) error) (bool, error) {
+	return s.IdleWhen(ctx, nil, effect)
+}
+
+func (s *State) IdleWhen(ctx context.Context, eligible func() bool, effect func(done execenv.ControlReceipt) error) (bool, error) {
 	if err := s.acquire(ctx); err != nil {
 		return false, err
 	}
 	defer s.release()
-	if s.lost || s.receipt.State != execenv.ControlRunning || !s.receipt.Confirmed {
+	running := s.receipt.State == execenv.ControlRunning && s.receipt.Confirmed
+	retrying := s.receipt.State == execenv.ControlFrozen && s.idlePending
+	if s.lost || !running && !retrying || eligible != nil && !eligible() {
 		return false, nil
 	}
-	s.receipt.State, s.receipt.Confirmed = execenv.ControlFrozen, false
+	next := s.receipt
+	next.State, next.Confirmed = execenv.ControlFrozen, false
 	// done is what the grant's control records once effect succeeds, for an
 	// effect that must make it durable before it finishes.
-	done := s.receipt
+	done := next
 	done.Confirmed = true
-	err := effect(done)
-	s.receipt.Confirmed = err == nil
+	err := s.transition(next, func() error {
+		s.idlePending = true
+		return effect(done)
+	})
+	if err == nil {
+		s.idlePending = false
+	}
 	return true, err
 }
 
@@ -189,11 +236,16 @@ func (s *State) Idle(ctx context.Context, effect func(done execenv.ControlReceip
 // receipt. It reports false, and runs nothing, unless the epoch is
 // confirmed frozen.
 func (s *State) Suspend(ctx context.Context, effect func(done execenv.ControlReceipt) error) (bool, error) {
+	return s.SuspendWhen(ctx, nil, effect)
+}
+
+func (s *State) SuspendWhen(ctx context.Context, eligible func() bool, effect func(done execenv.ControlReceipt) error) (bool, error) {
 	if err := s.acquire(ctx); err != nil {
 		return false, err
 	}
 	defer s.release()
-	if s.lost || s.receipt.State != execenv.ControlFrozen || !s.receipt.Confirmed {
+	if s.lost || s.receipt.State != execenv.ControlFrozen || !s.receipt.Confirmed ||
+		eligible != nil && !eligible() {
 		return false, nil
 	}
 	return true, effect(s.receipt)

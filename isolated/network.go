@@ -24,6 +24,42 @@ func parseAllow(list []string) ([]net.IPNet, error) {
 	return out, nil
 }
 
+// preservesNetworkPolicy reports whether a live machine still matches
+// the operator's policy. The order and spelling of equal CIDRs may change.
+func preservesNetworkPolicy(mode execenv.Network, record *netRecord, configured []string) bool {
+	if mode != execenv.NetworkAllowlist {
+		return record == nil
+	}
+	if record == nil || len(configured) == 0 {
+		return false
+	}
+	before, err := parseAllow(record.Allow)
+	if err != nil {
+		return false
+	}
+	after, err := parseAllow(configured)
+	if err != nil {
+		return false
+	}
+	counts := make(map[string]bool, len(before))
+	for _, n := range before {
+		counts[n.String()] = false
+	}
+	for _, n := range after {
+		key := n.String()
+		if _, ok := counts[key]; !ok {
+			return false
+		}
+		counts[key] = true
+	}
+	for _, retained := range counts {
+		if !retained {
+			return false
+		}
+	}
+	return true
+}
+
 func parseDest(raw string) (net.IPNet, error) {
 	if raw == "" {
 		return net.IPNet{}, execenv.ErrInvalid

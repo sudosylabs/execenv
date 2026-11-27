@@ -7,6 +7,7 @@ package journal
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/internal/content"
+	"github.com/sudosylabs/execenv/internal/files"
 	"github.com/sudosylabs/execenv/internal/guesttree"
 	"github.com/sudosylabs/execenv/internal/observations"
 	"github.com/sudosylabs/execenv/internal/projection"
@@ -105,10 +107,11 @@ func (j *Journal) Body(fence execenv.ProjectionFence, ref execenv.ContentReferen
 		return nil, execenv.ErrUnavailable
 	}
 	defer root.Close()
-	if info, err := root.Lstat(name); err != nil || !info.Mode().IsRegular() || info.Size() != blob.Size {
+	info, err := root.Lstat(name)
+	if err != nil || !info.Mode().IsRegular() || info.Size() != blob.Size {
 		return nil, execenv.ErrStale
 	}
-	f, err := root.Open(name)
+	f, err := files.OpenRegular(root, name, info)
 	if err != nil {
 		return nil, execenv.ErrStale
 	}
@@ -188,6 +191,9 @@ func (j *Journal) Apply(ctx context.Context, request execenv.ProjectionApply) (e
 	if err := j.Bind(request.Fence); err != nil {
 		return execenv.ProjectionReceipt{}, err
 	}
+	if receipt, replayed, err := j.state.ReplayApply(request); replayed {
+		return receipt, err
+	}
 	var receipt execenv.ProjectionReceipt
 	var resultErr error
 	err := j.barrier.Stopped(ctx, func() error {
@@ -196,7 +202,8 @@ func (j *Journal) Apply(ctx context.Context, request execenv.ProjectionApply) (e
 			return nil
 		}
 		if err := j.catchUp(); err != nil {
-			return err
+			resultErr = err
+			return nil
 		}
 		touched := false
 		var disk tree.Batch
@@ -274,7 +281,7 @@ func (j *Journal) Observe(ctx context.Context, fence execenv.ProjectionFence, af
 	// The workload keeps running: a capture never freezes it. Every dirty
 	// path is hashed now, so each Observe reports everything changed before
 	// it was called.
-	if err := j.catchUp(); err != nil {
+	if err := j.catchUp(); err != nil && !errors.Is(err, execenv.ErrLagged) {
 		return execenv.ObservationPage{}, err
 	}
 	return j.log.Page(after, limit)
@@ -283,6 +290,9 @@ func (j *Journal) Observe(ctx context.Context, fence execenv.ProjectionFence, af
 // catchUp captures what changed since the last capture: the paths the
 // watcher names, or the whole workspace when it cannot say.
 func (j *Journal) catchUp() error {
+	if j.log.IsLagged() {
+		return execenv.ErrLagged
+	}
 	whole := j.unsettled || j.watcher == nil || time.Since(j.walked) >= WalkInterval
 	var taken Changes
 	if j.watcher != nil {
@@ -494,7 +504,7 @@ func readIgnoreFile(home, name string) ([]byte, bool) {
 	if err != nil || !info.Mode().IsRegular() {
 		return nil, false
 	}
-	file, err := root.Open(name)
+	file, err := files.OpenRegular(root, name, info)
 	if err != nil {
 		return nil, false
 	}

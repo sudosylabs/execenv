@@ -16,7 +16,7 @@ func ValidateSpec(spec Spec) error {
 	if spec.Seed != "" && ValidateSeedDigest(spec.Seed) != nil {
 		return ErrInvalid
 	}
-	if err := validateName(string(spec.ID)); err != nil {
+	if err := ValidateGrantID(spec.ID); err != nil {
 		return err
 	}
 	if err := validateName(string(spec.Image)); err != nil {
@@ -28,6 +28,14 @@ func ValidateSpec(spec Spec) error {
 		return ErrInvalid
 	}
 	return nil
+}
+
+// ValidateGrantID checks whether id can name one grant.
+func ValidateGrantID(id ID) error {
+	if id == "." || id == ".." {
+		return ErrInvalid
+	}
+	return validateName(string(id))
 }
 
 func validateName(value string) error {

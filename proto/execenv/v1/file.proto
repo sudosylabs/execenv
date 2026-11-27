@@ -126,6 +126,8 @@ message ImportRequest {
   oneof part {
     ImportHeader header = 1;
     bytes chunk = 2;
+    // Complete follows the last chunk only when the source ended cleanly.
+    bool complete = 3;
   }
 }
 

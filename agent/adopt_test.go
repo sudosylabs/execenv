@@ -77,7 +77,7 @@ func TestRestartedHostAdoptsTheGuestsProcesses(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer att.Close()
-	if _, err := adopted.WriteInput("sh", gp.Info.Input, []byte("echo $kept-x\n")); err != nil {
+	if _, err := adopted.WriteInput(t.Context(), "sh", gp.Info.Input, []byte("echo $kept-x\n")); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)

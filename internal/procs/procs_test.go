@@ -30,10 +30,11 @@ func newPipeProc() *pipeProc {
 func (p *pipeProc) Streams() map[execenv.Stream]io.Reader {
 	return map[execenv.Stream]io.Reader{execenv.StreamPTY: p.out}
 }
-func (p *pipeProc) Write(b []byte) (int, error) {
+func (p *pipeProc) WriteInput(_ context.Context, offset uint64, b []byte) (uint64, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.in.Write(b)
+	n, err := p.in.Write(b)
+	return offset + uint64(n), err
 }
 func (p *pipeProc) CloseInput() error                            { return nil }
 func (p *pipeProc) Resize(context.Context, execenv.Window) error { return nil }
@@ -114,13 +115,13 @@ func TestHistoryTruncatesByAbsoluteOffset(t *testing.T) {
 // Input overlapping what was taken is dropped; a gap is a conflict.
 func TestInputIsTakenOnceByOffset(t *testing.T) {
 	m, p := start(t, 0)
-	if next, err := m.WriteInput("p", 0, []byte("abc")); err != nil || next != 3 {
+	if next, err := m.WriteInput(t.Context(), "p", 0, []byte("abc")); err != nil || next != 3 {
 		t.Fatalf("first = %d, %v", next, err)
 	}
-	if next, err := m.WriteInput("p", 1, []byte("bcde")); err != nil || next != 5 {
+	if next, err := m.WriteInput(t.Context(), "p", 1, []byte("bcde")); err != nil || next != 5 {
 		t.Fatalf("overlap = %d, %v", next, err)
 	}
-	if _, err := m.WriteInput("p", 9, []byte("x")); err != execenv.ErrConflict {
+	if _, err := m.WriteInput(t.Context(), "p", 9, []byte("x")); err != execenv.ErrConflict {
 		t.Fatalf("gap = %v, want ErrConflict", err)
 	}
 	p.mu.Lock()

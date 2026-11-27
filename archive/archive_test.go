@@ -93,3 +93,51 @@ func TestDigestIgnoresOrder(t *testing.T) {
 		t.Fatal("digest depends on order")
 	}
 }
+
+func TestArchiveRejectsAFileAsParent(t *testing.T) {
+	var buf bytes.Buffer
+	w, err := archive.NewWriter(&buf, archive.CodecNone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.File("leaf", false, 1, strings.NewReader("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Dir("leaf/child"); !errors.Is(err, execenv.ErrInvalid) {
+		t.Fatalf("writer admitted a directory below a file: %v", err)
+	}
+
+	buf.Reset()
+	buf.WriteString("execenv-archive-1 none\n")
+	tw := tar.NewWriter(&buf)
+	for _, h := range []*tar.Header{
+		{Name: "leaf", Typeflag: tar.TypeReg},
+		{Name: "leaf/child/", Typeflag: tar.TypeDir},
+	} {
+		if err := tw.WriteHeader(h); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := archive.Read(&buf, func(archive.Entry, io.Reader) error { return nil }); !errors.Is(err, execenv.ErrInvalid) {
+		t.Fatalf("reader admitted a directory below a file: %v", err)
+	}
+}
+
+func TestArchiveChecksCompressedFooter(t *testing.T) {
+	raw, _ := build(t, archive.CodecGzip)
+	raw = raw[:len(raw)-1]
+	if _, err := archive.Read(bytes.NewReader(raw), func(archive.Entry, io.Reader) error { return nil }); !errors.Is(err, execenv.ErrInvalid) {
+		t.Fatalf("incomplete gzip footer: %v", err)
+	}
+}
+
+func TestArchiveRequiresBothEndBlocks(t *testing.T) {
+	raw, _ := build(t, archive.CodecNone)
+	raw = raw[:len(raw)-512]
+	if _, err := archive.Read(bytes.NewReader(raw), func(archive.Entry, io.Reader) error { return nil }); !errors.Is(err, execenv.ErrInvalid) {
+		t.Fatalf("archive missing its final end block: %v", err)
+	}
+}

@@ -66,15 +66,6 @@ func (h *server) Export(ctx context.Context, req *connect.Request[execenvv1.Expo
 	return wire.Pump(body, func(b []byte) error { return stream.Send(&execenvv1.ContentChunk{Data: b}) })
 }
 
-func chunks[T interface{ GetChunk() []byte }](receive func() bool, msg func() T, failed func() error) *wire.ChunkReader {
-	return &wire.ChunkReader{Next: func() ([]byte, bool, error) {
-		if !receive() {
-			return nil, false, failed()
-		}
-		return msg().GetChunk(), true, nil
-	}}
-}
-
 func (h *server) WriteFile(ctx context.Context, stream *connect.ClientStream[execenvv1.WriteFileRequest]) (*connect.Response[execenvv1.FileInfo], error) {
 	if !stream.Receive() || stream.Msg().GetHeader() == nil {
 		return nil, wire.Error(execenv.ErrInvalid)
@@ -113,7 +104,7 @@ func (h *server) Import(ctx context.Context, stream *connect.ClientStream[execen
 	if err != nil {
 		return nil, wire.Error(err)
 	}
-	if err := env.Import(ctx, fence, header.GetDir(), chunks(stream.Receive, stream.Msg, stream.Err)); err != nil {
+	if err := env.Import(ctx, fence, header.GetDir(), wire.ImportChunks(stream.Receive, stream.Msg, stream.Err)); err != nil {
 		return nil, wire.Error(err)
 	}
 	return connect.NewResponse(&execenvv1.ImportResponse{}), nil
@@ -167,7 +158,7 @@ func (e *remoteEnv) Stat(ctx context.Context, path string, digest bool) (execenv
 func (e *remoteEnv) List(ctx context.Context, dir string, depth int, digest bool) ([]execenv.FileInfo, error) {
 	ctx, cancel := e.client.call(ctx)
 	defer cancel()
-	resp, err := e.client.files.List(ctx, connect.NewRequest(&execenvv1.ListRequest{GrantId: string(e.id), Epoch: e.epoch, Dir: dir, Depth: int32(depth), Digest: digest}))
+	resp, err := e.client.files.List(ctx, connect.NewRequest(&execenvv1.ListRequest{GrantId: string(e.id), Epoch: e.epoch, Dir: dir, Depth: int32(min(max(1, depth), execenv.MaxListEntries)), Digest: digest}))
 	if err != nil {
 		return nil, wire.HostError("list", err)
 	}
@@ -260,9 +251,7 @@ func (e *remoteEnv) Import(ctx context.Context, fence execenv.ProjectionFence, d
 	stream := e.client.bulkFiles.Import(ctx)
 	err := stream.Send(&execenvv1.ImportRequest{Part: &execenvv1.ImportRequest_Header{Header: &execenvv1.ImportHeader{Fence: wire.FenceTo(fence), Dir: dir}}})
 	if err == nil {
-		err = wire.Pump(archive, func(b []byte) error {
-			return stream.Send(&execenvv1.ImportRequest{Part: &execenvv1.ImportRequest_Chunk{Chunk: b}})
-		})
+		err = wire.SendImport(archive, stream.Send)
 	}
 	if _, cerr := stream.CloseAndReceive(); cerr != nil {
 		return wire.HostError("import", cerr)

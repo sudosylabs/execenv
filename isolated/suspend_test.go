@@ -108,6 +108,17 @@ func TestRestartKeepsASuspendedGrant(t *testing.T) {
 	if info, err := again.Process(context.Background(), "sh"); err != nil || !info.Running {
 		t.Fatalf("Process() = %+v, %v", info, err)
 	}
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		report, _ := h2.Ready(t.Context())
+		if report.MemoryBytes.Reserved == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("adopted grant did not suspend after its second idle period")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // A grant starts from the template of its image with exactly its memory,

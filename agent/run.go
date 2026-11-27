@@ -45,6 +45,7 @@ type guestProc struct {
 	// writes, in order, by its pump.
 	screen  *screen.Terminal
 	spec    execenv.ProcessSpec
+	attempt string
 	cmd     *exec.Cmd
 	started time.Time
 	pty     *os.File
@@ -66,9 +67,10 @@ type guestProc struct {
 	exit    execenv.ExitStatus
 	input   uint64
 
-	// outMu admits one Output stream at a time; inMu one Feed.
-	outMu sync.Mutex
-	inMu  sync.Mutex
+	// outMu admits one Output stream at a time; inMu serializes input.
+	outMu       sync.Mutex
+	inMu        sync.Mutex
+	inputClosed bool
 }
 
 func (p *guestProc) done() bool {
@@ -77,17 +79,41 @@ func (p *guestProc) done() bool {
 	return p.exited
 }
 
-func (s *server) Spawn(_ context.Context, req *connect.Request[guestv1.SpawnRequest]) (*connect.Response[guestv1.SpawnResponse], error) {
+func (s *server) Spawn(ctx context.Context, req *connect.Request[guestv1.SpawnRequest]) (*connect.Response[guestv1.SpawnResponse], error) {
 	spec, ok := wire.ProcessSpecFrom(req.Msg.GetSpec())
-	if !ok || execenv.ValidateProcessSpec(spec) != nil {
+	attempt := req.Msg.GetAttempt()
+	if !ok || execenv.ValidateProcessSpec(spec) != nil || execenv.ValidateTransferID(attempt) != nil {
 		return nil, wire.Error(execenv.ErrInvalid)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	old := s.procs[spec.Tag]
+	if old != nil && old.attempt == attempt {
+		return spawnReply(old), nil
+	}
+	now := time.Now()
+	for token, until := range s.canceledSpawns {
+		if !now.Before(until) {
+			delete(s.canceledSpawns, token)
+		}
+	}
+	if req.Msg.GetResolve() {
+		if s.canceledSpawns == nil {
+			s.canceledSpawns = make(map[string]time.Time)
+		}
+		s.canceledSpawns[attempt] = now.Add(2 * callTimeout)
+		return nil, wire.Error(execenv.ErrNotFound)
+	}
+	if _, canceled := s.canceledSpawns[attempt]; canceled {
+		return nil, wire.Error(context.Canceled)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, wire.Error(err)
+	}
 	if err := s.guard(); err != nil {
 		return nil, wire.Error(err)
 	}
-	if old, ok := s.procs[spec.Tag]; ok && !old.done() {
+	if old != nil && !old.done() {
 		return nil, wire.Error(execenv.ErrConflict)
 	}
 	if s.runningLocked() >= execenv.MaxProcesses {
@@ -100,8 +126,13 @@ func (s *server) Spawn(_ context.Context, req *connect.Request[guestv1.SpawnRequ
 		}
 		return nil, wire.Error(execenv.ErrUnavailable)
 	}
+	p.attempt = attempt
 	s.procs[spec.Tag] = p
-	return connect.NewResponse(&guestv1.SpawnResponse{Pid: int32(p.cmd.Process.Pid), Started: timestamppb.New(p.started)}), nil
+	return spawnReply(p), nil
+}
+
+func spawnReply(p *guestProc) *connect.Response[guestv1.SpawnResponse] {
+	return connect.NewResponse(&guestv1.SpawnResponse{Pid: int32(p.cmd.Process.Pid), Started: timestamppb.New(p.started)})
 }
 
 // spawn starts spec in the workload: unprivileged and in its cgroup when
@@ -340,9 +371,7 @@ func (p *guestProc) wait() {
 		_ = f.Close()
 	}
 	if p.stdin != nil {
-		p.inMu.Lock()
 		_ = p.stdin.Close()
-		p.inMu.Unlock()
 	}
 }
 
@@ -398,7 +427,7 @@ func (p *guestProc) describe() *guestv1.GuestProcess {
 // its exit once every stream has drained. The reader has everything
 // before its offsets, so the guest may drop it.
 func (s *server) Output(ctx context.Context, req *connect.Request[guestv1.OutputRequest], stream *connect.ServerStream[guestv1.OutputResponse]) error {
-	p, err := s.proc(req.Msg.GetTag())
+	p, err := s.referencedProcess(req.Msg.GetProcess())
 	if err != nil {
 		return wire.Error(err)
 	}
@@ -479,7 +508,7 @@ func (s *server) Output(ctx context.Context, req *connect.Request[guestv1.Output
 	}
 }
 
-func (p *guestProc) inputWriter() io.Writer {
+func (p *guestProc) inputWriter() *os.File {
 	if p.pty != nil {
 		return p.pty
 	}
@@ -489,12 +518,13 @@ func (p *guestProc) inputWriter() io.Writer {
 	return nil
 }
 
-// Feed writes input to the process the first message names, in order.
-func (s *server) Feed(_ context.Context, stream *connect.ClientStream[guestv1.FeedRequest]) (*connect.Response[guestv1.FeedResponse], error) {
-	if !stream.Receive() || stream.Msg().GetTag() == "" {
+// Feed returns the offset after writing, including any accepted prefix.
+func (s *server) Feed(ctx context.Context, req *connect.Request[guestv1.FeedRequest]) (*connect.Response[guestv1.FeedResponse], error) {
+	data := req.Msg.GetData()
+	if len(data) == 0 || len(data) > wire.ChunkSize {
 		return nil, wire.Error(execenv.ErrInvalid)
 	}
-	p, err := s.proc(stream.Msg().GetTag())
+	p, err := s.referencedProcess(req.Msg.GetProcess())
 	if err != nil {
 		return nil, wire.Error(err)
 	}
@@ -504,35 +534,77 @@ func (s *server) Feed(_ context.Context, stream *connect.ClientStream[guestv1.Fe
 	}
 	p.inMu.Lock()
 	defer p.inMu.Unlock()
-	for stream.Receive() {
-		s.mu.Lock()
-		err := s.guard()
-		s.mu.Unlock()
-		if err != nil {
-			return nil, wire.Error(err)
-		}
-		n, err := w.Write(stream.Msg().GetData())
-		p.mu.Lock()
-		p.input += uint64(n)
-		p.mu.Unlock()
-		if err != nil {
-			return nil, wire.Error(execenv.ErrClosed)
-		}
+	if err := ctx.Err(); err != nil {
+		return nil, wire.Error(err)
 	}
-	if err := stream.Err(); err != nil {
-		return nil, err
+	p.mu.Lock()
+	current, exited := p.input, p.exited
+	p.mu.Unlock()
+	offset := req.Msg.GetOffset()
+	if offset > current {
+		return nil, wire.Error(execenv.ErrConflict)
 	}
-	return connect.NewResponse(&guestv1.FeedResponse{}), nil
+	skip := current - offset
+	if skip >= uint64(len(data)) {
+		return connect.NewResponse(&guestv1.FeedResponse{Offset: current}), nil
+	}
+	if p.inputClosed || exited {
+		return connect.NewResponse(&guestv1.FeedResponse{Offset: current, Closed: true}), nil
+	}
+	s.mu.Lock()
+	err = s.guard()
+	s.mu.Unlock()
+	if err != nil {
+		return nil, wire.Error(err)
+	}
+	deadline, _ := ctx.Deadline()
+	if err := w.SetWriteDeadline(deadline); err != nil {
+		return nil, wire.Error(execenv.ErrUnavailable)
+	}
+	interrupted := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		_ = w.SetWriteDeadline(time.Now())
+		close(interrupted)
+	})
+	defer func() {
+		if !stop() {
+			<-interrupted
+		}
+		_ = w.SetWriteDeadline(time.Time{})
+	}()
+	n, err := w.Write(data[skip:])
+	p.mu.Lock()
+	p.input += uint64(n)
+	current = p.input
+	p.mu.Unlock()
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		return nil, wire.Error(context.DeadlineExceeded)
+	}
+	return connect.NewResponse(&guestv1.FeedResponse{Offset: current, Closed: err != nil}), nil
 }
 
-func (s *server) live(tag string) (*guestProc, error) {
+func (s *server) referencedProcess(ref *guestv1.ProcessRef) (*guestProc, error) {
+	if ref.GetTag() == "" || ref.GetStarted() == nil || ref.GetPid() <= 0 {
+		return nil, execenv.ErrInvalid
+	}
+	p, err := s.proc(ref.GetTag())
+	if err != nil {
+		return nil, err
+	}
+	if int(ref.GetPid()) != p.cmd.Process.Pid || !p.started.Equal(ref.GetStarted().AsTime()) {
+		return nil, execenv.ErrClosed
+	}
+	return p, nil
+}
+
+func (s *server) live(ref *guestv1.ProcessRef) (*guestProc, error) {
 	s.mu.Lock()
 	err := s.guard()
 	s.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
-	p, err := s.proc(tag)
+	p, err := s.referencedProcess(ref)
 	if err != nil {
 		return nil, err
 	}
@@ -543,14 +615,21 @@ func (s *server) live(tag string) (*guestProc, error) {
 }
 
 func (s *server) CloseFeed(_ context.Context, req *connect.Request[guestv1.ProcessRef]) (*connect.Response[guestv1.Empty], error) {
-	p, err := s.live(req.Msg.GetTag())
+	p, err := s.referencedProcess(req.Msg)
 	if err != nil {
 		return nil, wire.Error(err)
 	}
+	s.mu.Lock()
+	err = s.guard()
+	s.mu.Unlock()
+	if err != nil {
+		return nil, wire.Error(err)
+	}
+	p.inMu.Lock()
+	defer p.inMu.Unlock()
+	p.inputClosed = true
 	if p.stdin != nil {
-		p.inMu.Lock()
 		_ = p.stdin.Close()
-		p.inMu.Unlock()
 	}
 	return connect.NewResponse(&guestv1.Empty{}), nil
 }
@@ -560,7 +639,7 @@ func (s *server) ResizeProcess(_ context.Context, req *connect.Request[guestv1.R
 	if !ok {
 		return nil, wire.Error(execenv.ErrInvalid)
 	}
-	p, err := s.live(req.Msg.GetTag())
+	p, err := s.live(req.Msg.GetProcess())
 	if err != nil {
 		return nil, wire.Error(err)
 	}
@@ -576,7 +655,7 @@ func (s *server) ResizeProcess(_ context.Context, req *connect.Request[guestv1.R
 
 // ProcessScreen reads a terminal process's screen, running or exited.
 func (s *server) ProcessScreen(_ context.Context, req *connect.Request[guestv1.ProcessScreenRequest]) (*connect.Response[execenvv1.Screen], error) {
-	p, err := s.proc(req.Msg.GetTag())
+	p, err := s.referencedProcess(req.Msg.GetProcess())
 	if err != nil {
 		return nil, wire.Error(err)
 	}
@@ -592,9 +671,17 @@ func (s *server) SignalProcess(_ context.Context, req *connect.Request[guestv1.S
 	if !ok {
 		return nil, wire.Error(execenv.ErrInvalid)
 	}
-	p, err := s.live(req.Msg.GetTag())
+	p, err := s.referencedProcess(req.Msg.GetProcess())
 	if err != nil {
 		return nil, wire.Error(err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.guard(); err != nil {
+		return nil, wire.Error(err)
+	}
+	if s.procs[p.spec.Tag] != p || p.done() {
+		return nil, wire.Error(execenv.ErrClosed)
 	}
 	signalSession(p.cmd, sig)
 	return connect.NewResponse(&guestv1.Empty{}), nil

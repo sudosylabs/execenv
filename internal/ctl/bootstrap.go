@@ -11,14 +11,17 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 
 	"github.com/sudosylabs/execenv/daemon"
+	"github.com/sudosylabs/execenv/internal/hostplatform"
 )
 
 // Isolation device and supervisor process names as the probe looks them up.
 // Public execenv types stay hypervisor-neutral; this operator tool cannot.
 const (
-	defaultDevice   = "/dev/kvm"
+	defaultDevice   = hostplatform.Device
 	runtimeName     = "firecracker"
 	supervisorName  = "jailer"
 	runtimeVersion  = "v1.16.1"
@@ -67,7 +70,9 @@ type Options struct {
 	// daemon that holds grants.
 	Force bool
 	// UnitActive, if set, replaces asking systemd whether the unit runs.
-	UnitActive func() bool
+	UnitActive   func() bool
+	checkDevice  func(string) error
+	checkCgroups func() error
 }
 
 // Defaults returns the system-wide install layout.
@@ -83,6 +88,12 @@ func Defaults() Options {
 
 func (o Options) resolved() Options {
 	out := o
+	if out.checkDevice == nil {
+		out.checkDevice = hostplatform.CheckDevice
+	}
+	if out.checkCgroups == nil {
+		out.checkCgroups = hostplatform.CheckCgroups
+	}
 	if out.Prefix == "" {
 		out.Prefix = defaultPrefix
 	}
@@ -97,6 +108,9 @@ func (o Options) resolved() Options {
 	}
 	if out.Listen == "" {
 		out.Listen = defaultListen
+		if out.Insecure {
+			out.Listen = "127.0.0.1:8443"
+		}
 	}
 	return out
 }
@@ -121,9 +135,17 @@ func (o Options) execenvPath() string {
 // missing isolation device fails closed; there is no weaker fallback.
 func Bootstrap(opts Options, stdout io.Writer) error {
 	opts = opts.resolved()
-	if err := checkDevice(opts.Device); err != nil {
+	if err := opts.checkDevice(opts.Device); err != nil {
+		return fmt.Errorf("isolation device %s is not usable; this host cannot occupy grants (no container fallback): %w", opts.Device, err)
+	}
+	if err := opts.checkCgroups(); err != nil {
 		return err
 	}
+	lock, err := opts.lockConfig()
+	if err != nil {
+		return wrap("bootstrap", fmt.Errorf("lock host configuration: %w", err))
+	}
+	defer lock.Close()
 	mkfs, err := findMkfs(opts)
 	if err != nil {
 		return err
@@ -180,15 +202,6 @@ func findMkfs(opts Options) (string, error) {
 		return "", fmt.Errorf("%s is missing; workspace disks need it (install e2fsprogs)", mkfsName)
 	}
 	return found, nil
-}
-
-func checkDevice(path string) error {
-	f, err := os.OpenFile(path, os.O_RDWR, 0)
-	if err != nil {
-		return fmt.Errorf("isolation device %s is missing or not usable; this host cannot occupy grants (no container fallback)", path)
-	}
-	_ = f.Close()
-	return nil
 }
 
 func installExecenv(opts Options) error {
@@ -376,6 +389,9 @@ func hashSummary(opts Options) string {
 }
 
 func writeUnit(opts Options) error {
+	quote := func(arg string) string {
+		return strconv.Quote(strings.ReplaceAll(arg, "%", "%%"))
+	}
 	body := "[Unit]\n" +
 		"Description=execenv host\n" +
 		"After=network-online.target\n" +
@@ -383,7 +399,7 @@ func writeUnit(opts Options) error {
 		"\n" +
 		"[Service]\n" +
 		"Type=simple\n" +
-		"ExecStart=" + opts.execenvPath() + " -config " + opts.configPath() + "\n" +
+		"ExecStart=" + quote(":"+opts.execenvPath()) + " -config " + quote(opts.configPath()) + "\n" +
 		"Restart=on-failure\n" +
 		// Grants' machines outlive a restart of the daemon, which adopts
 		// them again; stopping the unit stops only the daemon.

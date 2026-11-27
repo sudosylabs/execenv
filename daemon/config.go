@@ -7,6 +7,7 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -163,15 +164,23 @@ func Save(path string, cfg Config) error {
 		return execenv.Error("config", execenv.ErrInvalid)
 	}
 	raw = append(raw, '\n')
-	tmp := path + ".new"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	file, err := os.CreateTemp(filepath.Dir(path), ".host-config-")
+	if err != nil {
 		return execenv.Error("config", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	defer os.Remove(file.Name())
+	if _, err := file.Write(raw); err != nil {
+		_ = file.Close()
 		return execenv.Error("config", err)
 	}
-	if err := os.Chmod(path, 0o600); err != nil {
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return execenv.Error("config", err)
+	}
+	if err := file.Close(); err != nil {
+		return execenv.Error("config", err)
+	}
+	if err := os.Rename(file.Name(), path); err != nil {
 		return execenv.Error("config", err)
 	}
 	return nil
@@ -196,7 +205,9 @@ func (cfg *Config) validate() error {
 			return execenv.Error("config", execenv.ErrInvalid)
 		}
 	case securityLocal:
-		if cfg.Token == "" || cfg.TLSClientCA != "" {
+		host, _, err := net.SplitHostPort(cfg.Listen)
+		if err != nil || !strings.EqualFold(host, "localhost") && !net.ParseIP(host).IsLoopback() ||
+			cfg.Token == "" || cfg.TLSClientCA != "" {
 			return execenv.Error("config", execenv.ErrInvalid)
 		}
 	default:

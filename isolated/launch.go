@@ -61,6 +61,7 @@ type instance interface {
 }
 
 type launcher interface {
+	// A failed start may return an instance if cleanup still needs Stop.
 	Start(ctx context.Context, req startRequest) (instance, error)
 	// Adopt takes over a machine a previous host started, if it is still
 	// the same running machine; otherwise it is ErrLost.

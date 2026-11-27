@@ -2,6 +2,7 @@ package isolated
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -80,5 +81,40 @@ func TestCgroupThrottlesToTheReservedCPU(t *testing.T) {
 	}
 	if len(rateLimiter(execenv.TokenBucket{}, execenv.TokenBucket{})) != 0 {
 		t.Fatal("a zero bucket must mean no limit")
+	}
+}
+
+func TestPartialLimitsUpdateRestoresPreviousLimits(t *testing.T) {
+	launch := &recordingLauncher{}
+	h := testHost(t, func() error { return nil }, launch)
+	h.cfg.Allow = []string{"192.0.2.1"}
+	spec := execenv.Spec{ID: "limits", Image: "default", Network: execenv.NetworkAllowlist}
+	env, err := h.Ensure(t.Context(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence := runningFence(t, env)
+	inst := launch.instance(spec.ID)
+	inst.mu.Lock()
+	inst.limitErrors = []error{execenv.ErrUnavailable}
+	inst.mu.Unlock()
+	limits := execenv.Limits{DiskBytes: execenv.TokenBucket{Rate: 4096}, NetworkBytes: execenv.TokenBucket{Rate: 8192}}
+	if err := env.UpdateLimits(t.Context(), fence, limits); !errors.Is(err, execenv.ErrUnavailable) {
+		t.Fatalf("partially applied limits: %v", err)
+	}
+	inst.mu.Lock()
+	current := inst.limits
+	inst.mu.Unlock()
+	if current != spec.Limits {
+		t.Fatalf("limits after failure = %+v, want %+v", current, spec.Limits)
+	}
+	if err := env.UpdateLimits(t.Context(), fence, limits); err != nil {
+		t.Fatal(err)
+	}
+	inst.mu.Lock()
+	current = inst.limits
+	inst.mu.Unlock()
+	if current != limits {
+		t.Fatalf("limits after retry = %+v, want %+v", current, limits)
 	}
 }

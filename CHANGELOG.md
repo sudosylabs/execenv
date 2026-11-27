@@ -1,6 +1,30 @@
 # Changelog
 
-## Unreleased (v0.6.1)
+## Unreleased
+
+### Changed
+
+- Remote protocol 3 and guest protocol 5 require matching clients and
+  guest helpers. Drain the host before upgrading to replace the daemon and
+  any changed catalog artifacts together.
+- Production hosts require a usable KVM device and cgroup v2 CPU and
+  memory controllers. Cleartext remote service binds only to loopback.
+
+### Fixed
+
+- Workspace file operations stay inside their workspace and interrupted
+  imports leave the destination unchanged.
+- Control intent survives restart. Failed cleanup retains its resource
+  reservation until it can be retried.
+- Guest input is acknowledged after the guest writes it. Process retries,
+  scoped revokes, and canceled remote streams preserve grant identity.
+- Suspended grants retain their disk reservation and rearm their idle
+  timer on thaw. Observation overflow preserves retained pages for replay.
+- Recovery checks the saved network policy. Archives reject children of
+  files, catalog removal preserves shared files, and systemd paths are
+  quoted.
+
+## v0.6.1
 
 ### Fixed
 

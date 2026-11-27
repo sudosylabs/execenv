@@ -86,7 +86,8 @@ type environment struct {
 	processes *processLog
 	timer     *lifetime.Timer
 	// public is what callers hold: the environment, watched for activity.
-	public execenv.Env
+	public  execenv.Env
+	retired chan struct{}
 	// workspace is the grant's directory; journal projects into it.
 	// journalMu serializes journal calls; guestMu is the simulated guest,
 	// held by every guest write and by the journal's barrier.
@@ -177,7 +178,7 @@ func (h *Host) Lose(id execenv.ID) bool {
 	if env == nil {
 		return false
 	}
-	lost, _ := env.control.Lose(context.Background(), func() error { return env.stop(execenv.ErrLost) })
+	lost, _ := env.control.Lose(context.Background(), nil, func(execenv.ControlReceipt) error { return env.stop(execenv.ErrLost) })
 	if !lost {
 		return false
 	}
@@ -273,6 +274,7 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 		return nil, execenv.Error("ensure", execenv.ErrUnavailable)
 	}
 	env := &environment{
+		retired:   make(chan struct{}),
 		control:   control.New(spec.ID),
 		id:        spec.ID,
 		spec:      spec,
@@ -297,8 +299,9 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 	env.procs = procs.New(env.startProcess)
 	env.public = env
 	if spec.WallTimeout > 0 || spec.IdleTimeout > 0 {
-		env.timer = lifetime.Start(spec.WallTimeout, spec.IdleTimeout, func(r lifetime.Reason) { h.expire(env, r) })
+		env.timer = lifetime.New(func(r lifetime.Reason) { h.expire(env, r) })
 		env.public = lifetime.Watch(env, env.timer)
+		env.timer.Start(spec.WallTimeout, spec.IdleTimeout)
 	}
 	env.control.OnChange(h.hub.Poke)
 	h.grants[spec.ID] = env
@@ -310,19 +313,23 @@ func (h *Host) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, erro
 func (h *Host) expire(env *environment, r lifetime.Reason) {
 	ctx := context.Background()
 	if r == lifetime.Idle && env.spec.IdleAction == execenv.IdleFreeze {
-		_, _ = env.control.Idle(ctx, func(execenv.ControlReceipt) error { return env.freeze(ctx) })
+		_, _ = env.control.IdleWhen(ctx, env.timer.IdleDue, func(execenv.ControlReceipt) error { return env.freeze(ctx) })
 		return
 	}
 	if r == lifetime.Idle && env.spec.IdleAction == execenv.IdleSuspend {
 		suspend := func(execenv.ControlReceipt) error { return env.suspend(ctx) }
 		// A running grant is frozen and suspended; one the caller froze is
 		// suspended as it is.
-		if ran, _ := env.control.Idle(ctx, suspend); !ran {
-			_, _ = env.control.Suspend(ctx, suspend)
+		if ran, _ := env.control.IdleWhen(ctx, env.timer.IdleDue, suspend); !ran {
+			_, _ = env.control.SuspendWhen(ctx, env.timer.IdleDue, suspend)
 		}
 		return
 	}
-	_ = h.revokeExact(context.Background(), env)
+	if r == lifetime.Idle {
+		_ = h.revokeExactWhen(ctx, env, env.timer.IdleDue)
+	} else {
+		_ = h.revokeExact(ctx, env)
+	}
 }
 
 // Revoke destroys the grant if it exists.
@@ -330,9 +337,15 @@ func (h *Host) Revoke(ctx context.Context, id execenv.ID) error {
 	if err := ctx.Err(); err != nil {
 		return execenv.Error("revoke", err)
 	}
+	if err := execenv.ValidateGrantID(id); err != nil {
+		return execenv.Error("revoke", err)
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	delete(h.lost, id)
+	if lost := h.lost[id]; lost != nil {
+		delete(h.lost, id)
+		close(lost.retired)
+	}
 	h.hub.Poke()
 	env := h.grants[id]
 	if env == nil {
@@ -342,28 +355,42 @@ func (h *Host) Revoke(ctx context.Context, id execenv.ID) error {
 		return err
 	}
 	delete(h.grants, id)
+	close(env.retired)
 	h.hub.Poke()
 	h.pool.Release(id)
 	return nil
 }
 
 func (h *Host) revokeExact(ctx context.Context, env *environment) error {
+	return h.revokeExactWhen(ctx, env, nil)
+}
+
+func (h *Host) revokeExactWhen(ctx context.Context, env *environment, eligible func() bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.lost[env.id] == env {
+		if eligible != nil {
+			return nil
+		}
 		delete(h.lost, env.id)
+		close(env.retired)
 		h.hub.Poke()
 	}
 	if h.grants[env.id] != env {
 		return nil
 	}
-	if err := env.revoke(); err != nil {
+	ran, err := env.control.RevokeWhen(ctx, eligible, func() error { return env.stop(execenv.ErrRevoked) })
+	if err != nil {
 		return err
 	}
+	if !ran {
+		return nil
+	}
 	delete(h.grants, env.id)
+	close(env.retired)
 	h.hub.Poke()
 	h.pool.Release(env.id)
 	return nil
@@ -414,9 +441,10 @@ func (e *environment) suspend(ctx context.Context) error {
 	if e.suspended || e.revoked {
 		return nil
 	}
+	if err := e.host.pool.Replace(e.id, execenv.Resources{DiskBytes: e.spec.Resources.DiskBytes}); err != nil {
+		return err
+	}
 	e.suspended = true
-	e.host.pool.Release(e.id)
-	_ = e.host.pool.Reserve(e.id, execenv.Resources{DiskBytes: e.spec.Resources.DiskBytes})
 	return nil
 }
 
@@ -432,9 +460,7 @@ func (e *environment) thaw(ctx context.Context) error {
 	if e.suspended {
 		// Resuming needs the grant's CPU and memory again: until they fit
 		// it stays suspended.
-		e.host.pool.Release(e.id)
-		if err := e.host.pool.Reserve(e.id, e.spec.Resources); err != nil {
-			_ = e.host.pool.Reserve(e.id, execenv.Resources{DiskBytes: e.spec.Resources.DiskBytes})
+		if err := e.host.pool.Replace(e.id, e.spec.Resources); err != nil {
 			return execenv.Error("thaw", err)
 		}
 		e.suspended = false
@@ -443,6 +469,8 @@ func (e *environment) thaw(ctx context.Context) error {
 	e.procs.Thaw()
 	return nil
 }
+
+func (e *environment) Retired() <-chan struct{} { return e.retired }
 
 func (e *environment) Revoke(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {

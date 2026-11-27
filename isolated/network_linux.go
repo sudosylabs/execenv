@@ -8,9 +8,13 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 
 	"github.com/sudosylabs/execenv"
 )
+
+// Serializes discovery and assignment of the host side of each link.
+var networkSetup sync.Mutex
 
 // setupAllowlist creates a host tap and a per-grant filter so only the
 // operator dests are reachable from the guest. Fail closed if the
@@ -23,7 +27,16 @@ func setupAllowlist(id execenv.ID, dests []string) (*netAttach, error) {
 	if len(allow) == 0 {
 		return nil, execenv.ErrNetwork
 	}
+	networkSetup.Lock()
+	defer networkSetup.Unlock()
 	att := planAttach(id, allow)
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil, err
+	}
+	if addressInUse(att, addrs) {
+		return nil, fmt.Errorf("%w: grant link subnet already in use", execenv.ErrNetwork)
+	}
 	if err := runIP("tuntap", "add", "dev", att.Dev, "mode", "tap"); err != nil {
 		return nil, err
 	}
@@ -43,6 +56,22 @@ func setupAllowlist(id execenv.ID, dests []string) (*netAttach, error) {
 	return guardAttach(att, allow, cleanup)
 }
 
+func addressInUse(att netAttach, addrs []net.Addr) bool {
+	hostIP := net.ParseIP(att.HostIP)
+	guestIP := net.ParseIP(att.GuestIP)
+	_, grantNet, err := net.ParseCIDR(fmt.Sprintf("%s/%d", att.HostIP, att.Prefix))
+	if err != nil {
+		return true
+	}
+	for _, addr := range addrs {
+		if assigned, ok := addr.(*net.IPNet); ok &&
+			(assigned.Contains(hostIP) || assigned.Contains(guestIP) || grantNet.Contains(assigned.IP)) {
+			return true
+		}
+	}
+	return false
+}
+
 // guardAttach installs the per-grant filter and NAT on the host end of a
 // grant's link. Failure unwinds everything, including cleanup's steps.
 func guardAttach(att netAttach, allow []net.IPNet, cleanup []func()) (*netAttach, error) {
@@ -52,14 +81,18 @@ func guardAttach(att netAttach, allow []net.IPNet, cleanup []func()) (*netAttach
 		}
 		return nil, err
 	}
-	_ = os.WriteFile("/proc/sys/net/ipv6/conf/"+att.Dev+"/disable_ipv6", []byte("1"), 0o644)
+	if err := enableSysctl("/proc/sys/net/ipv6/conf/" + att.Dev + "/disable_ipv6"); err != nil {
+		return fail(err)
+	}
 	chain := filterChain(att.Dev)
 	if err := installFilter(att.Dev, chain, allow); err != nil {
 		return fail(err)
 	}
 	cleanup = append(cleanup, func() { _ = removeFilter(att.Dev, chain) })
 	guestNet := fmt.Sprintf("%s/%d", att.HostIP, att.Prefix)
-	enableForward()
+	if err := enableSysctl("/proc/sys/net/ipv4/ip_forward"); err != nil {
+		return fail(err)
+	}
 	if err := installNAT(guestNet, allow); err != nil {
 		return fail(err)
 	}
@@ -179,8 +212,11 @@ func removeNAT(guestNet string, allow []net.IPNet) error {
 	return nil
 }
 
-func enableForward() {
-	_ = os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0o644)
+func enableSysctl(path string) error {
+	if data, err := os.ReadFile(path); err == nil && strings.TrimSpace(string(data)) == "1" {
+		return nil
+	}
+	return os.WriteFile(path, []byte("1"), 0)
 }
 
 func removeFilter(iface, chain string) error {

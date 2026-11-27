@@ -96,6 +96,8 @@ func (g *Group) Configure(cmd *exec.Cmd) error {
 
 func (g *Group) OwnHome(home string) error { return os.Lchown(home, uid, uid) }
 
+func (g *Group) OwnPath(root *os.Root, name string) error { return root.Lchown(name, uid, uid) }
+
 // Path is the workload's path in the unified hierarchy, as a process's
 // /proc/<pid>/cgroup names it. Every workload process is at or below it.
 func (g *Group) Path() string { return "/" + groupName }

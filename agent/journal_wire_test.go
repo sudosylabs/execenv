@@ -5,6 +5,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,10 +17,14 @@ import (
 	"strings"
 	"testing"
 
+	"connectrpc.com/connect"
+
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/internal/content"
+	guestv1 "github.com/sudosylabs/execenv/internal/gen/execenv/guest/v1"
 	"github.com/sudosylabs/execenv/internal/journal"
 	"github.com/sudosylabs/execenv/internal/processes"
+	"github.com/sudosylabs/execenv/internal/wire"
 )
 
 // This exercises the real guest wire and disk engine with quiescent test files.
@@ -183,4 +188,24 @@ func wireStore(t *testing.T) *content.Store {
 		t.Fatal(err)
 	}
 	return store
+}
+
+func TestGuestResolvesAnAcknowledgementLostAfterSpawn(t *testing.T) {
+	client, _ := journalWireFixture(t)
+	spec := execenv.ProcessSpec{Tag: "spawn", Argv: []string{"/bin/sh", "-c", "exit 0"}}
+	attempt := rand.Text()
+	req := &guestv1.SpawnRequest{Spec: wire.ProcessSpecTo(spec), Attempt: attempt}
+	first, err := client.agent.Spawn(t.Context(), connect.NewRequest(req))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := client.agent.Spawn(t.Context(), connect.NewRequest(&guestv1.SpawnRequest{
+		Spec: req.Spec, Attempt: attempt, Resolve: true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Msg.GetPid() != resolved.Msg.GetPid() || !first.Msg.GetStarted().AsTime().Equal(resolved.Msg.GetStarted().AsTime()) {
+		t.Fatal("the acknowledgement refers to a different process")
+	}
 }

@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white" alt="Go 1.25+" />
+  <img src="https://img.shields.io/badge/Go-1.26.11+-00ADD8?logo=go&logoColor=white" alt="Go 1.26.11+" />
   <img src="https://img.shields.io/badge/linux%2Famd64-host-1793D1?logo=linux&logoColor=white" alt="linux/amd64 host" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-6D28D9" alt="Apache 2.0 license" /></a>
 </p>
@@ -144,7 +144,8 @@ func Dial() (execenv.Host, error) {
 ```
 
 `remote.New` dials, sends the token as a bearer credential, and checks that
-the host offers the features this client needs. A verified client
+the wire protocol version matches and that the host offers the required
+features. Release and build stamps are for diagnostics. A verified client
 certificate may replace the token when the host enables mutual TLS. Keep one
 client per host for the life of the process: it holds two HTTP/2
 connections, one for control, processes and logs, one for file content, so
@@ -162,7 +163,8 @@ host, err := remote.New(remote.Config{
 })
 ```
 
-A non-loopback insecure address is rejected.
+Both the remote client and server enforce loopback-only cleartext.
+`remote.Serve` requires an isolated host when serving TLS.
 
 `execenv.RequireIsolated(host)` fails closed when the adapter is not
 isolated. Use it in production composition so the in-memory host cannot
@@ -182,9 +184,11 @@ if !rep.Usable {
 
 `Images` is the catalog ids on that machine. `Networks` is the network modes
 the host offers. `CPUMillis`, `MemoryBytes` and `DiskBytes` are its
-capacity, each with `Total`, `Reserved` and `Free`: every grant reserves its
-whole size from the moment it starts until it is revoked or lost. CPU totals
-already include the operator's overcommit; memory is never overcommitted.
+capacity, each with `Total`, `Reserved` and `Free`. Starting and frozen grants
+hold their full reservation. Suspended grants hold their disk reservation
+and must regain CPU and memory before thawing. Revoke and loss release
+resources once cleanup finishes. CPU totals include the operator's
+overcommit. Memory is never overcommitted.
 `Defaults` is what a grant gets when its Spec leaves a size unset, and
 `GrantMax` the most one grant may ask for. `Grants` is how many grants the
 host holds now, and `Lost` how many it has lost since it started (see Lost
@@ -248,7 +252,8 @@ if err != nil {
 | Guest helper cannot serve the journal | `ErrUnavailable`; the guest is destroyed |
 | Guest kernel lacks process events | `ErrUnavailable`; the guest is destroyed |
 
-Ids and image names are 1–64 characters in `[A-Za-z0-9._-:]`. Concurrent
+Ids and image names are 1–64 characters in `[A-Za-z0-9._-:]`. Grant IDs
+exclude `.` and `..`. Concurrent
 identical `Ensure` calls for one new id coalesce into one launch. Ensure does
 not download images; occupying a new grant starts its guest, and it never
 queues: a grant that does not fit is refused at once.
@@ -257,10 +262,11 @@ The guest sees enough virtual CPUs to use its `CPUMillis` and is throttled
 to exactly that; `MemoryBytes` is its memory; `DiskBytes` is its workspace
 disk, shared by the projected tree and the shell's scratch home.
 
-A grant is busy while anything is attached to one of its processes and
-after any call on it other than `Observe` and `ObserveProcesses`: reading
-what the grant did does not keep it awake. Once idle for `IdleTimeout` the host applies
-`IdleAction`: `IdleRevoke` revokes it; `IdleFreeze` freezes it as a fenced
+An open process attachment or port connection keeps a grant busy.
+Control requests, process starts, input writes, projection operations,
+observation content access and acknowledgements, and limit updates reset
+the idle deadline. Observation paging, port discovery, and status reads
+leave the deadline alone. After `IdleTimeout` the host applies `IdleAction`: `IdleRevoke` revokes it; `IdleFreeze` freezes it as a fenced
 freeze would, keeping the caller's fence revision, so `ControlStatus` shows
 `frozen` and the caller thaws it with its next revision. `IdleSuspend`
 freezes it the same way, then saves its running machine to the host's disk
@@ -1065,7 +1071,9 @@ nothing and `Ready` reports unusable. There is no container fallback.
 - Linux on **amd64**
 - Root, or equivalent, for the default layout
 - A usable isolation device at `/dev/kvm` (readable and writable by the
-  host process, typically the `kvm` group)
+  host process, typically the `kvm` group). A configured device path must
+  identify the same device.
+- A unified cgroup v2 hierarchy with CPU and memory controllers
 - The microVM runtime and supervisor pair (bootstrap installs them)
 - `mkfs.ext4` and `resize2fs` (e2fsprogs): every grant gets a sparse ext4
   workspace disk, and every seed is kept as one
@@ -1293,8 +1301,9 @@ the same state directory. `work_dir` must be on a filesystem that allows
 device nodes (not one mounted `nodev`, as a tmpfs `/tmp` often is): each
 jail holds its own isolation device, and the daemon refuses grants
 otherwise. Grants' machines outlive the daemon (see [Control](#control)), so
-startup adopts the ones its state files name and stops only the jails
-nothing names; revoke removes the grant directory.
+startup adopts machines with confirmed, compatible state and stops the
+others. A live allowlist grant whose saved policy differs from host
+configuration is reported lost. Revoke removes the grant directory.
 
 ### Install catalog images
 
@@ -1324,9 +1333,9 @@ keeps that cache, boot time and install size small. `default` is several
 gigabytes of toolchains most grants never touch; install it only for
 grants that genuinely need a multi-language environment.
 
-Disks baked before the per-grant workspace disk keep the old guest init:
-their `/workspace` stays in guest memory and doubles as `$HOME`. Reinstall
-(or `execenvctl upgrade`) to get the current guest init.
+An isolated host needs a catalog disk with a compatible baked-in guest
+helper. Upgrade reinstalls the installed catalog IDs from the target tag
+when their verified boot artifacts have changed.
 
 ```sh
 sudo execenvctl remove python   # does not touch the token
@@ -1336,9 +1345,9 @@ Until an id is installed, `Ensure` of that id is `ErrUnknownImage`.
 
 ### Drain the host
 
-`install`, `remove` and `upgrade` restart a running daemon, and the
-restarted daemon adopts every grant it held. To take a host out of service
-instead, drain it:
+`install` and `remove` restart a running daemon, which can adopt compatible
+isolated grants. An upgrade requires a drain because the new release may
+change the guest protocol or boot artifacts. To drain a host:
 
 ```sh
 sudo execenvctl drain --timeout 30m
@@ -1386,14 +1395,16 @@ entirely the application’s job.
 Install a newer `execenvctl` for the target tag, then:
 
 ```sh
+sudo execenvctl drain
 sudo execenvctl upgrade
 ```
 
-That replaces `execenv` and `execenvctl` from this binary’s tag, then
-reinstalls every catalog id already on the host so the guest agent
-matches, then restarts the daemon once. Live grants keep running: the
-upgraded daemon adopts them, and their machines keep the guest agent they
-started with until they end.
+Upgrade verifies both binaries and every installed catalog ID from the
+target tag before publishing replacements, then restarts the daemon. The
+daemon must have no live grants, including suspended grants, because a
+release can change the guest protocol or the boot artifacts needed for
+restore. A failed restart leaves an upgrade pending. Re-run upgrade to
+retry the restart.
 Token, TLS files, listen address, capacity, and allowlist stay.
 If an installed id is missing from the new index, upgrade fails before
 binaries move. When everything already matches: `upgraded=already current`.

@@ -2,12 +2,13 @@ package agent
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"io"
-	"sync"
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/sudosylabs/execenv"
 	guestv1 "github.com/sudosylabs/execenv/internal/gen/execenv/guest/v1"
@@ -22,10 +23,21 @@ func (c *Client) Start(ctx context.Context, spec execenv.ProcessSpec) (procs.Bac
 		return nil, execenv.Error("start", err)
 	}
 	cctx, cancel := c.call(ctx)
-	resp, err := c.agent.Spawn(cctx, connect.NewRequest(&guestv1.SpawnRequest{Spec: wire.ProcessSpecTo(spec)}))
+	req := &guestv1.SpawnRequest{Spec: wire.ProcessSpecTo(spec), Attempt: rand.Text()}
+	resp, err := c.agent.Spawn(cctx, connect.NewRequest(req))
 	cancel()
 	if err != nil {
-		return nil, c.failure("start", err)
+		switch connect.CodeOf(err) {
+		case connect.CodeCanceled, connect.CodeDeadlineExceeded, connect.CodeUnavailable, connect.CodeUnknown, connect.CodeInternal:
+			// Resolve on the link even if the original operation timed out.
+			// The guest either hands back the committed process or cancels it.
+			resolveCtx, stop := c.call(context.Background())
+			defer stop()
+			resp, _ = c.agent.Spawn(resolveCtx, connect.NewRequest(&guestv1.SpawnRequest{Spec: req.Spec, Attempt: req.Attempt, Resolve: true}))
+		}
+		if resp == nil {
+			return nil, c.failure("start", err)
+		}
 	}
 	var started time.Time
 	if t := resp.Msg.GetStarted(); t != nil {
@@ -69,11 +81,12 @@ func (c *Client) Adopt(gp GuestProcess) (procs.Backend, error) {
 
 // open streams tag's output from the offsets in from.
 func (c *Client) open(tag string, pid int, pty bool, started time.Time, from map[execenv.Stream]uint64) (procs.Backend, error) {
-	stream, err := c.agent.Output(c.ctx, connect.NewRequest(&guestv1.OutputRequest{Tag: tag, From: wire.OffsetsTo(from)}))
+	b := &guestBackend{client: c, tag: tag, pid: pid, started: started, done: make(chan struct{}), writers: map[execenv.Stream]*io.PipeWriter{}, readers: map[execenv.Stream]io.Reader{}}
+	stream, err := c.agent.Output(c.ctx, connect.NewRequest(&guestv1.OutputRequest{Process: b.ref(), From: wire.OffsetsTo(from)}))
 	if err != nil {
 		return nil, c.failure("output", err)
 	}
-	b := &guestBackend{client: c, tag: tag, pid: pid, started: started, stream: stream, done: make(chan struct{}), writers: map[execenv.Stream]*io.PipeWriter{}, readers: map[execenv.Stream]io.Reader{}}
+	b.stream = stream
 	names := []execenv.Stream{execenv.StreamStdout, execenv.StreamStderr}
 	if pty {
 		names = []execenv.Stream{execenv.StreamPTY}
@@ -98,10 +111,6 @@ type guestBackend struct {
 	exit    execenv.ExitStatus
 	started time.Time
 	ended   time.Time
-
-	feedMu sync.Mutex
-	feed   *connect.ClientStreamForClient[guestv1.FeedRequest, guestv1.FeedResponse]
-	closed bool
 }
 
 var _ procs.Backend = (*guestBackend)(nil)
@@ -143,45 +152,41 @@ func (b *guestBackend) receive() {
 
 func (b *guestBackend) Streams() map[execenv.Stream]io.Reader { return b.readers }
 
-func (b *guestBackend) Write(p []byte) (int, error) {
-	b.feedMu.Lock()
-	defer b.feedMu.Unlock()
-	if b.closed {
-		return 0, execenv.ErrClosed
-	}
-	if b.feed == nil {
-		feed := b.client.agent.Feed(b.client.ctx)
-		if err := feed.Send(&guestv1.FeedRequest{Part: &guestv1.FeedRequest_Tag{Tag: b.tag}}); err != nil {
-			_, _ = feed.CloseAndReceive()
-			return 0, execenv.ErrClosed
-		}
-		b.feed = feed
-	}
-	for rest := p; len(rest) > 0; {
-		n := min(len(rest), wire.ChunkSize)
-		if err := b.feed.Send(&guestv1.FeedRequest{Part: &guestv1.FeedRequest_Data{Data: rest[:n]}}); err != nil {
-			_, _ = b.feed.CloseAndReceive()
-			b.feed = nil
-			return len(p) - len(rest), execenv.ErrClosed
-		}
-		rest = rest[n:]
-	}
-	return len(p), nil
+func (b *guestBackend) ref() *guestv1.ProcessRef {
+	return &guestv1.ProcessRef{Tag: b.tag, Pid: int32(b.pid), Started: timestamppb.New(b.started)}
 }
 
-// CloseInput ends the feed, so every byte sent is written, then closes the
-// process's input.
-func (b *guestBackend) CloseInput() error {
-	b.feedMu.Lock()
-	b.closed = true
-	if b.feed != nil {
-		_, _ = b.feed.CloseAndReceive()
-		b.feed = nil
+func (b *guestBackend) WriteInput(ctx context.Context, offset uint64, data []byte) (uint64, error) {
+	ctx, cancel := b.client.call(ctx)
+	defer cancel()
+	ref := b.ref()
+	for len(data) > 0 {
+		n := min(len(data), wire.ChunkSize)
+		resp, err := b.client.agent.Feed(ctx, connect.NewRequest(&guestv1.FeedRequest{Process: ref, Offset: offset, Data: data[:n]}))
+		if err != nil {
+			return offset, b.client.failure("write_input", err)
+		}
+		next := resp.Msg.GetOffset()
+		if next < offset {
+			return offset, execenv.ErrUnavailable
+		}
+		if resp.Msg.GetClosed() {
+			return next, execenv.ErrClosed
+		}
+		if next-offset < uint64(n) {
+			return next, execenv.ErrUnavailable
+		}
+		data = data[min(uint64(len(data)), next-offset):]
+		offset = next
 	}
-	b.feedMu.Unlock()
+	return offset, nil
+}
+
+// CloseInput closes the process's input.
+func (b *guestBackend) CloseInput() error {
 	ctx, cancel := b.client.call(context.Background())
 	defer cancel()
-	_, err := b.client.agent.CloseFeed(ctx, connect.NewRequest(&guestv1.ProcessRef{Tag: b.tag}))
+	_, err := b.client.agent.CloseFeed(ctx, connect.NewRequest(b.ref()))
 	if errors.Is(b.client.failure("close_input", err), execenv.ErrClosed) {
 		return nil
 	}
@@ -191,14 +196,14 @@ func (b *guestBackend) CloseInput() error {
 func (b *guestBackend) Resize(ctx context.Context, w execenv.Window) error {
 	ctx, cancel := b.client.call(ctx)
 	defer cancel()
-	_, err := b.client.agent.ResizeProcess(ctx, connect.NewRequest(&guestv1.ResizeRequest{Tag: b.tag, Window: wire.WindowTo(w)}))
+	_, err := b.client.agent.ResizeProcess(ctx, connect.NewRequest(&guestv1.ResizeRequest{Process: b.ref(), Window: wire.WindowTo(w)}))
 	return b.client.failure("resize", err)
 }
 
 func (b *guestBackend) Screen(ctx context.Context) (execenv.Screen, error) {
 	ctx, cancel := b.client.call(ctx)
 	defer cancel()
-	resp, err := b.client.agent.ProcessScreen(ctx, connect.NewRequest(&guestv1.ProcessScreenRequest{Tag: b.tag}))
+	resp, err := b.client.agent.ProcessScreen(ctx, connect.NewRequest(&guestv1.ProcessScreenRequest{Process: b.ref()}))
 	if err != nil {
 		return execenv.Screen{}, b.client.failure("screen", err)
 	}
@@ -208,7 +213,7 @@ func (b *guestBackend) Screen(ctx context.Context) (execenv.Screen, error) {
 func (b *guestBackend) Signal(s execenv.Signal) error {
 	ctx, cancel := b.client.call(context.Background())
 	defer cancel()
-	_, err := b.client.agent.SignalProcess(ctx, connect.NewRequest(&guestv1.SignalRequest{Tag: b.tag, Signal: string(s)}))
+	_, err := b.client.agent.SignalProcess(ctx, connect.NewRequest(&guestv1.SignalRequest{Process: b.ref(), Signal: string(s)}))
 	// Only a response from the guest can confirm that the process exited.
 	// A local link hangup also uses ErrClosed and must remain retryable.
 	if errors.Is(wire.HostError("signal", err), execenv.ErrClosed) {

@@ -91,6 +91,13 @@ func runFiles(t *testing.T, factory Factory) {
 		if err != nil || stat.Size != 12 || stat.SHA256 == "" || stat.Dir {
 			t.Fatalf("Stat() = %+v, %v", stat, err)
 		}
+		wide := int64(1)<<32 | 1
+		if int64(int(wide)) == wide {
+			deep, err := env.List(ctx, "", int(wide), false)
+			if err != nil || len(deep) != 3 {
+				t.Fatalf("List with a large depth returned %d entries, %v", len(deep), err)
+			}
+		}
 		body, err := env.ReadFile(ctx, "a/b/note.txt", 7)
 		if err != nil {
 			t.Fatal(err)
@@ -129,6 +136,13 @@ func runFiles(t *testing.T, factory Factory) {
 		env, fence := occupyRunning(t, host, "archives")
 		ctx := t.Context()
 		raw, digest := seedArchive(t)
+		broken := io.MultiReader(bytes.NewReader(raw), failingReader{})
+		if err := env.Import(ctx, fence, "", broken); err == nil {
+			t.Fatal("Import() succeeded after the source failed")
+		}
+		if _, err := env.Stat(ctx, "stale.txt", false); !errors.Is(err, execenv.ErrNotFound) {
+			t.Fatalf("Stat() after interrupted Import = %v, want ErrNotFound", err)
+		}
 		if err := env.Import(ctx, fence, "", bytes.NewReader(raw)); err != nil {
 			t.Fatalf("Import() = %v", err)
 		}

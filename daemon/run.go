@@ -14,7 +14,7 @@ import (
 	"github.com/sudosylabs/execenv/remote"
 )
 
-// Run constructs the configured adapter, listens, then serves the existing
+// Run binds its listener, constructs the configured adapter, then serves the existing
 // remote contract. It does not invent a second grant protocol. The process
 // stays inert (no grants) until Listen succeeds. With an OperatorSocket it
 // also answers the local operator's drain requests there (see
@@ -23,11 +23,12 @@ func Run(ctx context.Context, cfg Config, logger *slog.Logger) error {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
 	}
-	inner, err := newAdapter(cfg)
+	ln, err := netListen(cfg.Listen)
 	if err != nil {
 		return err
 	}
-	ln, err := netListen(cfg.Listen)
+	defer ln.Close()
+	inner, err := newAdapter(cfg)
 	if err != nil {
 		return err
 	}

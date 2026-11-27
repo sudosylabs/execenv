@@ -21,6 +21,12 @@ type grantState struct {
 	Epoch   string                 `json:"epoch"`
 	Receipt execenv.ControlReceipt `json:"receipt"`
 	Started time.Time              `json:"started"`
+	// BootImage retains the exact artifacts a running or saved machine
+	// started with, even if the catalog ID later points at another release.
+	BootImage Image `json:"boot_image,omitzero"`
+	// LimitsDirty says a device update may have partially applied. The
+	// recorded Spec still holds the last confirmed limits.
+	LimitsDirty bool `json:"limits_dirty,omitempty"`
 	// Paused says the machine is stopped under a confirmed freeze.
 	Paused  bool    `json:"paused,omitempty"`
 	Machine machine `json:"machine"`
@@ -115,9 +121,27 @@ func saveState(workDir string, s grantState) error {
 		_ = os.Remove(tmp.Name())
 		return err
 	}
-	if dir, err := os.Open(filepath.Dir(path)); err == nil {
-		_ = dir.Sync()
-		_ = dir.Close()
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
+}
+
+// clearLostGrant removes grant data while keeping the durable loss receipt.
+func clearLostGrant(workDir string, id execenv.ID) error {
+	dir := filepath.Dir(statePath(workDir, id))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.Name() != stateName {
+			if err := os.RemoveAll(filepath.Join(dir, entry.Name())); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

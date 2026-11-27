@@ -226,3 +226,19 @@ func TestRestartFindsADeadMachineLost(t *testing.T) {
 	}
 	_ = h2.Revoke(context.Background(), "gone")
 }
+
+func TestRestartKeepsTheOriginalBootArtifacts(t *testing.T) {
+	launch := &recordingLauncher{}
+	h := testHost(t, func() error { return nil }, launch)
+	spec := execenv.Spec{ID: "kept", Image: "default"}
+	if _, err := h.Ensure(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	original := h.grants[spec.ID].image
+	next := writeCatalogImage(t, t.TempDir(), "default", "updated")
+	h.images[spec.Image] = &imageRecord{image: next}
+	recovered := restart(t, h)
+	if got := recovered.grants[spec.ID].image; got != original {
+		t.Fatalf("recovery attached different boot artifacts to the live grant: %v", got.ID)
+	}
+}

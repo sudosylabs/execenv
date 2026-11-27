@@ -34,8 +34,8 @@ service AgentService {
   // with its stream and offset, then its exit. It opens with an empty event
   // as soon as the guest has the process.
   rpc Output(OutputRequest) returns (stream OutputResponse);
-  // Feed carries input for one process. The first message names it.
-  rpc Feed(stream FeedRequest) returns (FeedResponse);
+  // Feed acknowledges the input offset after the process takes the bytes.
+  rpc Feed(FeedRequest) returns (FeedResponse);
   rpc CloseFeed(ProcessRef) returns (Empty);
   rpc ResizeProcess(ResizeRequest) returns (Empty);
   rpc SignalProcess(SignalRequest) returns (Empty);
@@ -89,6 +89,9 @@ message HelloResponse {
 
 message SpawnRequest {
   execenv.v1.ProcessSpec spec = 1;
+  string attempt = 2;
+  // Resolve returns a committed spawn or cancels this uncommitted attempt.
+  bool resolve = 3;
 }
 
 message SpawnResponse {
@@ -98,6 +101,8 @@ message SpawnResponse {
 
 message ProcessRef {
   string tag = 1;
+  int32 pid = 2;
+  google.protobuf.Timestamp started = 3;
 }
 
 message ListProcessesRequest {}
@@ -115,7 +120,7 @@ message GuestProcess {
 }
 
 message OutputRequest {
-  string tag = 1;
+  ProcessRef process = 1;
   // from is where each stream starts; a stream not named starts at the
   // oldest byte held.
   map<string, uint64> from = 2;
@@ -137,26 +142,30 @@ message Chunk {
 }
 
 message FeedRequest {
-  oneof part {
-    string tag = 1;
-    bytes data = 2;
-  }
+  reserved 1, 2;
+  ProcessRef process = 3;
+  uint64 offset = 4;
+  bytes data = 5;
 }
 
-message FeedResponse {}
+message FeedResponse {
+  uint64 offset = 1;
+  bool closed = 2;
+}
 
 message ResizeRequest {
-  string tag = 1;
+  ProcessRef process = 1;
   execenv.v1.Window window = 2;
 }
 
 message ProcessScreenRequest {
-  string tag = 1;
+  ProcessRef process = 1;
 }
 
 message SignalRequest {
-  string tag = 1;
+  reserved 1;
   string signal = 2;
+  ProcessRef process = 3;
 }
 
 message FreezeRequest {}

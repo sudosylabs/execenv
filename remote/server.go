@@ -22,7 +22,7 @@ import (
 )
 
 // protocol is the major version of the schema in proto/execenv/v1.
-const protocol = 2
+const protocol = 3
 
 // Features this host offers. A client names the ones it needs in Hello.
 const (
@@ -62,10 +62,23 @@ func Serve(ctx context.Context, ln net.Listener, inner execenv.Host, cfg ServerC
 	if err := validateServer(cfg); err != nil {
 		return err
 	}
-	if inner == nil {
+	if inner == nil || ln == nil {
 		return execenv.Error("serve", execenv.ErrInvalid)
 	}
-	h := &server{inner: inner, cfg: cfg, envs: make(map[execenv.ID]execenv.Env)}
+	switch cfg.Security {
+	case SecurityTLS:
+		if err := execenv.RequireIsolated(inner); err != nil {
+			return err
+		}
+	case SecurityInsecureLocal:
+		addr, ok := ln.Addr().(*net.TCPAddr)
+		if !ok || !addr.IP.IsLoopback() {
+			return execenv.Error("serve", execenv.ErrInvalid)
+		}
+	}
+	done := make(chan struct{})
+	defer close(done)
+	h := &server{inner: inner, cfg: cfg, envs: make(map[execenv.ID]execenv.Env), done: done}
 	mux := http.NewServeMux()
 	options := connect.WithInterceptors(timeoutInterceptor{operationTimeoutOrDefault(cfg.OperationTimeout)})
 	mux.Handle(execenvv1connect.NewHostServiceHandler(h, options))
@@ -95,8 +108,6 @@ func Serve(ctx context.Context, ln net.Listener, inner execenv.Host, cfg ServerC
 		},
 		ErrorLog: discardLog,
 	}
-	done := make(chan struct{})
-	defer close(done)
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -119,10 +130,79 @@ func Serve(ctx context.Context, ln net.Listener, inner execenv.Host, cfg ServerC
 type server struct {
 	inner execenv.Host
 	cfg   ServerConfig
+	done  <-chan struct{}
 
 	mu sync.Mutex
 	// envs holds the environment each grant was last ensured as.
 	envs map[execenv.ID]execenv.Env
+	// receipts keeps only the terminal control metadata after retirement.
+	receipts map[execenv.ID]execenv.ControlReceipt
+	// lifecycle serializes the adapter call and map publication for one ID.
+	lifecycle map[execenv.ID]*grantOperation
+}
+
+type grantOperation struct {
+	gate         chan struct{}
+	refs         int
+	cancelEnsure context.CancelFunc
+	revokes      int
+}
+
+func (h *server) lockGrant(ctx context.Context, id execenv.ID, ensure context.CancelFunc, revoke bool) (func(), error) {
+	h.mu.Lock()
+	if h.lifecycle == nil {
+		h.lifecycle = make(map[execenv.ID]*grantOperation)
+	}
+	op := h.lifecycle[id]
+	if op == nil {
+		op = &grantOperation{gate: make(chan struct{}, 1)}
+		h.lifecycle[id] = op
+	}
+	op.refs++
+	if revoke {
+		op.revokes++
+		if op.cancelEnsure != nil {
+			op.cancelEnsure()
+		}
+	}
+	h.mu.Unlock()
+	drop := func(held bool) {
+		h.mu.Lock()
+		if held && ensure != nil {
+			op.cancelEnsure = nil
+		}
+		if revoke {
+			op.revokes--
+		}
+		op.refs--
+		if op.refs == 0 {
+			delete(h.lifecycle, id)
+		}
+		h.mu.Unlock()
+	}
+	select {
+	case <-ctx.Done():
+		drop(false)
+		return nil, ctx.Err()
+	case op.gate <- struct{}{}:
+		h.mu.Lock()
+		if ensure != nil {
+			op.cancelEnsure = ensure
+			if op.revokes > 0 {
+				ensure()
+			}
+		}
+		h.mu.Unlock()
+		unlock := func() {
+			drop(true)
+			<-op.gate
+		}
+		if err := ctx.Err(); err != nil {
+			unlock()
+			return nil, err
+		}
+		return unlock, nil
+	}
 }
 
 // authenticate admits a request that carries the token or a verified
@@ -197,7 +277,44 @@ func (h *server) fenced(fence *execenvv1.Fence) (execenv.Env, execenv.Projection
 func (h *server) forget(id execenv.ID) {
 	h.mu.Lock()
 	delete(h.envs, id)
+	delete(h.receipts, id)
 	h.mu.Unlock()
+}
+
+func (h *server) remember(env execenv.Env) {
+	id, epoch := env.ID(), env.Epoch()
+	h.mu.Lock()
+	old := h.envs[id]
+	h.envs[id] = env
+	delete(h.receipts, id)
+	h.mu.Unlock()
+	if old != nil && old.Epoch() == epoch {
+		return
+	}
+	if grant, ok := env.(interface{ Retired() <-chan struct{} }); ok {
+		if retired := grant.Retired(); retired != nil {
+			go func() {
+				select {
+				case <-h.done:
+				case <-retired:
+					ctx, cancel := context.WithTimeout(context.Background(), operationTimeoutOrDefault(h.cfg.OperationTimeout))
+					receipt, err := env.ControlStatus(ctx)
+					cancel()
+					h.mu.Lock()
+					if current := h.envs[id]; current != nil && current.Epoch() == epoch {
+						if err == nil && receipt.Confirmed && receipt.State == execenv.ControlRevoked {
+							if h.receipts == nil {
+								h.receipts = make(map[execenv.ID]execenv.ControlReceipt)
+							}
+							h.receipts[id] = receipt
+						}
+						delete(h.envs, id)
+					}
+					h.mu.Unlock()
+				}
+			}()
+		}
+	}
 }
 
 // HostService
@@ -235,23 +352,47 @@ func (h *server) GetReport(ctx context.Context, _ *connect.Request[execenvv1.Get
 
 func (h *server) EnsureGrant(ctx context.Context, req *connect.Request[execenvv1.EnsureGrantRequest]) (*connect.Response[execenvv1.EnsureGrantResponse], error) {
 	spec, ok := wire.SpecFrom(req.Msg.GetSpec())
-	if !ok {
+	if !ok || execenv.ValidateSpec(spec) != nil {
 		return nil, wire.Error(execenv.ErrInvalid)
 	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	unlock, err := h.lockGrant(ctx, spec.ID, cancel, false)
+	if err != nil {
+		return nil, wire.Error(err)
+	}
+	defer unlock()
 	env, err := h.inner.Ensure(ctx, spec)
 	if err != nil {
 		return nil, wire.Error(err)
 	}
-	h.mu.Lock()
-	h.envs[spec.ID] = env
-	h.mu.Unlock()
+	h.remember(env)
 	return connect.NewResponse(&execenvv1.EnsureGrantResponse{Epoch: env.Epoch()}), nil
 }
 
 func (h *server) RevokeGrant(ctx context.Context, req *connect.Request[execenvv1.RevokeGrantRequest]) (*connect.Response[execenvv1.RevokeGrantResponse], error) {
 	id := execenv.ID(req.Msg.GetGrantId())
+	if err := execenv.ValidateGrantID(id); err != nil {
+		return nil, wire.Error(err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, wire.Error(err)
+	}
+	unlock, err := h.lockGrant(ctx, id, nil, req.Msg.GetEpoch() == "")
+	if err != nil {
+		return nil, wire.Error(err)
+	}
+	defer unlock()
 	if epoch := req.Msg.GetEpoch(); epoch != "" {
 		env, err := h.env(id, epoch)
+		if errors.Is(err, execenv.ErrRevoked) || errors.Is(err, execenv.ErrConflict) {
+			h.mu.Lock()
+			if receipt, ok := h.receipts[id]; ok && receipt.Fence.EnvironmentEpoch == epoch {
+				delete(h.receipts, id)
+			}
+			h.mu.Unlock()
+			return connect.NewResponse(&execenvv1.RevokeGrantResponse{}), nil
+		}
 		if err != nil {
 			return nil, wire.Error(err)
 		}
@@ -267,12 +408,25 @@ func (h *server) RevokeGrant(ctx context.Context, req *connect.Request[execenvv1
 
 // ControlService
 
+func (h *server) controlReceipt(id execenv.ID, epoch string) (execenv.ControlReceipt, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	receipt, ok := h.receipts[id]
+	return receipt, ok && receipt.Fence.EnvironmentEpoch == epoch
+}
+
 func (h *server) Control(ctx context.Context, req *connect.Request[execenvv1.ControlRequest]) (*connect.Response[execenvv1.ControlReceipt], error) {
-	env, fence, err := h.fenced(req.Msg.GetFence())
+	fence := wire.FenceFrom(req.Msg.GetFence())
+	request := execenv.ControlRequest{Fence: fence, State: wire.ControlStateFrom(req.Msg.GetState())}
+	env, err := h.env(fence.ExecutionGrantID, fence.EnvironmentEpoch)
 	if err != nil {
+		if receipt, ok := h.controlReceipt(fence.ExecutionGrantID, fence.EnvironmentEpoch); ok &&
+			receipt.Fence == fence && receipt.State == request.State {
+			return connect.NewResponse(wire.ReceiptTo(receipt)), nil
+		}
 		return nil, wire.Error(err)
 	}
-	receipt, err := env.Control(ctx, execenv.ControlRequest{Fence: fence, State: wire.ControlStateFrom(req.Msg.GetState())})
+	receipt, err := env.Control(ctx, request)
 	if err != nil {
 		return nil, wire.Error(err)
 	}
@@ -280,8 +434,12 @@ func (h *server) Control(ctx context.Context, req *connect.Request[execenvv1.Con
 }
 
 func (h *server) ControlStatus(ctx context.Context, req *connect.Request[execenvv1.ControlStatusRequest]) (*connect.Response[execenvv1.ControlReceipt], error) {
-	env, err := h.env(execenv.ID(req.Msg.GetGrantId()), req.Msg.GetEpoch())
+	id, epoch := execenv.ID(req.Msg.GetGrantId()), req.Msg.GetEpoch()
+	env, err := h.env(id, epoch)
 	if err != nil {
+		if receipt, ok := h.controlReceipt(id, epoch); ok {
+			return connect.NewResponse(wire.ReceiptTo(receipt)), nil
+		}
 		return nil, wire.Error(err)
 	}
 	receipt, err := env.ControlStatus(ctx)

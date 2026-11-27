@@ -2,6 +2,7 @@ package isolated
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 
@@ -29,7 +30,7 @@ func (e *environment) suspend(ctx context.Context, done execenv.ControlReceipt) 
 	suspended := e.suspended
 	e.mu.Unlock()
 	if suspended {
-		return nil
+		return e.finishSuspend(ctx, done)
 	}
 	// Freezing a frozen grant gates nothing new: its guest was quiesced
 	// and its machine paused when it froze.
@@ -60,7 +61,11 @@ func (e *environment) suspend(ctx context.Context, done execenv.ControlReceipt) 
 		if client != nil {
 			select {
 			case <-client.Done():
-				go e.host.lose(e)
+				go e.host.lose(e, func() bool {
+					e.mu.Lock()
+					defer e.mu.Unlock()
+					return e.client == client
+				})
 			default:
 			}
 		}
@@ -74,22 +79,37 @@ func (e *environment) suspend(ctx context.Context, done execenv.ControlReceipt) 
 	e.suspendedDeadlines = deadlines
 	e.procs = procs.New(e.startProcess)
 	e.procs.Freeze()
-	e.inst, e.client = nil, nil
-	e.suspended, e.adoptPending, e.paused = true, true, false
+	e.client = nil
+	e.suspended, e.adoptPending = true, true
 	e.mu.Unlock()
 	if client != nil {
 		_ = client.Close()
 	}
 	old.End(execenv.ErrFrozen)
-	e.persistReceipt(done)
+	return e.finishSuspend(ctx, done)
+}
+
+func (e *environment) finishSuspend(ctx context.Context, done execenv.ControlReceipt) error {
+	e.mu.Lock()
+	inst := e.inst
+	e.mu.Unlock()
+	if inst == nil {
+		return nil
+	}
+	if err := e.persistReceipt(done); err != nil {
+		return err
+	}
+	return e.stopSuspendedMachine(ctx, inst)
+}
+
+func (e *environment) stopSuspendedMachine(ctx context.Context, inst instance) error {
 	if err := inst.Stop(ctx); err != nil {
 		return err
 	}
-	e.host.pool.Release(e.id)
-	_ = e.host.pool.Reserve(e.id, execenv.Resources{DiskBytes: e.spec.Resources.DiskBytes})
-	// The caller holds the control lock; it records the state once the
-	// suspend is done.
-	return nil
+	e.mu.Lock()
+	e.inst, e.paused = nil, false
+	e.mu.Unlock()
+	return e.host.pool.Replace(e.id, execenv.Resources{DiskBytes: e.spec.Resources.DiskBytes})
 }
 
 // resume restores a suspended grant's machine where it stopped. Until the
@@ -97,15 +117,19 @@ func (e *environment) suspend(ctx context.Context, done execenv.ControlReceipt) 
 // thaw fails with ErrCapacity.
 func (e *environment) resume(ctx context.Context) error {
 	h := e.host
-	h.pool.Release(e.id)
-	if err := h.pool.Reserve(e.id, e.spec.Resources); err != nil {
-		_ = h.pool.Reserve(e.id, execenv.Resources{DiskBytes: e.spec.Resources.DiskBytes})
+	e.mu.Lock()
+	previous := e.inst
+	e.mu.Unlock()
+	if previous != nil {
+		if err := e.stopSuspendedMachine(ctx, previous); err != nil {
+			return err
+		}
+	}
+	if err := h.pool.Replace(e.id, e.spec.Resources); err != nil {
 		return err
 	}
 	fail := func(err error) error {
-		h.pool.Release(e.id)
-		_ = h.pool.Reserve(e.id, execenv.Resources{DiskBytes: e.spec.Resources.DiskBytes})
-		return err
+		return errors.Join(err, h.pool.Replace(e.id, execenv.Resources{DiskBytes: e.spec.Resources.DiskBytes}))
 	}
 	var att *netAttach
 	if e.spec.Network == execenv.NetworkAllowlist {
@@ -128,6 +152,15 @@ func (e *environment) resume(ctx context.Context) error {
 		Restore:   &restoreFrom{Dir: e.suspendDir(), Own: true},
 	})
 	if err != nil {
+		if inst != nil {
+			e.mu.Lock()
+			e.inst = inst
+			e.mu.Unlock()
+			if stopErr := e.stopSuspendedMachine(ctx, inst); stopErr != nil {
+				return errors.Join(err, stopErr)
+			}
+			return err
+		}
 		if att != nil {
 			att.close()
 		}
@@ -138,7 +171,7 @@ func (e *environment) resume(ctx context.Context) error {
 	e.mu.Unlock()
 	go e.watch()
 	if err := e.dial(ctx); err != nil {
-		return err
+		return e.recontainThaw(inst, err)
 	}
 	e.mu.Lock()
 	client := e.client
@@ -146,15 +179,16 @@ func (e *environment) resume(ctx context.Context) error {
 	go e.watchLink(client)
 	// The saved guest was quiesced before it was saved.
 	if err := client.Reopen(ctx); err != nil {
-		return err
+		return e.recontainThaw(inst, err)
 	}
 	if err := e.adoptProcesses(ctx, client); err != nil {
-		return err
+		return e.recontainThaw(inst, err)
 	}
 	e.manager().Thaw()
 	_ = os.RemoveAll(e.suspendDir())
 	e.mu.Lock()
 	e.adoptPending, e.frozen = false, false
 	e.mu.Unlock()
+	e.timer.ArmIdle(e.spec.IdleTimeout)
 	return nil
 }

@@ -57,6 +57,42 @@ func journalFixture(t *testing.T) (*Journal, execenv.ProjectionFence, *testWrite
 	}
 	return j, fence, barrier
 }
+
+func TestLaggedJournalRetainsPagesAndCommittedReceipts(t *testing.T) {
+	j, fence, _ := journalFixture(t)
+	if err := os.WriteFile(filepath.Join(j.home, "guest"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	initial, err := j.Observe(t.Context(), fence, 0, 1)
+	if err != nil || len(initial.Observations) != 1 {
+		t.Fatalf("initial page: %+v, %v", initial, err)
+	}
+	ref, err := testUpload(t, j, fence, "next")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := execenv.ProjectionApply{
+		Fence: fence, MutationID: "next", FromWorkspaceCursor: 10, ThroughWorkspaceCursor: 11, ExpectedHostCursor: initial.HostCursor,
+		Mutations: []execenv.ProjectionMutation{{JournalCursor: 11, EntryID: "file", Kind: execenv.ProjectionFile,
+			Operation: execenv.ProjectionWrite, Path: "dir/file", ExpectedContentVersion: "v1", ResultingContentVersion: "v2", Content: &ref}},
+	}
+	applied, err := j.Apply(t.Context(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.log.Lagged()
+	got, err := j.Observe(t.Context(), fence, 0, 1)
+	if err != nil || !reflect.DeepEqual(got, initial) {
+		t.Fatalf("retained page: %+v, %v", got, err)
+	}
+	if _, err := j.Observe(t.Context(), fence, 1, 1); !errors.Is(err, execenv.ErrLagged) {
+		t.Fatalf("end of retained page: %v", err)
+	}
+	replayed, err := j.Apply(t.Context(), req)
+	if err != nil || !reflect.DeepEqual(replayed, applied) {
+		t.Fatalf("receipt replay: %+v, %v", replayed, err)
+	}
+}
 func TestDiskJournalPreservesUnrelatedGuestWriteAndExactReplay(t *testing.T) {
 	j, fence, barrier := journalFixture(t)
 	if err := os.WriteFile(filepath.Join(j.home, "unrelated"), []byte("guest"), 0600); err != nil {

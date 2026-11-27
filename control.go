@@ -39,7 +39,7 @@ type ControlReceipt struct {
 // ValidateControl rejects malformed requests, including integers that cannot
 // be represented exactly by interoperating JSON clients.
 func ValidateControl(request ControlRequest) error {
-	if validateName(string(request.Fence.ExecutionGrantID)) != nil || validateName(request.Fence.EnvironmentEpoch) != nil || request.Fence.FenceRevision == 0 || request.Fence.FenceRevision > 1<<53-1 {
+	if ValidateGrantID(request.Fence.ExecutionGrantID) != nil || validateName(request.Fence.EnvironmentEpoch) != nil || request.Fence.FenceRevision == 0 || request.Fence.FenceRevision > 1<<53-1 {
 		return ErrInvalid
 	}
 	switch request.State {

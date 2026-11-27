@@ -78,7 +78,16 @@ func (p *shellProc) Streams() map[execenv.Stream]io.Reader {
 	return map[execenv.Stream]io.Reader{execenv.StreamStdout: p.sh, execenv.StreamStderr: p.stderr}
 }
 
-func (p *shellProc) Write(b []byte) (int, error) { return p.sh.Write(b) }
+func (p *shellProc) WriteInput(ctx context.Context, offset uint64, data []byte) (uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return offset, err
+	}
+	n, err := p.sh.Write(data)
+	if err != nil {
+		err = execenv.ErrClosed
+	}
+	return offset + uint64(n), err
+}
 
 func (p *shellProc) CloseInput() error {
 	if p.sh.terminal {

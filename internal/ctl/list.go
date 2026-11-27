@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/sudosylabs/execenv/daemon"
@@ -75,13 +76,24 @@ func joinIDs(ids []string) string {
 }
 
 // Remove deletes one catalog id from this host. Other ids stay. Removing
-// an id that is not installed is success. The shared kernel is kept if
-// another image still names it.
+// an id that is not installed is success. Shared files stay while another
+// image still references them.
 func Remove(opts Options, id string, stdout io.Writer) error {
 	opts = opts.resolved()
 	if id == "" {
 		return wrap("remove", fmt.Errorf("missing id"))
 	}
+	if _, err := os.Stat(opts.Sysconf); errors.Is(err, os.ErrNotExist) {
+		if stdout != nil {
+			fmt.Fprintf(stdout, "removed=%s\n", id)
+		}
+		return nil
+	}
+	lock, err := opts.lockConfig()
+	if err != nil {
+		return wrap("remove", fmt.Errorf("lock host configuration: %w", err))
+	}
+	defer lock.Close()
 	doc, err := loadHost(opts.configPath())
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -105,14 +117,12 @@ func Remove(opts Options, id string, stdout io.Writer) error {
 		kept = append(kept, img)
 	}
 	if dropped != nil {
-		// A live grant runs from the image's disks, so it is never removed
-		// from under one; and removing a disk restarts the daemon.
-		if reply, err := opts.operate(daemon.OperatorStatus); err == nil && imageInUse(reply, id) {
-			return wrap("remove", fmt.Errorf("%w: live grants were started from %s; revoke them first", errImageInUse, id))
-		}
-		if err := opts.guardRestart(); err != nil {
+		finish, err := opts.guardRemoval(id)
+		if err != nil {
 			return wrap("remove", err)
 		}
+		defer finish()
+		original := doc
 		doc.Images = kept
 		if err := daemon.Save(opts.configPath(), doc); err != nil {
 			return err
@@ -124,22 +134,58 @@ func Remove(opts Options, id string, stdout io.Writer) error {
 		if again.Token != token {
 			return wrap("remove", fmt.Errorf("host token changed"))
 		}
-		if err := removeFile(dropped.Rootfs); err != nil {
-			return err
-		}
-		if !kernelStillUsed(kept, dropped.Kernel) {
-			if err := removeFile(dropped.Kernel); err != nil {
-				return err
-			}
-		}
 		if err := opts.reloadUnit(); err != nil {
-			return wrap("remove", fmt.Errorf("%s is out of host config but the daemon was not restarted: %w", id, err))
+			restoreErr := daemon.Save(opts.configPath(), original)
+			return wrap("remove", errors.Join(fmt.Errorf("restart after removing %s: %w", id, err), restoreErr))
+		}
+		for _, name := range []string{dropped.Rootfs, dropped.Kernel} {
+			if !imageFileInUse(kept, name) {
+				if err := removeFile(name); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	if stdout != nil {
 		fmt.Fprintf(stdout, "removed=%s\n", id)
 	}
 	return nil
+}
+
+// guardRemoval holds admission closed on a durable daemon while its
+// configuration is replaced. Existing grants keep using their own images.
+func (o Options) guardRemoval(id string) (func(), error) {
+	done := func() {}
+	reply, err := o.operate(daemon.OperatorStatus)
+	if !o.Force {
+		if verdict := restartVerdict(o.unitActive(), reply, err); verdict != nil {
+			return nil, verdict
+		}
+		if err != nil {
+			if _, offlineErr := o.checkUpgrade(false); offlineErr != nil {
+				return nil, offlineErr
+			}
+		}
+	}
+	if err != nil || !reply.Durable {
+		return done, nil
+	}
+	if imageInUse(reply, id) {
+		return nil, fmt.Errorf("%w: live grants were started from %s; revoke them first", errImageInUse, id)
+	}
+	if reply.State == daemon.DrainServing {
+		reply, err = o.operate(daemon.OperatorDrain)
+		done = func() { _, _ = o.operate(daemon.OperatorUndrain) }
+		if err != nil {
+			done()
+			return nil, err
+		}
+		if imageInUse(reply, id) {
+			done()
+			return nil, fmt.Errorf("%w: live grants were started from %s; revoke them first", errImageInUse, id)
+		}
+	}
+	return done, nil
 }
 
 func removeFile(path string) error {
@@ -152,10 +198,16 @@ func removeFile(path string) error {
 	return nil
 }
 
-func kernelStillUsed(images []daemon.Image, kernel string) bool {
+func imageFileInUse(images []daemon.Image, name string) bool {
+	info, err := os.Stat(name)
 	for _, img := range images {
-		if img.Kernel == kernel {
-			return true
+		for _, current := range []string{img.Kernel, img.Rootfs} {
+			if filepath.Clean(current) == filepath.Clean(name) {
+				return true
+			}
+			if candidate, statErr := os.Stat(current); err == nil && statErr == nil && os.SameFile(info, candidate) {
+				return true
+			}
 		}
 	}
 	return false

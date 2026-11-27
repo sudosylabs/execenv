@@ -1,9 +1,8 @@
 // Package capacity reserves a host's CPU, memory and disk for its grants.
 //
-// A grant reserves its whole Resources from the moment it starts until it is
-// released. A grant that does not fit is refused at once with the resource
-// that is short; nothing waits. Totals are what the operator configured:
-// CPU already includes any overcommit, memory never has any.
+// A grant starts with its full reservation and keeps its disk while
+// suspended. A reservation that does not fit is refused at once. CPU
+// totals include the operator's overcommit. Memory is never overcommitted.
 package capacity
 
 import (
@@ -61,6 +60,21 @@ func (p *Pool) Reserve(id execenv.ID, r execenv.Resources) error {
 	if _, ok := p.held[id]; ok {
 		return execenv.ErrConflict
 	}
+	return p.replaceLocked(id, execenv.Resources{}, r)
+}
+
+// Replace changes a reservation atomically. A refusal leaves it intact.
+func (p *Pool) Replace(id execenv.ID, r execenv.Resources) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	old, ok := p.held[id]
+	if !ok {
+		return execenv.ErrNotFound
+	}
+	return p.replaceLocked(id, old, r)
+}
+
+func (p *Pool) replaceLocked(id execenv.ID, old, r execenv.Resources) error {
 	free := p.freeLocked()
 	for _, c := range []struct {
 		resource  execenv.Resource
@@ -68,18 +82,18 @@ func (p *Pool) Reserve(id execenv.ID, r execenv.Resources) error {
 		free      int64
 		max       int64
 	}{
-		{execenv.ResourceCPU, r.CPUMillis, free.CPUMillis, p.max.CPUMillis},
-		{execenv.ResourceMemory, r.MemoryBytes, free.MemoryBytes, p.max.MemoryBytes},
-		{execenv.ResourceDisk, r.DiskBytes, free.DiskBytes, p.max.DiskBytes},
+		{execenv.ResourceCPU, r.CPUMillis, free.CPUMillis + old.CPUMillis, p.max.CPUMillis},
+		{execenv.ResourceMemory, r.MemoryBytes, free.MemoryBytes + old.MemoryBytes, p.max.MemoryBytes},
+		{execenv.ResourceDisk, r.DiskBytes, free.DiskBytes + old.DiskBytes, p.max.DiskBytes},
 	} {
 		if c.requested > c.max || c.requested > c.free {
 			return &execenv.CapacityError{Resource: c.resource, Requested: c.requested, Free: min(c.free, c.max)}
 		}
 	}
 	p.held[id] = r
-	p.used.CPUMillis += r.CPUMillis
-	p.used.MemoryBytes += r.MemoryBytes
-	p.used.DiskBytes += r.DiskBytes
+	p.used.CPUMillis += r.CPUMillis - old.CPUMillis
+	p.used.MemoryBytes += r.MemoryBytes - old.MemoryBytes
+	p.used.DiskBytes += r.DiskBytes - old.DiskBytes
 	return nil
 }
 

@@ -193,7 +193,7 @@ func TestDeadlineThawGatesInputUntilDelivery(t *testing.T) {
 		go func() { m.Thaw(); close(thawed) }()
 		synctest.Wait()
 		expectDeadlineSignal(t, p, execenv.SignalTerminate)
-		if _, err := m.WriteInput("p", 0, []byte("blocked")); !errors.Is(err, execenv.ErrFrozen) {
+		if _, err := m.WriteInput(t.Context(), "p", 0, []byte("blocked")); !errors.Is(err, execenv.ErrFrozen) {
 			t.Fatalf("input during thaw = %v", err)
 		}
 		a, err := m.Attach("p", nil)
@@ -209,7 +209,7 @@ func TestDeadlineThawGatesInputUntilDelivery(t *testing.T) {
 		}
 		release()
 		<-thawed
-		if n, err := m.WriteInput("p", 0, []byte("ready")); err != nil || n != 5 {
+		if n, err := m.WriteInput(t.Context(), "p", 0, []byte("ready")); err != nil || n != 5 {
 			t.Fatalf("input after thaw = %d, %v", n, err)
 		}
 	})
@@ -236,7 +236,7 @@ func TestDeadlineRetriesFailedKillWhileRunning(t *testing.T) {
 		time.Sleep(killDelay)
 		m.Thaw()
 		expectDeadlineSignal(t, p, execenv.SignalKill)
-		if _, err := m.WriteInput("p", 0, []byte("ready")); err != nil {
+		if _, err := m.WriteInput(t.Context(), "p", 0, []byte("ready")); err != nil {
 			t.Fatalf("input after first KILL attempt = %v", err)
 		}
 		time.Sleep(deadlineRetry)
@@ -288,12 +288,12 @@ func TestDeadlineThawGateExpiresWhileSignalIsBlocked(t *testing.T) {
 		go func() { m.Thaw(); close(thawed) }()
 		synctest.Wait()
 		expectDeadlineSignal(t, p, execenv.SignalTerminate)
-		if _, err := m.WriteInput("p", 0, []byte("blocked")); !errors.Is(err, execenv.ErrFrozen) {
+		if _, err := m.WriteInput(t.Context(), "p", 0, []byte("blocked")); !errors.Is(err, execenv.ErrFrozen) {
 			t.Fatalf("input while first attempt pending = %v", err)
 		}
 		time.Sleep(2 * time.Second)
 		<-thawed
-		if _, err := m.WriteInput("p", 0, []byte("ready")); err != nil {
+		if _, err := m.WriteInput(t.Context(), "p", 0, []byte("ready")); err != nil {
 			t.Fatalf("input after thaw gate expired = %v", err)
 		}
 		release()

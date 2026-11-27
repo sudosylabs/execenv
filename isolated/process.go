@@ -139,10 +139,13 @@ func (l *processLauncher) Start(ctx context.Context, req startRequest) (instance
 	if err := os.MkdirAll(req.TreeDir, 0o700); err != nil {
 		return nil, err
 	}
-	var release []func() error
+	p := &processInstance{}
+	if req.Attach != nil {
+		p.release = append(p.release, func() error { req.Attach.close(); return nil })
+	}
 	fail := func(err error) (instance, error) {
-		for i := len(release) - 1; i >= 0; i-- {
-			_ = release[i]()
+		if cleanupErr := p.releaseResources(); cleanupErr != nil {
+			return p, errors.Join(err, cleanupErr)
 		}
 		return nil, err
 	}
@@ -150,7 +153,7 @@ func (l *processLauncher) Start(ctx context.Context, req startRequest) (instance
 	if err != nil {
 		return nil, err
 	}
-	release = append(release, func() error { l.uids.release(uid); return nil })
+	p.release = append(p.release, func() error { l.uids.release(uid); return nil })
 	// The guest formats nothing: the host creates the empty writable disk
 	// and the guest mounts it. The host never mounts this disk, because its
 	// blocks are written by the guest kernel.
@@ -167,7 +170,13 @@ func (l *processLauncher) Start(ctx context.Context, req startRequest) (instance
 		}
 	}
 	jail := newJailLayout(l.jailBase(), runtimeBin, req.ID, uid, uid)
-	release = append(release, jail.remove)
+	if err := os.MkdirAll(filepath.Dir(jail.dir), 0o700); err != nil {
+		return fail(err)
+	}
+	if err := os.Mkdir(jail.dir, 0o700); err != nil {
+		return fail(err)
+	}
+	p.release = append(p.release, jail.remove)
 	if err := jail.populate(req); err != nil {
 		return fail(err)
 	}
@@ -204,10 +213,8 @@ func (l *processLauncher) Start(ctx context.Context, req startRequest) (instance
 		"--gid", strconv.Itoa(uid),
 		"--chroot-base-dir", l.jailBase(),
 	}
-	if cgroupV2() {
-		args = append(args, "--cgroup-version", "2")
-		args = append(args, cgroupLimits(req.Resources)...)
-	}
+	args = append(args, "--cgroup-version", "2")
+	args = append(args, cgroupLimits(req.Resources)...)
 	// The API socket is how UpdateLimits reaches the running machine. It
 	// sits in the jail, owned by the grant's identity.
 	args = append(args, "--")
@@ -224,11 +231,7 @@ func (l *processLauncher) Start(ctx context.Context, req startRequest) (instance
 	if err := cmd.Start(); err != nil {
 		return fail(execenv.ErrUnavailable)
 	}
-	release = append(release, func() error { removeJailCgroups(filepath.Base(runtimeBin)); return nil })
-	if req.Attach != nil {
-		attach := req.Attach
-		release = append(release, func() error { attach.close(); return nil })
-	}
+	p.release = append(p.release, func() error { removeJailCgroups(filepath.Base(runtimeBin)); return nil })
 	done := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(done) }()
 	pid := cmd.Process.Pid
@@ -239,11 +242,14 @@ func (l *processLauncher) Start(ctx context.Context, req startRequest) (instance
 		Sock: jail.host(jailLinkSoc), API: jail.host(jailAPISock),
 		Net: netRecordOf(req.Attach),
 	}
-	p := &processInstance{pid: pid, start: start, rec: rec, sock: rec.Sock, api: rec.API, release: release, done: done}
+	p.pid, p.start, p.rec, p.sock, p.api, p.done = pid, start, rec, rec.Sock, rec.API, done
 	if err := l.bring(ctx, req, p); err != nil {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_ = p.Stop(stopCtx)
+		stopErr := p.Stop(stopCtx)
 		cancel()
+		if stopErr != nil {
+			return p, errors.Join(err, stopErr)
+		}
 		return nil, err
 	}
 	return p, nil
@@ -335,6 +341,9 @@ func (p *processInstance) Resume(ctx context.Context) error {
 }
 
 func (p *processInstance) Stop(ctx context.Context) error {
+	if p.pid == 0 && p.done == nil {
+		return p.releaseResources()
+	}
 	if p.pid <= 0 || p.done == nil {
 		return execenv.ErrUnavailable
 	}
@@ -358,16 +367,18 @@ func (p *processInstance) Stop(ctx context.Context) error {
 		return ctx.Err()
 	case <-p.done:
 	}
-	var errs []error
+	return p.releaseResources()
+}
+
+func (p *processInstance) releaseResources() error {
 	for len(p.release) > 0 {
 		last := len(p.release) - 1
 		if err := p.release[last](); err != nil {
-			errs = append(errs, err)
-			break
+			return err
 		}
 		p.release = p.release[:last]
 	}
-	return errors.Join(errs...)
+	return nil
 }
 
 func guestCID(id execenv.ID) uint32 {

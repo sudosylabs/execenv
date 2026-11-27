@@ -49,13 +49,6 @@ func setTapOwner(dev string, uid int) error {
 	return unix.IoctlSetInt(fd, unix.TUNSETGROUP, uid)
 }
 
-// cgroupV2 reports a unified hierarchy, which the supervisor must be told
-// about explicitly (its default is v1).
-func cgroupV2() bool {
-	_, err := os.Stat("/sys/fs/cgroup/cgroup.controllers")
-	return err == nil
-}
-
 // killJailed kills every process whose real uid is in the jail range. The
 // supervisor changes credentials before exec, which clears the parent-death
 // signal, so a monitor can outlive a crashed daemon; this is how a restarted

@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"strconv"
@@ -103,15 +104,15 @@ func TestDeniedDestinationUnreachableFromGuestSide(t *testing.T) {
 		_ = c.Close()
 	}
 
-	chain := "ET" + ns[len(ns)-6:]
 	allow, err := parseAllow([]string{"10.230.7.1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := installFilter(hostVeth, chain, allow); err != nil {
+	att, err := guardAttach(netAttach{Dev: hostVeth, HostIP: "10.230.7.1", Prefix: 24, Allow: allow}, allow, nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = removeFilter(hostVeth, chain) })
+	t.Cleanup(att.close)
 
 	if err := guestDial(ns, "10.230.7.1", allowPort); err != nil {
 		t.Fatalf("guest cannot reach allowed dest: %v", err)
@@ -147,10 +148,12 @@ func TestLiveAllowlistDeniesFromGuest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	link := planAttach("net-1", nil)
+	const deniedIP = "198.18.253.1"
 	host, err := New(Config{
 		WorkDir:  t.TempDir(),
 		Capacity: execenv.DefaultGrant.Times(1),
-		Allow:    []string{"203.0.113.1"},
+		Allow:    []string{link.HostIP},
 		Images: []Image{{
 			ID:     "fixture",
 			Kernel: kernel,
@@ -161,6 +164,7 @@ func TestLiveAllowlistDeniesFromGuest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = host.lock.Close() })
 	env, err := host.Ensure(t.Context(), execenv.Spec{
 		ID:      "net-1",
 		Image:   "fixture",
@@ -169,38 +173,86 @@ func TestLiveAllowlistDeniesFromGuest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = env.Revoke(t.Context()) })
-	term := execenvtest.OpenShell(t, env, runningFence(t, env), "sh")
-	// 1.1.1.1 is not on the host allowlist. Success from this shell
-	// would mean the guest has a general NIC.
-	// A missing wget or no default route is not proof. Require wget,
-	// then treat a completed TCP handshake as a leak.
-	// The terminal echoes the line: quotes keep the echo from matching.
-	if _, err := term.Write([]byte("command -v wget >/dev/null || { echo NO_\"\"WGET; exit 0; }; wget -q -T 2 -O /dev/null http://1.1.1.1/ && echo LEAK\"\"ED || echo DEN\"\"IED\n")); err != nil {
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 10*time.Second)
+		defer cancel()
+		if err := env.Revoke(ctx); err != nil {
+			t.Errorf("revoke guest during cleanup: %v", err)
+		}
+	})
+	if err := runIP("addr", "add", deniedIP+"/32", "dev", link.Dev); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(8 * time.Second)
-	var buf []byte
-	tmp := make([]byte, 256)
-	for time.Now().Before(deadline) {
-		n, _ := term.Read(tmp)
-		if n > 0 {
-			buf = append(buf, tmp[:n]...)
-			if strings.Contains(string(buf), "NO_WGET") {
-				t.Skip("fixture image has no wget")
-			}
-			if strings.Contains(string(buf), "LEAKED") {
-				t.Fatal("guest reached a dest that is not on the host allowlist")
-			}
-			if strings.Contains(string(buf), "DENIED") {
-				return
-			}
+	allowedURL := localHTTP(t, link.HostIP)
+	deniedURL := localHTTP(t, deniedIP)
+	client := &http.Client{Timeout: time.Second, Transport: &http.Transport{}}
+	defer client.CloseIdleConnections()
+	resp, err := client.Get(deniedURL)
+	if err != nil {
+		t.Fatalf("host could not reach the denied test listener: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+	defer cancel()
+	fence := runningFence(t, env)
+	command := fmt.Sprintf("command -v wget >/dev/null || { echo NO_WGET; exit 0; }; "+
+		"wget -q -T 2 -O /dev/null %s || { echo ALLOW_FAILED; exit 0; }; "+
+		"wget -q -T 2 -O /dev/null %s && echo LEAKED || echo DENIED", allowedURL, deniedURL)
+	if _, err := env.Start(ctx, fence, execenv.ProcessSpec{
+		Tag: "allowlist-proof", Argv: []string{"/bin/sh", "-c", command},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	output, err := env.AttachProcess(ctx, "allowlist-proof", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer output.Close()
+	var stdout, stderr strings.Builder
+	for {
+		event, err := output.Next(ctx)
+		if err != nil {
+			t.Fatalf("guest did not report an allowlist result: %v", err)
 		}
-		time.Sleep(50 * time.Millisecond)
+		if event.Kind == execenv.OutputExit {
+			if event.Exit.Code != 0 || event.Exit.Signal != 0 {
+				t.Fatalf("guest allowlist probe exited with %+v, stderr: %q", event.Exit, stderr.String())
+			}
+			break
+		}
+		switch event.Stream {
+		case execenv.StreamStdout:
+			stdout.Write(event.Data)
+		case execenv.StreamStderr:
+			stderr.Write(event.Data)
+		}
 	}
-	if !strings.Contains(string(buf), "DENIED") {
-		t.Fatal("guest did not report that the dest was denied")
+	switch strings.TrimSpace(stdout.String()) {
+	case "NO_WGET":
+		t.Skip("fixture image has no wget")
+	case "ALLOW_FAILED":
+		t.Fatalf("guest could not reach the allowed test listener, stderr: %q", stderr.String())
+	case "LEAKED":
+		t.Fatal("guest reached a destination outside the allowlist")
+	case "DENIED":
+	default:
+		t.Fatalf("guest reported stdout %q, stderr %q", stdout.String(), stderr.String())
 	}
+}
+
+func localHTTP(t *testing.T, address string) string {
+	t.Helper()
+	ln, err := net.Listen("tcp4", net.JoinHostPort(address, "0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})}
+	go func() { _ = server.Serve(ln) }()
+	t.Cleanup(func() { _ = server.Close() })
+	return "http://" + ln.Addr().String() + "/"
 }
 
 // A grant with network access comes up with its own address and route,
@@ -285,5 +337,23 @@ func TestLiveNetworkGrantIsConfigured(t *testing.T) {
 				t.Fatalf("guest network: want up, %s/30 and default via %s; saw %q", att.GuestIP, att.HostIP, seen)
 			}
 		})
+	}
+}
+
+func TestGrantLinkRejectsAnOverlappingHostSubnet(t *testing.T) {
+	att := planAttach("grant", nil)
+	hostIP, localNet, err := net.ParseCIDR(att.HostIP + "/16")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !addressInUse(att, []net.Addr{&net.IPNet{IP: hostIP, Mask: localNet.Mask}}) {
+		t.Fatal("overlapping route was accepted")
+	}
+	_, other, err := net.ParseCIDR("198.51.100.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if addressInUse(att, []net.Addr{other}) {
+		t.Fatal("unrelated subnet prevented assignment")
 	}
 }

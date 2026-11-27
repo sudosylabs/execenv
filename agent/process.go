@@ -5,6 +5,7 @@ import (
 	"context"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -72,6 +73,9 @@ func boundProcess(event execenv.ProcessEvent) execenv.ProcessEvent {
 // guest link and the host, so neither losing the link nor restarting the
 // host loses a retained event.
 func (c *Client) ObserveProcesses(ctx context.Context, after uint64, limit int) (execenv.ProcessPage, error) {
+	if limit < 1 || limit > execenv.MaxProcessPage {
+		return execenv.ProcessPage{}, execenv.ErrInvalid
+	}
 	ctx, cancel := c.call(ctx)
 	defer cancel()
 	resp, err := c.agent.ObserveProcesses(ctx, connect.NewRequest(&execenvv1.ObserveProcessesRequest{After: after, Limit: int32(limit)}))
@@ -275,7 +279,10 @@ func (t *tracker) handle(event kernelEvent) (execenv.ProcessEvent, bool) {
 		}
 		delete(t.member, event.TGID)
 		// A reused pid is a new process: an ended one's tag is not its.
-		delete(t.gone, event.TGID)
+		if _, held := t.gone[event.TGID]; held {
+			delete(t.gone, event.TGID)
+			t.ended = slices.DeleteFunc(t.ended, func(pid int) bool { return pid == event.TGID })
+		}
 		if parent := t.member[event.Parent]; parent != nil {
 			t.member[event.TGID] = &member{parent: event.Parent, tag: t.tagLocked(event.Parent)}
 		} else {

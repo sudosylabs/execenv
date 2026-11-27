@@ -68,9 +68,11 @@ jobs:
         with:
           path: artifacts
       - name: Assemble layout
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
           chmod +x scripts/assemble-release release-out/execenv release-out/execenvctl
-          ./release-out/execenvctl --version | grep -F "tag=${{ github.ref_name }}" \
+          ./release-out/execenvctl --version | grep -F "tag=$TAG" \
             || { echo "unstamped binary; refusing publish" >&2; exit 1; }
           vmlinux=""
           for f in artifacts/disk-*/vmlinux-*; do

@@ -29,8 +29,10 @@ jobs:
       - name: Guest Agent from the tagged Release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.release_tag }}
         run: |
-          gh release download "${{ inputs.release_tag }}" --pattern execenv
+          gh release download "$TAG" --pattern execenv
           chmod +x execenv
       - uses: actions/upload-artifact@v4
         with:
@@ -79,9 +81,14 @@ jobs:
             test "$(shasum -a 256 "$bake_k" | awk '{print $1}')" = "$(shasum -a 256 "$tag_k" | awk '{print $1}')" \
               || { echo "bake kernel does not match the tagged kernel" >&2; exit 1; }
           fi
-          out=$(scripts/pin-image --dir pin --id default --rootfs disk/rootfs-default.ext4 --kernel pin/vmlinux)
-          echo "$out"
-          if ! echo "$out" | grep -q "already pinned"; then
-            gh release upload "$TAG" disk/rootfs-default.ext4
+          published=$(gh release view "$TAG" --json assets --jq '.assets[] | select(.name == "rootfs-default.ext4") | .name')
+          rootfs=disk/rootfs-default.ext4
+          if [ -n "$published" ]; then
+            gh release download "$TAG" --pattern rootfs-default.ext4 --dir pin
+            rootfs=pin/rootfs-default.ext4
+          fi
+          scripts/pin-image --dir pin --id default --rootfs "$rootfs" --kernel pin/vmlinux
+          if [ -z "$published" ]; then
+            gh release upload "$TAG" "$rootfs"
           fi
           gh release upload "$TAG" pin/index.json pin/SHA256SUMS --clobber

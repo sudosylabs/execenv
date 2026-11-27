@@ -13,7 +13,7 @@ import (
 
 // protocol is the major version of proto/execenv/guest/v1. The host refuses
 // a helper on any other.
-const protocol = 4
+const protocol = 5
 
 // The guest link is one connection carrying HTTP/2 with prior knowledge.
 // Its windows are wide: the link is local to the machine, and terminal

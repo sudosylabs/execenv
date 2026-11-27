@@ -999,6 +999,7 @@ type ImportRequest struct {
 	//
 	//	*ImportRequest_Header
 	//	*ImportRequest_Chunk
+	//	*ImportRequest_Complete
 	Part          isImportRequest_Part `protobuf_oneof:"part"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1059,6 +1060,15 @@ func (x *ImportRequest) GetChunk() []byte {
 	return nil
 }
 
+func (x *ImportRequest) GetComplete() bool {
+	if x != nil {
+		if x, ok := x.Part.(*ImportRequest_Complete); ok {
+			return x.Complete
+		}
+	}
+	return false
+}
+
 type isImportRequest_Part interface {
 	isImportRequest_Part()
 }
@@ -1071,9 +1081,16 @@ type ImportRequest_Chunk struct {
 	Chunk []byte `protobuf:"bytes,2,opt,name=chunk,proto3,oneof"`
 }
 
+type ImportRequest_Complete struct {
+	// Complete follows the last chunk only when the source ended cleanly.
+	Complete bool `protobuf:"varint,3,opt,name=complete,proto3,oneof"`
+}
+
 func (*ImportRequest_Header) isImportRequest_Part() {}
 
 func (*ImportRequest_Chunk) isImportRequest_Part() {}
+
+func (*ImportRequest_Complete) isImportRequest_Part() {}
 
 type ImportResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1251,10 +1268,11 @@ const file_execenv_v1_file_proto_rawDesc = "" +
 	"\x0eRemoveResponse\"I\n" +
 	"\fImportHeader\x12'\n" +
 	"\x05fence\x18\x01 \x01(\v2\x11.execenv.v1.FenceR\x05fence\x12\x10\n" +
-	"\x03dir\x18\x02 \x01(\tR\x03dir\"c\n" +
+	"\x03dir\x18\x02 \x01(\tR\x03dir\"\x81\x01\n" +
 	"\rImportRequest\x122\n" +
 	"\x06header\x18\x01 \x01(\v2\x18.execenv.v1.ImportHeaderH\x00R\x06header\x12\x16\n" +
-	"\x05chunk\x18\x02 \x01(\fH\x00R\x05chunkB\x06\n" +
+	"\x05chunk\x18\x02 \x01(\fH\x00R\x05chunk\x12\x1c\n" +
+	"\bcomplete\x18\x03 \x01(\bH\x00R\bcompleteB\x06\n" +
 	"\x04part\"\x10\n" +
 	"\x0eImportResponse\"l\n" +
 	"\rExportRequest\x12\x19\n" +
@@ -1363,6 +1381,7 @@ func file_execenv_v1_file_proto_init() {
 	file_execenv_v1_file_proto_msgTypes[16].OneofWrappers = []any{
 		(*ImportRequest_Header)(nil),
 		(*ImportRequest_Chunk)(nil),
+		(*ImportRequest_Complete)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

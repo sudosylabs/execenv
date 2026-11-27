@@ -132,12 +132,7 @@ func (s *server) Import(_ context.Context, stream *connect.ClientStream[execenvv
 		return nil, wire.Error(execenv.ErrInvalid)
 	}
 	h := stream.Msg().GetHeader()
-	body := &wire.ChunkReader{Next: func() ([]byte, bool, error) {
-		if !stream.Receive() {
-			return nil, false, stream.Err()
-		}
-		return stream.Msg().GetChunk(), true, nil
-	}}
+	body := wire.ImportChunks(stream.Receive, stream.Msg, stream.Err)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.fenced(h.GetFence()); err != nil {
@@ -205,7 +200,7 @@ func (c *Client) Stat(ctx context.Context, path string, digest bool) (execenv.Fi
 func (c *Client) List(ctx context.Context, dir string, depth int, digest bool) ([]execenv.FileInfo, error) {
 	ctx, cancel := c.call(ctx)
 	defer cancel()
-	resp, err := c.agent.List(ctx, connect.NewRequest(&execenvv1.ListRequest{Dir: dir, Depth: int32(depth), Digest: digest}))
+	resp, err := c.agent.List(ctx, connect.NewRequest(&execenvv1.ListRequest{Dir: dir, Depth: int32(min(max(1, depth), execenv.MaxListEntries)), Digest: digest}))
 	if err != nil {
 		return nil, c.failure("list", err)
 	}
@@ -314,9 +309,7 @@ func (c *Client) Import(ctx context.Context, fence execenv.ProjectionFence, dir 
 	stream := c.agent.Import(ctx)
 	err := stream.Send(&execenvv1.ImportRequest{Part: &execenvv1.ImportRequest_Header{Header: &execenvv1.ImportHeader{Fence: wire.FenceTo(fence), Dir: dir}}})
 	if err == nil {
-		err = wire.Pump(body, func(b []byte) error {
-			return stream.Send(&execenvv1.ImportRequest{Part: &execenvv1.ImportRequest_Chunk{Chunk: b}})
-		})
+		err = wire.SendImport(body, stream.Send)
 	}
 	if _, cerr := stream.CloseAndReceive(); cerr != nil {
 		return c.failure("import", cerr)

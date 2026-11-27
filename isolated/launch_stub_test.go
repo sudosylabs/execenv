@@ -22,17 +22,20 @@ type stubInstance struct {
 	stopErr   error
 	stopped   bool
 	sock      string
+	net       *netRecord
 	scratch   string
 	ln        net.Listener
 	conns     *trackedConns
 	cancel    context.CancelFunc
+	served    <-chan struct{}
 	// processes simulates the guest kernel's view of the workload.
 	processes *stubProcesses
 	// exited closes when the simulated machine ends: Stop, or die.
 	exited   chan struct{}
 	exitOnce sync.Once
 	// limits is what UpdateLimits last applied.
-	limits execenv.Limits
+	limits      execenv.Limits
+	limitErrors []error
 	// saved is where Save put the machine; its helper keeps running, as the
 	// saved memory would hold it, until a Start restores it.
 	saved string
@@ -66,7 +69,7 @@ func (s *stubInstance) Done() <-chan struct{} {
 func (s *stubInstance) Machine() machine {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return machine{Sock: s.sock}
+	return machine{Sock: s.sock, Net: s.net}
 }
 
 func (s *stubInstance) UpdateLimits(_ context.Context, limits execenv.Limits, _ bool) error {
@@ -76,6 +79,11 @@ func (s *stubInstance) UpdateLimits(_ context.Context, limits execenv.Limits, _ 
 		return execenv.ErrUnavailable
 	}
 	s.limits = limits
+	if len(s.limitErrors) != 0 {
+		err := s.limitErrors[0]
+		s.limitErrors = s.limitErrors[1:]
+		return err
+	}
 	return nil
 }
 
@@ -125,6 +133,7 @@ func (s *stubInstance) die() {
 		s.ln = nil
 	}
 	s.mu.Unlock()
+	<-s.served
 	s.exitOnce.Do(func() { close(s.exited) })
 }
 
@@ -148,7 +157,7 @@ func (s *stubInstance) Resume(context.Context) error {
 	return nil
 }
 
-func (s *stubInstance) Stop(context.Context) error {
+func (s *stubInstance) Stop(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.stopErr != nil {
@@ -167,6 +176,11 @@ func (s *stubInstance) Stop(context.Context) error {
 	if s.ln != nil {
 		_ = s.ln.Close()
 		s.ln = nil
+	}
+	select {
+	case <-s.served:
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 	if s.sock != "" {
 		_ = os.Remove(s.sock)
@@ -332,10 +346,15 @@ func startStubAgent(_ context.Context, req startRequest, journal, processLog boo
 		cfg.Processes = processes
 	}
 	conns := &trackedConns{Listener: ln}
+	served := make(chan struct{})
 	go func() {
+		defer close(served)
 		_ = agent.ListenAndServe(ctx, conns, cfg)
 	}()
-	return &stubInstance{sock: sock, scratch: scratch, ln: ln, conns: conns, cancel: cancel, processes: processes, exited: make(chan struct{})}, nil
+	return &stubInstance{
+		sock: sock, net: netRecordOf(req.Attach), scratch: scratch, ln: ln, conns: conns,
+		cancel: cancel, served: served, processes: processes, exited: make(chan struct{}),
+	}, nil
 }
 
 // stubProcesses is the stub helper's process source. Run reports one

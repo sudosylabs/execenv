@@ -106,7 +106,7 @@ func (c *Client) WatchGrant(ctx context.Context, id execenv.ID) (execenv.GrantWa
 		cancel()
 		return nil, wire.HostError("watch_grant", err)
 	}
-	r := follow(stream.Receive, stream.Msg, stream.Err, cancel)
+	r := follow(sctx, stream.Receive, stream.Msg, stream.Err, cancel)
 	// The host sends the grant's state first, or refuses an unknown one.
 	first, err := r.next(ctx)
 	if err != nil {
@@ -123,7 +123,7 @@ func (c *Client) WatchHost(context.Context) (execenv.HostWatch, error) {
 		cancel()
 		return nil, wire.HostError("watch_host", err)
 	}
-	return &hostWatch{r: follow(stream.Receive, stream.Msg, stream.Err, cancel)}, nil
+	return &hostWatch{r: follow(sctx, stream.Receive, stream.Msg, stream.Err, cancel)}, nil
 }
 
 // follower moves a server stream's messages onto a channel, so Next can
@@ -134,12 +134,17 @@ type follower[T any] struct {
 	cancel context.CancelFunc
 }
 
-func follow[T any](receive func() bool, msg func() *T, end func() error, cancel context.CancelFunc) *follower[T] {
+func follow[T any](ctx context.Context, receive func() bool, msg func() *T, end func() error, cancel context.CancelFunc) *follower[T] {
 	f := &follower[T]{msgs: make(chan *T), cancel: cancel}
 	go func() {
 		defer close(f.msgs)
 		for receive() {
-			f.msgs <- msg()
+			select {
+			case f.msgs <- msg():
+			case <-ctx.Done():
+				f.err = ctx.Err()
+				return
+			}
 		}
 		f.err = end()
 	}()

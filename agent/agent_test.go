@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -49,7 +50,7 @@ func shellOn(t *testing.T, m *procs.Manager, tag string) *testShell {
 }
 
 func (s *testShell) typeLine(line string) error {
-	next, err := s.m.WriteInput(s.tag, s.input, []byte(line+"\n"))
+	next, err := s.m.WriteInput(s.t.Context(), s.tag, s.input, []byte(line+"\n"))
 	if err == nil {
 		s.input = next
 	}
@@ -126,7 +127,7 @@ func TestCommandsRunOnPipes(t *testing.T) {
 	if _, err := m.Start(t.Context(), execenv.ProcessSpec{Tag: "cat", Argv: []string{"cat"}, Stdin: true}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.WriteInput("cat", 0, []byte("piped")); err != nil {
+	if _, err := m.WriteInput(t.Context(), "cat", 0, []byte("piped")); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.CloseInput("cat"); err != nil {
@@ -137,6 +138,29 @@ func TestCommandsRunOnPipes(t *testing.T) {
 	}
 	if got := drain(t, m, "cat"); got[execenv.StreamStdout] != "piped" {
 		t.Fatalf("cat output = %q", got)
+	}
+}
+
+func TestGuestInputAcknowledgementIsRetryable(t *testing.T) {
+	cli, _ := startAgent(t)
+	proc, err := cli.Start(t.Context(), execenv.ProcessSpec{Tag: "ack", Argv: []string{"cat"}, Stdin: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = proc.Signal(execenv.SignalKill) })
+	data := []byte("acknowledged")
+	for range 2 {
+		offset, err := proc.WriteInput(t.Context(), 0, data)
+		if err != nil || offset != uint64(len(data)) {
+			t.Fatalf("acknowledged offset = %d, %v", offset, err)
+		}
+	}
+	if err := proc.CloseInput(); err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(proc.Streams()[execenv.StreamStdout])
+	if err != nil || string(body) != string(data) {
+		t.Fatalf("piped input length = %d, %v", len(body), err)
 	}
 }
 

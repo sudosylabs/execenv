@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -196,7 +195,7 @@ func (l *processLauncher) buildTemplate(ctx context.Context, image Image, shape 
 	}
 	defer os.RemoveAll(work)
 	req := startRequest{
-		ID:        execenv.ID(fmt.Sprintf("template-%s-%s", image.ID, shape.Name)),
+		ID:        (templateKey{image.ID, shape.Name, att != nil}).identity(),
 		Kernel:    image.Kernel,
 		Rootfs:    image.Rootfs,
 		TreeDir:   filepath.Join(work, workspaceName),
@@ -206,6 +205,11 @@ func (l *processLauncher) buildTemplate(ctx context.Context, image Image, shape 
 	}
 	inst, err := l.Start(ctx, req)
 	if err != nil {
+		if inst != nil {
+			stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			return errors.Join(err, inst.Stop(stopCtx))
+		}
 		return err
 	}
 	p := inst.(*processInstance)

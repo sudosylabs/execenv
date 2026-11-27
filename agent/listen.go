@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"net"
+	"sync"
 
 	"github.com/sudosylabs/execenv"
 	"github.com/sudosylabs/execenv/internal/guestlink"
@@ -25,11 +26,15 @@ func ListenAndServe(ctx context.Context, ln net.Listener, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	defer a.Close()
-	go func() {
-		<-ctx.Done()
-		_ = ln.Close()
+	ctx, cancel := context.WithCancel(ctx)
+	var links sync.WaitGroup
+	defer func() {
+		cancel()
+		links.Wait()
+		a.Close()
 	}()
+	stop := context.AfterFunc(ctx, func() { _ = ln.Close() })
+	defer stop()
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -38,9 +43,9 @@ func ListenAndServe(ctx context.Context, ln net.Listener, cfg Config) error {
 			}
 			return execenv.Error("agent", err)
 		}
-		go func() {
+		links.Go(func() {
 			_ = a.Serve(ctx, conn)
 			_ = conn.Close()
-		}()
+		})
 	}
 }

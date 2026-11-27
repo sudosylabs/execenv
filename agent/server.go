@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -176,7 +177,7 @@ func New(cfg Config) (*Agent, error) {
 	}
 	s.processTag = tagOf
 	if group != nil {
-		fs.Own = group.OwnHome
+		fs.Own = group.OwnPath
 		// A real guest watches its workspace, so an idle one is not walked,
 		// and names the started process each change's writer descends from.
 		if w, err := workspace.New(cfg.Home, tagOf); err == nil && s.journal != nil {
@@ -302,9 +303,10 @@ type server struct {
 	processes atomic.Bool
 	log       *processes.Log
 
-	mu     sync.Mutex
-	frozen bool
-	procs  map[string]*guestProc
+	mu             sync.Mutex
+	frozen         bool
+	procs          map[string]*guestProc
+	canceledSpawns map[string]time.Time
 }
 
 func (s *server) guard() error {

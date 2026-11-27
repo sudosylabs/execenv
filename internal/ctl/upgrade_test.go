@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -212,4 +214,73 @@ func checksumFile(files map[string][]byte) []byte {
 		b.WriteByte('\n')
 	}
 	return []byte(b.String())
+}
+
+func TestUpgradeStagesChangedKernelBeforePublishing(t *testing.T) {
+	root := t.TempDir()
+	opts := bootstrappedWithFixture(t, root)
+	before, err := os.ReadFile(filepath.Join(opts.Prefix, "bin", "execenv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	kernel, rootfs := []byte("second kernel"), []byte("second rootfs")
+	sum := writeDigest(t, root, kernel, rootfs)
+	bin, manager := linuxAMD64ELF("second daemon"), linuxAMD64ELF("second manager")
+	srv := newReleaseServer(t, map[string][]byte{
+		"index.json":          []byte(fmt.Sprintf(`{"kernel":"vmlinux","images":[{"id":"fixture","rootfs":"rootfs-fixture.ext4","hash":%q}]}`, sum)),
+		"vmlinux":             kernel,
+		"rootfs-fixture.ext4": rootfs,
+		"execenv":             bin,
+		"execenvctl":          manager,
+		"SHA256SUMS":          checksumFile(map[string][]byte{"execenv": bin, "execenvctl": manager}),
+	})
+	opts.ReleaseURL = srv.URL
+	if err := Upgrade(opts, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(filepath.Join(opts.Prefix, "bin", "execenv"))
+	if err != nil || bytes.Equal(before, after) || !bytes.Equal(after, bin) {
+		t.Fatalf("binary replacement failed: %v", err)
+	}
+	doc, err := daemon.Load(opts.configPath())
+	if err != nil || len(doc.Images) != 1 || doc.Images[0].Hash != sum {
+		t.Fatalf("new catalog generation not published: %v", err)
+	}
+	kernelOnDisk, err := os.ReadFile(doc.Images[0].Kernel)
+	if err != nil || !bytes.Equal(kernelOnDisk, kernel) {
+		t.Fatalf("kernel replacement failed: %v", err)
+	}
+}
+
+func TestUpgradeRetriesFailedRestart(t *testing.T) {
+	opts := testOpts(t, t.TempDir())
+	if err := Bootstrap(opts, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	bin, manager := linuxAMD64ELF("second daemon"), linuxAMD64ELF("second manager")
+	srv := newReleaseServer(t, map[string][]byte{
+		"index.json": emptyIndexJSON(),
+		"execenv":    bin,
+		"execenvctl": manager,
+		"SHA256SUMS": checksumFile(map[string][]byte{"execenv": bin, "execenvctl": manager}),
+	})
+	opts.ReleaseURL = srv.URL
+	reloads := 0
+	opts.Reload = func() error {
+		reloads++
+		if reloads == 1 {
+			return errors.New("restart temporarily unavailable")
+		}
+		return nil
+	}
+	if err := Upgrade(opts, io.Discard); err == nil {
+		t.Fatal("injected failure lost")
+	}
+	var out strings.Builder
+	if err := Upgrade(opts, &out); err != nil {
+		t.Fatal(err)
+	}
+	if reloads != 2 {
+		t.Fatalf("reload attempts=%d, want 2; output=%q", reloads, out.String())
+	}
 }

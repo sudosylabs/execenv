@@ -202,6 +202,9 @@ func (c *Client) Ensure(ctx context.Context, spec execenv.Spec) (execenv.Env, er
 }
 
 func (c *Client) Revoke(ctx context.Context, id execenv.ID) error {
+	if err := execenv.ValidateGrantID(id); err != nil {
+		return execenv.Error("revoke", err)
+	}
 	ctx, cancel := c.call(ctx)
 	defer cancel()
 	_, err := c.host.RevokeGrant(ctx, connect.NewRequest(&execenvv1.RevokeGrantRequest{GrantId: string(id)}))
@@ -475,6 +478,9 @@ func (e *remoteEnv) AcknowledgeObservations(ctx context.Context, fence execenv.P
 func (e *remoteEnv) ObserveProcesses(ctx context.Context, fence execenv.ProjectionFence, after uint64, limit int) (execenv.ProcessPage, error) {
 	if err := e.guard(fence); err != nil {
 		return execenv.ProcessPage{}, err
+	}
+	if limit < 1 || limit > execenv.MaxProcessPage {
+		return execenv.ProcessPage{}, execenv.ErrInvalid
 	}
 	ctx, cancel := e.client.call(ctx)
 	defer cancel()
