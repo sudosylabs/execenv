@@ -129,8 +129,10 @@ func runResources(t *testing.T, factory Factory) {
 	})
 
 	t.Run("an idle grant is revoked, but not while a process is attached", func(t *testing.T) {
+		// Ensure, boot and attach must fit inside the initial idle window.
+		const idleTimeout = time.Second
 		host := factory(t, Config{})
-		env, err := host.Ensure(t.Context(), execenv.Spec{ID: "idle", Image: "default", IdleTimeout: tick, IdleAction: execenv.IdleRevoke})
+		env, err := host.Ensure(t.Context(), execenv.Spec{ID: "idle", Image: "default", IdleTimeout: idleTimeout, IdleAction: execenv.IdleRevoke})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -145,7 +147,7 @@ func runResources(t *testing.T, factory Factory) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		time.Sleep(4 * tick)
+		time.Sleep(2 * idleTimeout)
 		if report, _ := host.Ready(t.Context()); report.Grants != 1 {
 			t.Fatal("a grant with an attached process was revoked as idle")
 		}

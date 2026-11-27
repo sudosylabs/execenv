@@ -9,3 +9,5 @@ import (
 )
 
 func lockFile(*os.File) error { return execenv.ErrUnavailable }
+
+func unlockFile(*os.File) error { return execenv.ErrUnavailable }
